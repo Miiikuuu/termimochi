@@ -201,14 +201,26 @@ popover.save-popover modelbutton:hover {
   font-weight: 650;
 }
 
-.variant-switch button:hover {
-  background: alpha(#42657a, 0.10);
+.variant-switch button:not(:checked):hover {
+  background: alpha(#1e2529, 0.07);
+}
+
+.variant-switch button:not(:checked):active {
+  background: alpha(#1e2529, 0.13);
 }
 
 .variant-switch button:checked {
   color: white;
-  background: #42657a;
-  box-shadow: 0 1px 3px alpha(#1e2529, 0.18);
+  background: #1e2529;
+  box-shadow: 0 1px 2px alpha(#141a20, 0.14);
+}
+
+.variant-switch button:checked:hover {
+  background: #30383e;
+}
+
+.variant-switch button:checked:active {
+  background: #141a20;
 }
 
 .variant-switch button:disabled {
