@@ -2,7 +2,8 @@
 pub(crate) enum PreviewScenario {
     Shell,
     Codex,
-    Git,
+    GitStatus,
+    GitDiff,
     Tests,
     Code,
     Htop,
@@ -10,10 +11,11 @@ pub(crate) enum PreviewScenario {
 }
 
 impl PreviewScenario {
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Shell,
         Self::Codex,
-        Self::Git,
+        Self::GitStatus,
+        Self::GitDiff,
         Self::Tests,
         Self::Code,
         Self::Htop,
@@ -32,7 +34,8 @@ impl PreviewScenario {
         match self {
             Self::Shell => "Shell",
             Self::Codex => "Codex",
-            Self::Git => "Git",
+            Self::GitStatus => "Git Status",
+            Self::GitDiff => "Git Diff",
             Self::Tests => "Tests",
             Self::Code => "Code",
             Self::Htop => "htop",
@@ -44,7 +47,8 @@ impl PreviewScenario {
         match self {
             Self::Shell => "bash",
             Self::Codex => "codex",
-            Self::Git => "git status",
+            Self::GitStatus => "git status",
+            Self::GitDiff => "git diff",
             Self::Tests => "test matrix",
             Self::Code => "syntax sampler",
             Self::Htop => "htop",
@@ -58,7 +62,8 @@ impl PreviewScenario {
         match self {
             Self::Shell => SHELL,
             Self::Codex => CODEX,
-            Self::Git => GIT,
+            Self::GitStatus => GIT_STATUS,
+            Self::GitDiff => GIT_DIFF,
             Self::Tests => TESTS,
             Self::Code => CODE,
             Self::Htop => HTOP,
@@ -98,16 +103,31 @@ const CODEX: &str = concat!(
     "\x1b[39;40m╰ Enter · Shift+Enter newline · Esc stop ─────────────╯\x1b[0m"
 );
 
-const GIT: &str = concat!(
+const GIT_STATUS: &str = concat!(
     "\x1b[?25l",
     "\x1b[1;32mmochi@linux\x1b[0m:\x1b[1;34m~/TermiMochi\x1b[0m$ git status --short\r\n",
     "\x1b[32mM \x1b[0m README.md\r\n",
-    "\x1b[33mM \x1b[0m crates/termimochi/src/window.rs\r\n",
-    "\x1b[31mD \x1b[0m old-preview.rs\r\n",
+    "\x1b[33m M\x1b[0m crates/termimochi/src/window.rs\r\n",
+    "\x1b[31m D\x1b[0m old-preview.rs\r\n",
     "\x1b[31m??\x1b[0m crates/termimochi/src/preview.rs\r\n\r\n",
     "\x1b[1mOn branch main\x1b[0m\r\n",
     "Your branch is ahead by \x1b[36m2 commits\x1b[0m.\r\n",
     "\x1b[90mnothing has been written by this preview\x1b[0m"
+);
+
+const GIT_DIFF: &str = concat!(
+    "\x1b[?25l",
+    "\x1b[1;32mmochi@linux\x1b[0m:\x1b[1;34m~/TermiMochi\x1b[0m$ git diff -- src/preview.rs\r\n",
+    "\x1b[1mdiff --git a/src/preview.rs b/src/preview.rs\x1b[0m\r\n",
+    "\x1b[1mindex 21bf62a..915aa31 100644\x1b[0m\r\n",
+    "\x1b[1m--- a/src/preview.rs\x1b[0m\r\n",
+    "\x1b[1m+++ b/src/preview.rs\x1b[0m\r\n",
+    "\x1b[36m@@ -59,3 +59,4 @@ match self {\x1b[0m\r\n",
+    "             Self::Git => GIT,\r\n",
+    "\x1b[31m-            Self::Tests => TESTS,\x1b[0m\r\n",
+    "\x1b[32m+            Self::GitDiff => GIT_DIFF,\x1b[41m  \x1b[0m\r\n",
+    "\x1b[32m+            Self::Tests => TESTS, // keep selector order.\x1b[0m\r\n",
+    "         }\x1b[0m"
 );
 
 const HTOP: &str = concat!(
@@ -304,6 +324,7 @@ mod tests {
         assert_eq!(PREVIEW_HOME_AND_CLEAR, b"\x1b[H\x1b[2J");
         for scenario in [
             PreviewScenario::Codex,
+            PreviewScenario::GitDiff,
             PreviewScenario::Tests,
             PreviewScenario::Code,
         ] {
@@ -314,6 +335,36 @@ mod tests {
                 scenario.label()
             );
         }
+    }
+
+    #[test]
+    fn selector_order_exposes_every_preview_scenario() {
+        assert_eq!(
+            PreviewScenario::ALL.map(PreviewScenario::label),
+            [
+                "Shell",
+                "Codex",
+                "Git Status",
+                "Git Diff",
+                "Tests",
+                "Code",
+                "htop",
+                "Glyphs",
+            ]
+        );
+        assert_eq!(
+            PreviewScenario::ALL.map(PreviewScenario::terminal_title),
+            [
+                "bash",
+                "codex",
+                "git status",
+                "git diff",
+                "test matrix",
+                "syntax sampler",
+                "htop",
+                "font coverage",
+            ]
+        );
     }
 
     #[test]
@@ -379,6 +430,82 @@ mod tests {
             assert_eq!(body.chars().count(), 55, "composer edges must align");
         }
         assert_eq!(transcript.matches("\x1b[39;40m").count(), 3);
+    }
+
+    #[test]
+    fn git_status_keeps_porcelain_states_and_branch_summary() {
+        let scenario = PreviewScenario::GitStatus;
+        assert_eq!(scenario.label(), "Git Status");
+        assert_eq!(scenario.terminal_title(), "git status");
+
+        let transcript = scenario.transcript();
+        let visible = visible_text(transcript);
+        for anchor in [
+            "git status --short",
+            "M  README.md",
+            " M crates/termimochi/src/window.rs",
+            " D old-preview.rs",
+            "?? crates/termimochi/src/preview.rs",
+            "On branch main",
+            "ahead by 2 commits",
+            "nothing has been written by this preview",
+        ] {
+            assert!(
+                visible.contains(anchor),
+                "missing Git status anchor: {anchor}"
+            );
+        }
+        for sgr in ["\x1b[32mM ", "\x1b[33m M", "\x1b[31m D", "\x1b[31m??"] {
+            assert!(transcript.contains(sgr), "missing Git status SGR: {sgr:?}");
+        }
+    }
+
+    #[test]
+    fn git_diff_keeps_patch_structure_colors_and_column_boundary() {
+        let scenario = PreviewScenario::GitDiff;
+        assert_eq!(scenario.label(), "Git Diff");
+        assert_eq!(scenario.terminal_title(), "git diff");
+
+        let transcript = scenario.transcript();
+        let visible = visible_text(transcript);
+        let rows: Vec<_> = visible.split("\r\n").collect();
+        assert_eq!(rows.len(), PREVIEW_ROWS);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.chars().count())
+                .collect::<Vec<_>>(),
+            [52, 44, 29, 20, 20, 30, 30, 34, 41, 58, 10]
+        );
+
+        for anchor in [
+            "git diff -- src/preview.rs",
+            "diff --git a/src/preview.rs b/src/preview.rs",
+            "index 21bf62a..915aa31 100644",
+            "--- a/src/preview.rs",
+            "+++ b/src/preview.rs",
+            "@@ -59,3 +59,4 @@",
+            "-            Self::Tests => TESTS,",
+            "+            Self::GitDiff => GIT_DIFF,",
+            "keep selector order.",
+        ] {
+            assert!(
+                visible.contains(anchor),
+                "missing Git diff anchor: {anchor}"
+            );
+        }
+
+        let raw_rows: Vec<_> = transcript.split("\r\n").collect();
+        assert!(raw_rows[1].starts_with("\x1b[1mdiff --git "));
+        assert!(raw_rows[3].starts_with("\x1b[1m--- "));
+        assert!(raw_rows[4].starts_with("\x1b[1m+++ "));
+        assert!(raw_rows[5].starts_with("\x1b[36m@@ "));
+        assert!(!raw_rows[6].contains('\x1b'));
+        assert!(raw_rows[7].starts_with("\x1b[31m-"));
+        assert!(raw_rows[8].starts_with("\x1b[32m+"));
+        assert!(raw_rows[8].contains("\x1b[41m  \x1b[0m"));
+        assert!(raw_rows[9].starts_with("\x1b[32m+"));
+        assert!(!transcript.contains("\x1b[38;"));
+        assert!(!transcript.contains("\x1b[48;"));
     }
 
     #[test]

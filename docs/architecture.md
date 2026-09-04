@@ -43,10 +43,10 @@ it works for any palette and either light or dark variants.
 
 The desktop crate owns only presentation and file interaction. Every edit is
 written to the in-memory core model, after which the preview and diagnostics
-are recomputed. A VTE widget renders deterministic ANSI transcripts for Shell,
-Codex, Git, htop and Vim plus a CJK/Emoji/kaomoji coverage scene. It consumes
-the same 16-color model as the linter, but never launches a shell or external
-program while the user edits a palette.
+are recomputed. A VTE widget renders deterministic built-in scenarios for Shell,
+Codex, Git status/diff, test output, syntax, system activity and glyph coverage.
+It consumes the same 16-color model as the linter, but never launches a shell or
+external program while the user edits a palette.
 
 Startup import is also read-only. It prefers the `PTYXIS_PROFILE` inherited
 from the launching terminal, then falls back to Ptyxis' default profile. The

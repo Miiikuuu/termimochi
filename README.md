@@ -19,7 +19,8 @@ that looks balanced elsewhere can therefore become almost unreadable.
 - Read-only startup import from the current or default Ptyxis profile.
 - Light/dark variant editor with an embedded HSV picker and exact HEX/RGB input.
 - Document-wide undo/redo with coalesced drag and text-edit transactions.
-- VTE-rendered Shell, Codex, Git, htop, Vim and font-coverage previews.
+- VTE-rendered Shell, Codex, Git status/diff, test-output, syntax, htop and
+  font-coverage previews.
 - Embedded multi-resolution application icon and Linux desktop metadata.
 - Atomic open, save and save-as workflows.
 - One-click Ptyxis installation with backup, change detection and rollback.
