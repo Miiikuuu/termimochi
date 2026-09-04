@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/io/github/miiikuuu/termimochi">
+    <file alias="icons/16x16/apps/io.github.miiikuuu.termimochi.png">data/icons/hicolor/16x16/apps/io.github.miiikuuu.termimochi.png</file>
+    <file alias="icons/24x24/apps/io.github.miiikuuu.termimochi.png">data/icons/hicolor/24x24/apps/io.github.miiikuuu.termimochi.png</file>
+    <file alias="icons/32x32/apps/io.github.miiikuuu.termimochi.png">data/icons/hicolor/32x32/apps/io.github.miiikuuu.termimochi.png</file>
+    <file alias="icons/48x48/apps/io.github.miiikuuu.termimochi.png">data/icons/hicolor/48x48/apps/io.github.miiikuuu.termimochi.png</file>
+    <file alias="icons/64x64/apps/io.github.miiikuuu.termimochi.png">data/icons/hicolor/64x64/apps/io.github.miiikuuu.termimochi.png</file>
+    <file alias="icons/128x128/apps/io.github.miiikuuu.termimochi.png">data/icons/hicolor/128x128/apps/io.github.miiikuuu.termimochi.png</file>
+    <file alias="icons/256x256/apps/io.github.miiikuuu.termimochi.png">data/icons/hicolor/256x256/apps/io.github.miiikuuu.termimochi.png</file>
+    <file alias="icons/512x512/apps/io.github.miiikuuu.termimochi.png">data/icons/hicolor/512x512/apps/io.github.miiikuuu.termimochi.png</file>
+    <file alias="icons/scalable/apps/io.github.miiikuuu.termimochi.svg">data/icons/hicolor/scalable/apps/io.github.miiikuuu.termimochi.svg</file>
+    <file alias="icons/scalable/apps/termimochi-header-logo.svg">data/icons/hicolor/scalable/apps/termimochi-header-logo.svg</file>
+    <file alias="icons/symbolic/apps/io.github.miiikuuu.termimochi-symbolic.svg">data/icons/hicolor/symbolic/apps/io.github.miiikuuu.termimochi-symbolic.svg</file>
+  </gresource>
+</gresources>

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=TermiMochi
+Comment=Design and validate terminal color palettes
+Exec=termimochi %F
+Icon=io.github.miiikuuu.termimochi
+Terminal=false
+Type=Application
+Categories=Development;GTK;
+Keywords=terminal;theme;palette;color;
+StartupNotify=true
+StartupWMClass=io.github.miiikuuu.termimochi

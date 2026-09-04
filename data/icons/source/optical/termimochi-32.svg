@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="160 160 704 704" role="img" aria-labelledby="title desc">
+  <title id="title">TermiMochi 32 pixel optical master</title>
+  <desc id="desc">A tile-free, small-size corrected TermiMochi application icon.</desc>
+  <path fill="#242521" d="M512 330 C651 330 761 397 804 484 C813 503 817 535 817 563 C817 598 798 629 768 652 C733 679 687 699 624 705 C581 707 544 707 512 707 C480 707 443 707 400 705 C337 699 291 679 256 652 C226 629 207 598 207 563 C207 535 211 503 220 484 C263 397 373 330 512 330 Z"/>
+  <g transform="translate(512 512) scale(1.04) translate(-512 -512)" fill="none" stroke="#F4F1E9" stroke-width="64" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M407 414 L477 484 L407 554"/>
+    <path d="M552 554 H680"/>
+  </g>
+</svg>

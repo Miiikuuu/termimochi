@@ -1,0 +1,21 @@
+[package]
+name = "termimochi"
+description = "A cute and accessibility-aware terminal palette workbench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "termimochi"
+path = "src/main.rs"
+
+[dependencies]
+adw.workspace = true
+gtk.workspace = true
+vte.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+termimochi-core.workspace = true
