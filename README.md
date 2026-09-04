@@ -1,4 +1,4 @@
-# TermiMochi · 终端麻薯
+# TermiMochi
 
 > Make terminal themes cute **and** usable.
 
