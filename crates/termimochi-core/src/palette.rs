@@ -513,7 +513,7 @@ impl Error for PaletteError {}
 mod tests {
     use super::*;
 
-    const FOG_PAPER: &str = include_str!("../../../themes/fog-paper.palette");
+    const FOG_PAPER: &str = include_str!("../fixtures/fog-paper.palette");
     const TINY: &str = "[Palette]\nName=Tiny\nUseSystemAccent=false\n\
         [Light]\nForeground=#000000\nBackground=#ffffff\n";
 
@@ -544,6 +544,26 @@ mod tests {
             PtyxisPalette::from_text(&serialized).unwrap().name(),
             "Tiny"
         );
+    }
+
+    #[test]
+    fn complete_model_round_trip_is_semantically_lossless_and_deterministic() {
+        let input = FOG_PAPER
+            .replace(
+                "UseSystemAccent=false",
+                "UseSystemAccent=false\nFuturePaletteSetting=left=right",
+            )
+            .replace("\n[Dark]", "\nFutureLightSetting=alpha=beta\n\n[Dark]");
+        let input = format!(
+            "{input}FutureDarkSetting=gamma=delta\n\n[Plugin Metadata]\nEnabled=true\nExpression=a=b=c\n"
+        );
+        let palette = PtyxisPalette::from_text(&input).unwrap();
+
+        let serialized = palette.to_palette_string();
+        let reparsed = PtyxisPalette::from_text(&serialized).unwrap();
+
+        assert_eq!(reparsed, palette);
+        assert_eq!(reparsed.to_palette_string(), serialized);
     }
 
     #[test]

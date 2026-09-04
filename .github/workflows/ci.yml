@@ -1,0 +1,171 @@
+name: CI
+
+"on":
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Rust, packages, and desktop metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: 1.92.0
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install native build and metadata tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            appstream \
+            dbus-daemon \
+            desktop-file-utils \
+            libadwaita-1-dev \
+            libglib2.0-dev-bin \
+            libgl1-mesa-dri \
+            libgtk-4-dev \
+            libvte-2.91-gtk4-dev \
+            libxml2-utils \
+            xvfb
+
+      - name: Install the Rust toolchain
+        run: rustup toolchain install 1.92.0 --profile minimal --component clippy,rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run the workspace tests
+        run: cargo test --workspace --locked
+
+      - name: Build the release binaries
+        run: cargo build --workspace --release --locked
+
+      - name: Test the isolated user installer
+        run: ./scripts/test-install.sh
+
+      - name: Smoke-test the release GUI under Xvfb
+        shell: bash
+        run: |
+          log_file="$RUNNER_TEMP/termimochi-gui.log"
+          started_at=$SECONDS
+          set +e
+          G_DEBUG=fatal-criticals \
+          GSETTINGS_BACKEND=memory \
+          LIBGL_ALWAYS_SOFTWARE=1 \
+            timeout --kill-after=5s 10s \
+              xvfb-run --auto-servernum \
+                --server-args="-screen 0 1280x900x24" \
+                dbus-run-session -- \
+                ./target/release/termimochi \
+                themes/fog-paper-codex.palette \
+                >"$log_file" 2>&1
+          status=$?
+          set -e
+          elapsed=$((SECONDS - started_at))
+
+          cat "$log_file"
+          if [ "$elapsed" -lt 10 ] || { [ "$status" -ne 124 ] && [ "$status" -ne 137 ]; }; then
+            echo "TermiMochi exited before the 10-second smoke window (status $status, ${elapsed}s)" >&2
+            exit 1
+          fi
+          if grep --extended-regexp --ignore-case --quiet \
+            'panicked at|thread .* panicked|fatal (runtime )?error|segmentation fault|core dumped' \
+            "$log_file"; then
+            echo "TermiMochi reported a fatal error during the GUI smoke test" >&2
+            exit 1
+          fi
+
+      - name: Validate desktop metadata and embedded resources
+        run: |
+          desktop-file-validate data/io.github.miiikuuu.termimochi.desktop
+          grep --fixed-strings --line-regexp --quiet \
+            'Exec=termimochi %f' \
+            data/io.github.miiikuuu.termimochi.desktop
+          appstreamcli validate --pedantic \
+            data/io.github.miiikuuu.termimochi.metainfo.xml
+          xmllint --noout \
+            data/io.github.miiikuuu.termimochi.metainfo.xml \
+            crates/termimochi/resources/io.github.miiikuuu.termimochi.gresource.xml
+          glib-compile-resources \
+            crates/termimochi/resources/io.github.miiikuuu.termimochi.gresource.xml \
+            --sourcedir=crates/termimochi \
+            --target="$RUNNER_TEMP/termimochi.gresource"
+          test "$(gresource list "$RUNNER_TEMP/termimochi.gresource" | wc -l)" -eq 11
+
+      - name: Check packaged resource copies
+        run: |
+          cmp themes/fog-paper.palette \
+            crates/termimochi-core/fixtures/fog-paper.palette
+          cmp themes/fog-paper-codex.palette \
+            crates/termimochi-core/fixtures/fog-paper-codex.palette
+          cmp themes/fog-paper-codex.palette \
+            crates/termimochi-cli/fixtures/fog-paper-codex.palette
+          cmp themes/fog-paper.palette \
+            crates/termimochi/resources/themes/fog-paper.palette
+          diff --recursive --brief \
+            data/icons/hicolor crates/termimochi/resources/icons
+
+      - name: Assemble and verify every crate package
+        run: cargo package --workspace --allow-dirty --locked
+
+      - name: Test the unpacked crate packages
+        shell: bash
+        run: |
+          core_package=$(find target/package -maxdepth 1 -type d \
+            -name 'termimochi-core-*' -print -quit)
+          cli_package=$(find target/package -maxdepth 1 -type d \
+            -name 'termimochi-cli-*' -print -quit)
+          gui_package=$(find target/package -maxdepth 1 -type d \
+            -name 'termimochi-[0-9]*' -print -quit)
+          test -n "$core_package"
+          test -n "$cli_package"
+          test -n "$gui_package"
+
+          cargo test --manifest-path "$core_package/Cargo.toml" --locked
+
+          core_package=$(realpath "$core_package")
+          local_core="patch.crates-io.termimochi-core.path=\"$core_package\""
+          for package in "$cli_package" "$gui_package"; do
+            cargo update --manifest-path "$package/Cargo.toml" \
+              --package termimochi-core --offline --config "$local_core"
+            cargo test --manifest-path "$package/Cargo.toml" \
+              --locked --offline --config "$local_core"
+          done
+
+  security-audit:
+    name: RustSec dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: 1.92.0
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        run: rustup toolchain install 1.92.0 --profile minimal
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit Cargo.lock against the RustSec advisory database
+        run: cargo audit --file Cargo.lock

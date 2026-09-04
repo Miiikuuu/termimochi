@@ -224,8 +224,8 @@ fn check_codex(variant: &ThemeVariant, issues: &mut Vec<Issue>) {
 mod tests {
     use super::*;
 
-    const ORIGINAL: &str = include_str!("../../../themes/fog-paper.palette");
-    const CODEX: &str = include_str!("../../../themes/fog-paper-codex.palette");
+    const ORIGINAL: &str = include_str!("../fixtures/fog-paper.palette");
+    const CODEX: &str = include_str!("../fixtures/fog-paper-codex.palette");
 
     #[test]
     fn original_fog_paper_catches_codex_composer_failure() {

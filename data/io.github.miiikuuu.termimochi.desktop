@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=TermiMochi
 Comment=Design and validate terminal color palettes
-Exec=termimochi %F
+Exec=termimochi %f
 Icon=io.github.miiikuuu.termimochi
 Terminal=false
 Type=Application

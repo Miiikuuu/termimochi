@@ -70,6 +70,13 @@ impl PreviewScenario {
             Self::Glyphs => GLYPHS,
         }
     }
+
+    /// The ordered chunks used for every VTE refresh. Keeping the clear and
+    /// replacement transcript together makes scenario transitions testable
+    /// without requiring a display server.
+    pub(crate) fn refresh_chunks(self) -> [&'static [u8]; 2] {
+        [PREVIEW_HOME_AND_CLEAR, self.transcript().as_bytes()]
+    }
 }
 
 pub(crate) const PREVIEW_COLUMNS: usize = 58;
@@ -365,6 +372,36 @@ mod tests {
                 "font coverage",
             ]
         );
+    }
+
+    #[test]
+    fn every_scenario_transition_clears_the_previous_terminal_contents() {
+        fn apply_refresh(screen: &mut String, scenario: PreviewScenario) {
+            for chunk in scenario.refresh_chunks() {
+                if chunk == PREVIEW_HOME_AND_CLEAR {
+                    screen.clear();
+                } else {
+                    let transcript = std::str::from_utf8(chunk).expect("preview chunks are UTF-8");
+                    screen.push_str(&visible_text(transcript));
+                }
+            }
+        }
+
+        for previous in PreviewScenario::ALL {
+            for next in PreviewScenario::ALL {
+                let mut screen = String::new();
+                apply_refresh(&mut screen, previous);
+                assert_eq!(screen, visible_text(previous.transcript()));
+                apply_refresh(&mut screen, next);
+                assert_eq!(
+                    screen,
+                    visible_text(next.transcript()),
+                    "{} -> {} left stale preview content",
+                    previous.label(),
+                    next.label()
+                );
+            }
+        }
     }
 
     #[test]

@@ -251,7 +251,49 @@ impl Error for ExportError {}
 mod tests {
     use super::*;
 
-    const PALETTE: &str = include_str!("../../../themes/fog-paper-codex.palette");
+    const PALETTE: &str = include_str!("../fixtures/fog-paper-codex.palette");
+
+    fn sentinel_palette() -> (PtyxisPalette, Vec<Rgb>) {
+        let mut input = String::from(
+            "[Palette]\nName=Sentinel\n[Light]\nForeground=#010203\nBackground=#040506\n\
+             Cursor=#070809\nCursorForeground=#0A0B0C\n",
+        );
+        let ansi = (0_u8..16)
+            .map(|index| Rgb::new(0x20 + index, 0x40 + index, 0x60 + index))
+            .collect::<Vec<_>>();
+        for (index, color) in ansi.iter().enumerate() {
+            input.push_str(&format!("Color{index}={color}\n"));
+        }
+        (PtyxisPalette::from_text(&input).unwrap(), ansi)
+    }
+
+    fn assert_exact_line(contents: &str, expected: &str) {
+        assert!(
+            contents.lines().any(|line| line == expected),
+            "missing exact line {expected:?} in:\n{contents}"
+        );
+    }
+
+    fn lua_color_array<'a>(contents: &'a str, key: &str) -> Vec<&'a str> {
+        let marker = format!("  {key} = {{\n");
+        let (_, tail) = contents
+            .split_once(&marker)
+            .unwrap_or_else(|| panic!("missing Lua array {key:?}"));
+        let (body, _) = tail
+            .split_once("\n  },")
+            .unwrap_or_else(|| panic!("unterminated Lua array {key:?}"));
+        body.lines()
+            .map(|line| line.trim().trim_end_matches(',').trim_matches('\''))
+            .collect()
+    }
+
+    fn toml_section<'a>(contents: &'a str, name: &str) -> &'a str {
+        let marker = format!("[{name}]\n");
+        let (_, tail) = contents
+            .split_once(&marker)
+            .unwrap_or_else(|| panic!("missing TOML section {name:?}"));
+        tail.split("\n[").next().unwrap()
+    }
 
     #[test]
     fn every_export_contains_all_semantic_colors() {
@@ -292,6 +334,74 @@ mod tests {
         let alacritty = export_palette(&palette, Variant::Dark, ExportFormat::Alacritty).unwrap();
         assert!(alacritty.contents.contains("[colors.normal]"));
         assert!(alacritty.contents.contains("[colors.bright]"));
+    }
+
+    #[test]
+    fn every_export_maps_each_sentinel_to_its_target_key() {
+        const NAMES: [&str; 8] = [
+            "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+        ];
+        let (palette, ansi) = sentinel_palette();
+
+        let kitty = export_palette(&palette, Variant::Light, ExportFormat::Kitty).unwrap();
+        for expected in [
+            "foreground #010203",
+            "background #040506",
+            "cursor #070809",
+            "cursor_text_color #0A0B0C",
+        ] {
+            assert_exact_line(&kitty.contents, expected);
+        }
+        for (index, color) in ansi.iter().enumerate() {
+            assert_exact_line(&kitty.contents, &format!("color{index} {color}"));
+        }
+
+        let ghostty = export_palette(&palette, Variant::Light, ExportFormat::Ghostty).unwrap();
+        for expected in [
+            "foreground = #010203",
+            "background = #040506",
+            "cursor-color = #070809",
+            "cursor-text = #0A0B0C",
+        ] {
+            assert_exact_line(&ghostty.contents, expected);
+        }
+        for (index, color) in ansi.iter().enumerate() {
+            assert_exact_line(&ghostty.contents, &format!("palette = {index}={color}"));
+        }
+
+        let wezterm = export_palette(&palette, Variant::Light, ExportFormat::WezTerm).unwrap();
+        for expected in [
+            "  foreground = '#010203',",
+            "  background = '#040506',",
+            "  cursor_bg = '#070809',",
+            "  cursor_fg = '#0A0B0C',",
+            "  cursor_border = '#070809',",
+        ] {
+            assert_exact_line(&wezterm.contents, expected);
+        }
+        let expected_ansi = ansi.iter().map(|color| color.to_hex()).collect::<Vec<_>>();
+        assert_eq!(
+            lua_color_array(&wezterm.contents, "ansi"),
+            expected_ansi[..8]
+        );
+        assert_eq!(
+            lua_color_array(&wezterm.contents, "brights"),
+            expected_ansi[8..]
+        );
+
+        let alacritty = export_palette(&palette, Variant::Light, ExportFormat::Alacritty).unwrap();
+        let primary = toml_section(&alacritty.contents, "colors.primary");
+        assert_exact_line(primary, "foreground = \"#010203\"");
+        assert_exact_line(primary, "background = \"#040506\"");
+        let cursor = toml_section(&alacritty.contents, "colors.cursor");
+        assert_exact_line(cursor, "text = \"#0A0B0C\"");
+        assert_exact_line(cursor, "cursor = \"#070809\"");
+        let normal = toml_section(&alacritty.contents, "colors.normal");
+        let bright = toml_section(&alacritty.contents, "colors.bright");
+        for (index, name) in NAMES.iter().enumerate() {
+            assert_exact_line(normal, &format!("{name} = \"{}\"", ansi[index]));
+            assert_exact_line(bright, &format!("{name} = \"{}\"", ansi[index + 8]));
+        }
     }
 
     #[test]

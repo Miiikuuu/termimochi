@@ -322,7 +322,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
-    const PALETTE: &str = include_str!("../../../themes/fog-paper-codex.palette");
+    const PALETTE: &str = include_str!("../fixtures/fog-paper-codex.palette");
 
     fn args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()

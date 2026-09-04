@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use termimochi_core::{PaletteError, PtyxisPalette, Variant, write_atomically};
 
 static NEXT_TRANSACTION: AtomicU64 = AtomicU64::new(0);
+const CURRENT_RECEIPT_VERSION: u8 = 2;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PtyxisInstaller {
@@ -30,8 +31,27 @@ pub(crate) struct InstallReceipt {
     version: u8,
     target: PathBuf,
     backup: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backup_fingerprint: Option<ContentFingerprint>,
     installed_length: u64,
     installed_hash: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct ContentFingerprint {
+    length: u64,
+    hash: u64,
+}
+
+impl ContentFingerprint {
+    fn for_contents(contents: &[u8]) -> Self {
+        let (length, hash) = fingerprint(contents);
+        Self { length, hash }
+    }
+
+    fn matches(self, contents: &[u8]) -> bool {
+        self == Self::for_contents(contents)
+    }
 }
 
 impl InstallReceipt {
@@ -347,11 +367,33 @@ impl PtyxisInstaller {
         };
         let receipt = serde_json::from_slice::<InstallReceipt>(&bytes)
             .map_err(|source| InstallError::InvalidReceipt { path, source })?;
-        if receipt.version != 1 {
+        if !matches!(receipt.version, 1 | CURRENT_RECEIPT_VERSION) {
             return Err(InstallError::UnsupportedReceipt(receipt.version));
         }
         self.validate_receipt_paths(&receipt)?;
+        self.validate_receipt_backup_metadata(&receipt)?;
         Ok(Some(receipt))
+    }
+
+    fn validate_receipt_backup_metadata(
+        &self,
+        receipt: &InstallReceipt,
+    ) -> Result<(), InstallError> {
+        match (
+            receipt.version,
+            receipt.backup.as_ref(),
+            receipt.backup_fingerprint,
+        ) {
+            // Version 1 did not fingerprint backups. A receipt for a newly
+            // created file remains safe because rollback verifies the installed
+            // target before removing it; an old backup must be restored by hand.
+            (1, None, None) => Ok(()),
+            (1, Some(backup), _) => Err(InstallError::UnverifiedLegacyBackup(backup.clone())),
+            (CURRENT_RECEIPT_VERSION, None, None) | (CURRENT_RECEIPT_VERSION, Some(_), Some(_)) => {
+                Ok(())
+            }
+            _ => Err(InstallError::InvalidBackupMetadata(self.receipt_path())),
+        }
     }
 
     fn validate_receipt_paths(&self, receipt: &InstallReceipt) -> Result<(), InstallError> {
@@ -409,7 +451,7 @@ impl PtyxisInstaller {
             Err(source) => return Err(InstallError::io("read existing palette", target, source)),
         };
 
-        let backup = if let Some(previous) = previous.as_deref() {
+        let (backup, backup_fingerprint) = if let Some(previous) = previous.as_deref() {
             let backup_dir = self.state_dir.join("ptyxis-backups");
             fs::create_dir_all(&backup_dir).map_err(|source| {
                 InstallError::io("create backup directory", &backup_dir, source)
@@ -417,16 +459,20 @@ impl PtyxisInstaller {
             let backup_path = backup_dir.join(unique_backup_name(file_name));
             write_atomically(&backup_path, previous)
                 .map_err(|source| InstallError::io("write palette backup", &backup_path, source))?;
-            Some(backup_path)
+            (
+                Some(backup_path),
+                Some(ContentFingerprint::for_contents(previous)),
+            )
         } else {
-            None
+            (None, None)
         };
 
         let (installed_length, installed_hash) = fingerprint(contents);
         let receipt = InstallReceipt {
-            version: 1,
+            version: CURRENT_RECEIPT_VERSION,
             target: target.clone(),
             backup,
+            backup_fingerprint,
             installed_length,
             installed_hash,
         };
@@ -451,15 +497,13 @@ impl PtyxisInstaller {
             return Err(InstallError::TargetModified(receipt.target));
         }
 
-        let outcome = if let Some(backup) = &receipt.backup {
-            let original = fs::read(backup)
-                .map_err(|source| InstallError::io("read palette backup", backup, source))?;
+        let outcome = if let Some((backup, original)) = self.verified_backup(&receipt)? {
             write_atomically(&receipt.target, &original).map_err(|source| {
                 InstallError::io("restore palette backup", &receipt.target, source)
             })?;
             RollbackOutcome::Restored {
                 target: receipt.target.clone(),
-                backup: backup.clone(),
+                backup: backup.to_owned(),
             }
         } else {
             fs::remove_file(&receipt.target).map_err(|source| {
@@ -486,9 +530,7 @@ impl PtyxisInstaller {
     }
 
     fn undo_uncommitted_install(&self, receipt: &InstallReceipt) -> Result<(), InstallError> {
-        if let Some(backup) = &receipt.backup {
-            let original = fs::read(backup)
-                .map_err(|source| InstallError::io("read palette backup", backup, source))?;
+        if let Some((_backup, original)) = self.verified_backup(receipt)? {
             write_atomically(&receipt.target, &original).map_err(|source| {
                 InstallError::io(
                     "restore palette after failed transaction",
@@ -505,6 +547,24 @@ impl PtyxisInstaller {
                 )
             })
         }
+    }
+
+    fn verified_backup<'a>(
+        &self,
+        receipt: &'a InstallReceipt,
+    ) -> Result<Option<(&'a Path, Vec<u8>)>, InstallError> {
+        let Some(backup) = receipt.backup.as_deref() else {
+            return Ok(None);
+        };
+        let expected = receipt
+            .backup_fingerprint
+            .ok_or_else(|| InstallError::UnverifiedLegacyBackup(backup.to_owned()))?;
+        let contents = fs::read(backup)
+            .map_err(|source| InstallError::io("read palette backup", backup, source))?;
+        if !expected.matches(&contents) {
+            return Err(InstallError::BackupModified(backup.to_owned()));
+        }
+        Ok(Some((backup, contents)))
     }
 }
 
@@ -558,6 +618,9 @@ pub(crate) enum InstallError {
     },
     NoRollback,
     TargetModified(PathBuf),
+    BackupModified(PathBuf),
+    UnverifiedLegacyBackup(PathBuf),
+    InvalidBackupMetadata(PathBuf),
     UnsupportedReceipt(u8),
     InvalidReceipt {
         path: PathBuf,
@@ -594,6 +657,21 @@ impl fmt::Display for InstallError {
             Self::TargetModified(path) => write!(
                 formatter,
                 "{} changed after installation; refusing to overwrite it",
+                path.display()
+            ),
+            Self::BackupModified(path) => write!(
+                formatter,
+                "backup {} no longer matches its rollback receipt; refusing to restore it",
+                path.display()
+            ),
+            Self::UnverifiedLegacyBackup(path) => write!(
+                formatter,
+                "backup {} predates integrity records; refusing automatic restore",
+                path.display()
+            ),
+            Self::InvalidBackupMetadata(path) => write!(
+                formatter,
+                "rollback receipt {} has inconsistent backup integrity metadata",
                 path.display()
             ),
             Self::UnsupportedReceipt(version) => {
@@ -754,12 +832,153 @@ Color15=#ffffff\n";
         };
         assert_eq!(fs::read(&target).unwrap(), b"replacement");
         assert_eq!(fs::read(receipt.backup().unwrap()).unwrap(), b"original");
+        assert_eq!(receipt.version, CURRENT_RECEIPT_VERSION);
+        assert_eq!(
+            receipt.backup_fingerprint,
+            Some(ContentFingerprint::for_contents(b"original"))
+        );
+        assert_eq!(installer.last_receipt().unwrap(), Some(receipt.clone()));
 
         assert!(matches!(
             installer.rollback().unwrap(),
             RollbackOutcome::Restored { .. }
         ));
         assert_eq!(fs::read(&target).unwrap(), b"original");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rollback_refuses_a_same_length_tampered_backup() {
+        let (root, installer) = fixture();
+        fs::create_dir_all(installer.palette_dir()).unwrap();
+        let target = installer.palette_dir().join("mochi.palette");
+        fs::write(&target, b"original").unwrap();
+        let InstallOutcome::Installed(receipt) =
+            installer.install("mochi.palette", b"replacement").unwrap()
+        else {
+            panic!("expected an installation");
+        };
+        let backup = receipt.backup().unwrap();
+        assert_eq!(b"original".len(), b"tampered".len());
+        fs::write(backup, b"tampered").unwrap();
+
+        assert!(matches!(
+            installer.rollback(),
+            Err(InstallError::BackupModified(path)) if path == backup
+        ));
+        assert_eq!(fs::read(&target).unwrap(), b"replacement");
+        assert!(installer.receipt_path().exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rollback_refuses_a_truncated_backup() {
+        let (root, installer) = fixture();
+        fs::create_dir_all(installer.palette_dir()).unwrap();
+        let target = installer.palette_dir().join("mochi.palette");
+        fs::write(&target, b"original").unwrap();
+        let InstallOutcome::Installed(receipt) =
+            installer.install("mochi.palette", b"replacement").unwrap()
+        else {
+            panic!("expected an installation");
+        };
+        let backup = receipt.backup().unwrap();
+        fs::write(backup, b"cut").unwrap();
+
+        assert!(matches!(
+            installer.rollback(),
+            Err(InstallError::BackupModified(path)) if path == backup
+        ));
+        assert_eq!(fs::read(&target).unwrap(), b"replacement");
+        assert!(installer.receipt_path().exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rollback_refuses_a_missing_backup() {
+        let (root, installer) = fixture();
+        fs::create_dir_all(installer.palette_dir()).unwrap();
+        let target = installer.palette_dir().join("mochi.palette");
+        fs::write(&target, b"original").unwrap();
+        let InstallOutcome::Installed(receipt) =
+            installer.install("mochi.palette", b"replacement").unwrap()
+        else {
+            panic!("expected an installation");
+        };
+        fs::remove_file(receipt.backup().unwrap()).unwrap();
+
+        match installer.rollback() {
+            Err(InstallError::Io {
+                operation, source, ..
+            }) => {
+                assert_eq!(operation, "read palette backup");
+                assert_eq!(source.kind(), io::ErrorKind::NotFound);
+            }
+            other => panic!("expected a missing-backup error, got {other:?}"),
+        }
+        assert_eq!(fs::read(&target).unwrap(), b"replacement");
+        assert!(installer.receipt_path().exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_receipts_only_rollback_when_no_backup_is_needed() {
+        let (root, installer) = fixture();
+        fs::create_dir_all(installer.palette_dir()).unwrap();
+        fs::create_dir_all(&installer.state_dir).unwrap();
+        let target = installer.palette_dir().join("new.palette");
+        fs::write(&target, b"installed").unwrap();
+        let (installed_length, installed_hash) = fingerprint(b"installed");
+        installer
+            .write_receipt(&InstallReceipt {
+                version: 1,
+                target: target.clone(),
+                backup: None,
+                backup_fingerprint: None,
+                installed_length,
+                installed_hash,
+            })
+            .unwrap();
+
+        assert_eq!(
+            installer.rollback().unwrap(),
+            RollbackOutcome::Removed {
+                target: target.clone()
+            }
+        );
+        assert!(!target.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_receipts_never_restore_an_unverified_backup() {
+        let (root, installer) = fixture();
+        fs::create_dir_all(installer.palette_dir()).unwrap();
+        let backup_dir = installer.state_dir.join("ptyxis-backups");
+        fs::create_dir_all(&backup_dir).unwrap();
+        let target = installer.palette_dir().join("mochi.palette");
+        let backup = backup_dir.join("legacy-mochi.palette.bak");
+        fs::write(&target, b"installed").unwrap();
+        fs::write(&backup, b"legacy original").unwrap();
+        let (installed_length, installed_hash) = fingerprint(b"installed");
+        installer
+            .write_receipt(&InstallReceipt {
+                version: 1,
+                target: target.clone(),
+                backup: Some(backup.clone()),
+                backup_fingerprint: None,
+                installed_length,
+                installed_hash,
+            })
+            .unwrap();
+
+        assert!(matches!(
+            installer.last_receipt(),
+            Err(InstallError::UnverifiedLegacyBackup(path)) if path == backup
+        ));
+        assert_eq!(fs::read(&target).unwrap(), b"installed");
+        assert_eq!(fs::read(&backup).unwrap(), b"legacy original");
+        assert!(installer.receipt_path().exists());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -824,6 +1043,7 @@ Color15=#ffffff\n";
             version: 1,
             target: outside.clone(),
             backup: None,
+            backup_fingerprint: None,
             installed_length,
             installed_hash,
         };
@@ -849,6 +1069,7 @@ Color15=#ffffff\n";
             version: 1,
             target,
             backup: Some(root.join("outside.palette.bak")),
+            backup_fingerprint: None,
             installed_length: 0,
             installed_hash: fingerprint(b"").1,
         };
@@ -861,6 +1082,37 @@ Color15=#ffffff\n";
                 ..
             })
         ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn current_receipts_require_backup_paths_and_fingerprints_to_agree() {
+        let (root, installer) = fixture();
+        fs::create_dir_all(&installer.state_dir).unwrap();
+        let target = installer.palette_dir.join("safe.palette");
+        let backup = installer
+            .state_dir
+            .join("ptyxis-backups")
+            .join("safe.palette.bak");
+        let expected = ContentFingerprint::for_contents(b"original");
+
+        for (backup, backup_fingerprint) in [(Some(backup), None), (None, Some(expected))] {
+            installer
+                .write_receipt(&InstallReceipt {
+                    version: CURRENT_RECEIPT_VERSION,
+                    target: target.clone(),
+                    backup,
+                    backup_fingerprint,
+                    installed_length: 0,
+                    installed_hash: fingerprint(b"").1,
+                })
+                .unwrap();
+            assert!(matches!(
+                installer.last_receipt(),
+                Err(InstallError::InvalidBackupMetadata(path))
+                    if path == installer.receipt_path()
+            ));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }

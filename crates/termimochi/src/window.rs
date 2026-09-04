@@ -15,12 +15,12 @@ use vte::prelude::*;
 
 use crate::{
     color_picker::{ColorPicker, ColorSwatch},
-    preview::{PREVIEW_COLUMNS, PREVIEW_HOME_AND_CLEAR, PREVIEW_ROWS, PreviewScenario},
+    preview::{PREVIEW_COLUMNS, PREVIEW_ROWS, PreviewScenario},
     ptyxis::{InstallOutcome, PtyxisInstaller, RollbackOutcome, import_current_palette},
     style::BASE_CSS,
 };
 
-const SAMPLE_PALETTE: &str = include_str!("../../../themes/fog-paper.palette");
+const SAMPLE_PALETTE: &str = include_str!("../resources/themes/fog-paper.palette");
 const EDIT_HISTORY_LIMIT: usize = 64;
 
 const BASIC_COLORS: [(&str, &str, &str); 4] = [
@@ -1517,8 +1517,9 @@ impl Workbench {
         self.terminal_title.set_text(scenario.terminal_title());
         // VTE's reset is queued; explicitly home the cursor and clear the
         // viewport in the same feed stream before drawing the next scenario.
-        self.preview_terminal.feed(PREVIEW_HOME_AND_CLEAR);
-        self.preview_terminal.feed(scenario.transcript().as_bytes());
+        for chunk in scenario.refresh_chunks() {
+            self.preview_terminal.feed(chunk);
+        }
 
         set_metric(
             &self.body_ratio,
@@ -2278,6 +2279,37 @@ mod tests {
         }
     }
 
+    fn snapshot(
+        palette: &PtyxisPalette,
+        active_variant: Variant,
+        selected_color_key: &str,
+    ) -> EditorSnapshot {
+        let mut palette = palette.clone();
+        palette.set_source(None);
+        EditorSnapshot {
+            palette,
+            active_variant,
+            selected_color_key: selected_color_key.to_owned(),
+        }
+    }
+
+    fn restore_model(model: &mut Model, snapshot: EditorSnapshot) -> String {
+        let EditorSnapshot {
+            mut palette,
+            active_variant,
+            selected_color_key,
+        } = snapshot;
+        palette.set_source(model.current_path.clone());
+        model.palette = palette;
+        model.active_variant = active_variant;
+        model.refresh_dirty();
+        selected_color_key
+    }
+
+    fn palette_color(palette: &PtyxisPalette, variant: Variant, key: &str) -> Rgb {
+        palette.variant(variant).unwrap().get(key).unwrap()
+    }
+
     #[test]
     fn palette_names_get_safe_file_names() {
         assert_eq!(
@@ -2365,6 +2397,35 @@ mod tests {
     }
 
     #[test]
+    fn invalid_color_draft_undo_restores_a_real_palette_snapshot() {
+        let palette = PtyxisPalette::from_text(SAMPLE_PALETTE).unwrap();
+        let before = snapshot(&palette, Variant::Light, "Foreground");
+        let original = palette_color(&palette, Variant::Light, "Foreground");
+        let changed = Rgb::new(9, 99, 199);
+        let mut live_palette = palette.clone();
+        live_palette
+            .variant_mut(Variant::Light)
+            .unwrap()
+            .set("Foreground", changed)
+            .unwrap();
+        let live = snapshot(&live_palette, Variant::Light, "Foreground");
+
+        let mut history = EditHistory::new(100);
+        history.begin(before.clone());
+        // This represents valid intermediate RGB input before the active Entry
+        // becomes an invalid draft such as 999. The invalid text never enters
+        // the palette, but the complete focused edit remains one transaction.
+        history.mark_changed();
+
+        let restored = history.undo_pending(live.clone()).unwrap();
+        assert_eq!(
+            palette_color(&restored.palette, Variant::Light, "Foreground"),
+            original
+        );
+        assert_eq!(history.redo(restored).unwrap(), live);
+    }
+
+    #[test]
     fn invalid_only_draft_does_not_undo_earlier_history() {
         let mut history = EditHistory::new(100);
         history.begin(10);
@@ -2437,6 +2498,56 @@ mod tests {
     }
 
     #[test]
+    fn editor_history_keeps_light_and_dark_values_isolated_and_restores_context() {
+        let palette = PtyxisPalette::from_text(SAMPLE_PALETTE).unwrap();
+        let original_light = palette_color(&palette, Variant::Light, "Foreground");
+        let original_dark = palette_color(&palette, Variant::Dark, "Foreground");
+        let changed_light = Rgb::new(12, 34, 56);
+        assert_ne!(changed_light, original_light);
+
+        let before = snapshot(&palette, Variant::Light, "Foreground");
+        let mut edited_palette = palette.clone();
+        edited_palette
+            .variant_mut(Variant::Light)
+            .unwrap()
+            .set("Foreground", changed_light)
+            .unwrap();
+        let after = snapshot(&edited_palette, Variant::Light, "Foreground");
+
+        let mut history = EditHistory::new(100);
+        history.begin(before.clone());
+        history.mark_changed();
+        assert!(history.commit(after));
+
+        // Merely viewing another variant is not an edit. Undo and redo return
+        // to the variant and swatch where the color transaction occurred.
+        let viewed_dark = snapshot(&edited_palette, Variant::Dark, "Color3");
+        let undone = history.undo(viewed_dark).unwrap();
+        assert_eq!(undone.active_variant, Variant::Light);
+        assert_eq!(undone.selected_color_key, "Foreground");
+        assert_eq!(
+            palette_color(&undone.palette, Variant::Light, "Foreground"),
+            original_light
+        );
+        assert_eq!(
+            palette_color(&undone.palette, Variant::Dark, "Foreground"),
+            original_dark
+        );
+
+        let redone = history.redo(undone).unwrap();
+        assert_eq!(redone.active_variant, Variant::Light);
+        assert_eq!(redone.selected_color_key, "Foreground");
+        assert_eq!(
+            palette_color(&redone.palette, Variant::Light, "Foreground"),
+            changed_light
+        );
+        assert_eq!(
+            palette_color(&redone.palette, Variant::Dark, "Foreground"),
+            original_dark
+        );
+    }
+
+    #[test]
     fn dirty_state_tracks_saved_document_contents() {
         let palette = PtyxisPalette::from_text(SAMPLE_PALETTE).unwrap();
         let mut model = Model::new(palette, Variant::Light, None, "test".to_owned());
@@ -2448,6 +2559,60 @@ mod tests {
 
         model.mark_saved();
         assert!(!model.dirty);
+    }
+
+    #[test]
+    fn undo_and_redo_track_the_exact_savepoint_without_changing_the_document_path() {
+        let palette = PtyxisPalette::from_text(SAMPLE_PALETTE).unwrap();
+        let path = PathBuf::from("/virtual/termimochi-test.palette");
+        let mut model = Model::new(
+            palette,
+            Variant::Light,
+            Some(path.clone()),
+            "test".to_owned(),
+        );
+        model.palette.set_source(Some(path.clone()));
+        let before = snapshot(&model.palette, Variant::Light, "Foreground");
+        let changed_color = Rgb::new(3, 45, 67);
+
+        let mut history = EditHistory::new(100);
+        history.begin(before.clone());
+        model
+            .palette
+            .variant_mut(Variant::Light)
+            .unwrap()
+            .set("Foreground", changed_color)
+            .unwrap();
+        history.mark_changed();
+        let edited = snapshot(&model.palette, Variant::Light, "Foreground");
+        assert!(history.commit(edited.clone()));
+        model.refresh_dirty();
+        assert!(model.dirty);
+
+        let selected = restore_model(&mut model, history.undo(edited).unwrap());
+        assert_eq!(selected, "Foreground");
+        assert!(!model.dirty, "undoing to the original savepoint is clean");
+        assert_eq!(model.current_path.as_deref(), Some(path.as_path()));
+        assert_eq!(model.palette.source(), Some(path.as_path()));
+
+        let clean = snapshot(&model.palette, model.active_variant, &selected);
+        let selected = restore_model(&mut model, history.redo(clean).unwrap());
+        assert!(model.dirty, "redoing away from the savepoint is dirty");
+        assert_eq!(
+            palette_color(&model.palette, Variant::Light, "Foreground"),
+            changed_color
+        );
+
+        model.mark_saved();
+        assert!(!model.dirty);
+        let saved = snapshot(&model.palette, model.active_variant, &selected);
+        restore_model(&mut model, history.undo(saved).unwrap());
+        assert!(
+            model.dirty,
+            "undoing after Save differs from the new savepoint"
+        );
+        assert_eq!(model.current_path.as_deref(), Some(path.as_path()));
+        assert_eq!(model.palette.source(), Some(path.as_path()));
     }
 
     #[test]

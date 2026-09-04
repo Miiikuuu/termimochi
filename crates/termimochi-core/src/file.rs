@@ -16,6 +16,16 @@ static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 /// deliberately refused instead of being replaced through its writable parent
 /// directory.
 pub fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
+    write_atomically_with_nonce(path, contents, || {
+        NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed)
+    })
+}
+
+fn write_atomically_with_nonce(
+    path: &Path,
+    contents: &[u8],
+    mut next_nonce: impl FnMut() -> u64,
+) -> io::Result<()> {
     let existing_permissions = match fs::metadata(path) {
         Ok(metadata) => {
             if metadata.permissions().readonly() {
@@ -35,21 +45,41 @@ pub fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
         .file_name()
         .map(|name| name.to_string_lossy())
         .unwrap_or_else(|| "palette".into());
-    let nonce = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
-    let temporary = parent.join(format!(
-        ".{file_name}.termimochi-{}-{nonce}.tmp",
-        std::process::id()
-    ));
+
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    if let Some(permissions) = &existing_permissions {
+        options.mode(permissions.mode() & 0o777);
+    }
+
+    let mut owned_temporary = None;
+    for _ in 0..128 {
+        let nonce = next_nonce();
+        let temporary = parent.join(format!(
+            ".{file_name}.termimochi-{}-{nonce}.tmp",
+            std::process::id()
+        ));
+        match options.open(&temporary) {
+            Ok(file) => {
+                owned_temporary = Some((file, temporary));
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let (mut file, temporary) = owned_temporary.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "cannot create a unique temporary file for {}",
+                path.display()
+            ),
+        )
+    })?;
 
     let result = (|| {
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        if let Some(permissions) = &existing_permissions {
-            options.mode(permissions.mode() & 0o777);
-        }
-
-        let mut file = options.open(&temporary)?;
         if let Some(permissions) = &existing_permissions {
             #[cfg(unix)]
             file.set_permissions(fs::Permissions::from_mode(permissions.mode() & 0o777))?;
@@ -152,6 +182,56 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&target).unwrap(), "new palette");
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_does_not_remove_a_colliding_unowned_temp_file() {
+        let directory = fixture("temp-collision");
+        let target = directory.join("theme.palette");
+        let colliding_nonce = 41;
+        let available_nonce = 42;
+        let colliding = directory.join(format!(
+            ".theme.palette.termimochi-{}-{colliding_nonce}.tmp",
+            std::process::id()
+        ));
+        fs::write(&colliding, "owned by another writer").unwrap();
+
+        let mut nonces = [colliding_nonce, available_nonce].into_iter();
+        write_atomically_with_nonce(&target, b"new palette", || {
+            nonces.next().expect("a free nonce is available")
+        })
+        .unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"new palette");
+        assert_eq!(
+            fs::read_to_string(&colliding).unwrap(),
+            "owned by another writer"
+        );
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_stops_after_repeated_temp_file_collisions() {
+        let directory = fixture("repeated-temp-collision");
+        let target = directory.join("theme.palette");
+        let colliding_nonce = 73;
+        let colliding = directory.join(format!(
+            ".theme.palette.termimochi-{}-{colliding_nonce}.tmp",
+            std::process::id()
+        ));
+        fs::write(&colliding, "owned by another writer").unwrap();
+
+        let error = write_atomically_with_nonce(&target, b"new palette", || colliding_nonce)
+            .expect_err("repeated collisions must eventually fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(!target.exists());
+        assert_eq!(
+            fs::read_to_string(&colliding).unwrap(),
+            "owned by another writer"
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 

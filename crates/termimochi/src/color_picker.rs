@@ -558,9 +558,7 @@ fn install_interaction(shared: &Rc<PickerShared>) {
     hue_scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak = Rc::downgrade(shared);
     hue_scroll.connect_scroll(move |controller, _, delta_y| {
-        if let Some(shared) = weak.upgrade()
-            && delta_y != 0.0
-        {
+        if let Some(shared) = weak.upgrade() {
             scroll_parent_vertically(&shared.hue, delta_y, controller.unit());
         }
         // Stop GtkScale for every axis, including a purely horizontal
@@ -678,15 +676,33 @@ fn scroll_parent_vertically(widget: &impl IsA<gtk::Widget>, delta: f64, unit: gd
         return;
     };
     let adjustment = parent.vadjustment();
-    let destination = scroll_destination(
+    let Some(destination) = routed_scroll_destination(
         adjustment.value(),
         adjustment.lower(),
         adjustment.upper(),
         adjustment.page_size(),
         delta,
         unit,
-    );
+    ) else {
+        return;
+    };
     adjustment.set_value(destination);
+}
+
+fn routed_scroll_destination(
+    value: f64,
+    lower: f64,
+    upper: f64,
+    page_size: f64,
+    delta: f64,
+    unit: gdk::ScrollUnit,
+) -> Option<f64> {
+    if delta == 0.0 || !delta.is_finite() {
+        return None;
+    }
+    Some(scroll_destination(
+        value, lower, upper, page_size, delta, unit,
+    ))
 }
 
 fn scroll_destination(
@@ -756,10 +772,24 @@ fn parse_channel_text(text: &str) -> Option<u8> {
 }
 
 fn draft_is_invalid(shared: &PickerShared) -> bool {
-    Rgb::from_str(shared.hex.text().as_str()).is_err()
-        || [&shared.red, &shared.green, &shared.blue]
-            .into_iter()
-            .any(|entry| parse_channel_text(entry.text().as_str()).is_none())
+    color_draft_is_invalid(
+        shared.hex.text().as_str(),
+        shared.red.text().as_str(),
+        shared.green.text().as_str(),
+        shared.blue.text().as_str(),
+    )
+}
+
+fn parse_channel_triplet(red: &str, green: &str, blue: &str) -> Option<Rgb> {
+    Some(Rgb::new(
+        parse_channel_text(red)?,
+        parse_channel_text(green)?,
+        parse_channel_text(blue)?,
+    ))
+}
+
+fn color_draft_is_invalid(hex: &str, red: &str, green: &str, blue: &str) -> bool {
+    Rgb::from_str(hex).is_err() || parse_channel_triplet(red, green, blue).is_none()
 }
 
 fn update_draft_state(shared: &PickerShared) {
@@ -1040,6 +1070,33 @@ mod tests {
     }
 
     #[test]
+    fn exact_color_drafts_require_valid_hex_and_all_rgb_channels() {
+        for (hex, red, green, blue, expected) in [
+            ("#000000", "0", "0", "0", Some(Rgb::new(0, 0, 0))),
+            ("78BFE8", "120", "191", "232", Some(Rgb::new(120, 191, 232))),
+            ("#0102FF ", "001", "02", "255", Some(Rgb::new(1, 2, 255))),
+        ] {
+            assert!(!color_draft_is_invalid(hex, red, green, blue));
+            assert_eq!(parse_channel_triplet(red, green, blue), expected);
+        }
+
+        for (hex, red, green, blue) in [
+            ("#12345", "1", "2", "3"),
+            ("#1234567", "1", "2", "3"),
+            ("#123456", "", "2", "3"),
+            ("#123456", "256", "2", "3"),
+            ("#123456", "1", "-1", "3"),
+            ("#123456", "1", "2.0", "3"),
+            ("#123456", "1", "2", "１２"),
+        ] {
+            assert!(
+                color_draft_is_invalid(hex, red, green, blue),
+                "accepted invalid draft ({hex:?}, {red:?}, {green:?}, {blue:?})"
+            );
+        }
+    }
+
+    #[test]
     fn wheel_scroll_uses_the_parent_viewport_size() {
         let destination =
             scroll_destination(100.0, 0.0, 1_000.0, 216.0, 1.0, gdk::ScrollUnit::Wheel);
@@ -1052,6 +1109,43 @@ mod tests {
         let destination =
             scroll_destination(100.0, 0.0, 1_000.0, 200.0, 1.25, gdk::ScrollUnit::Surface);
         assert!((destination - 103.125).abs() < 1e-9);
+    }
+
+    #[test]
+    fn continuous_hue_scroll_routes_to_the_parent_without_a_picker_update() {
+        let mut parent_position = 100.0;
+        for delta in [0.25, 0.5, -0.125, 1.0] {
+            parent_position = routed_scroll_destination(
+                parent_position,
+                0.0,
+                1_000.0,
+                200.0,
+                delta,
+                gdk::ScrollUnit::Surface,
+            )
+            .expect("a finite vertical delta is routed to the parent viewport");
+        }
+
+        assert!((parent_position - 104.0625).abs() < 1e-9);
+        // The routed operation returns only a parent-scroll destination; no
+        // hue or RGB value is part of this update path.
+    }
+
+    #[test]
+    fn hue_scroll_ignores_empty_and_non_finite_vertical_deltas() {
+        for delta in [0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                routed_scroll_destination(
+                    125.0,
+                    0.0,
+                    1_000.0,
+                    200.0,
+                    delta,
+                    gdk::ScrollUnit::Surface,
+                ),
+                None
+            );
+        }
     }
 
     #[test]

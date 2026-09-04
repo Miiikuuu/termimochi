@@ -47,6 +47,47 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgio-2.0-d
 cargo run -p termimochi
 ```
 
+## Install for the current user
+
+The installer builds both release binaries, installs the desktop metadata and
+all hicolor icons, and refreshes the desktop and icon caches. It does not need
+`sudo` with the default paths:
+
+```bash
+./scripts/install.sh install
+```
+
+Binaries default to `$HOME/.local/bin`. Desktop data follows `XDG_DATA_HOME`
+when it is set and otherwise uses `PREFIX/share`. Paths can contain spaces:
+
+```bash
+./scripts/install.sh install \
+  --prefix "$HOME/Applications/TermiMochi Local" \
+  --data-home "$HOME/Applications/TermiMochi Data"
+```
+
+Preview every filesystem change without building or writing anything:
+
+```bash
+./scripts/install.sh install --dry-run
+```
+
+If an installation using the former `io.github.termimochi.TermiMochi` ID is
+found, its exact desktop and icon files are moved to a timestamped backup under
+`XDG_STATE_HOME/termimochi/legacy-backups`. Uninstall TermiMochi with the same
+path options used during installation:
+
+```bash
+./scripts/install.sh uninstall
+```
+
+The uninstaller removes only TermiMochi's exact installed targets and keeps
+legacy backups. The isolated installation test uses temporary XDG directories:
+
+```bash
+./scripts/test-install.sh
+```
+
 Open a palette directly:
 
 ```bash
