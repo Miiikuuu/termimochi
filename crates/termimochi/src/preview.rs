@@ -7,11 +7,12 @@ pub(crate) enum PreviewScenario {
     Tests,
     Code,
     Htop,
-    Glyphs,
+    Typography,
+    CurrentFolder,
 }
 
 impl PreviewScenario {
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Shell,
         Self::Codex,
         Self::GitStatus,
@@ -19,7 +20,8 @@ impl PreviewScenario {
         Self::Tests,
         Self::Code,
         Self::Htop,
-        Self::Glyphs,
+        Self::Typography,
+        Self::CurrentFolder,
     ];
 
     pub(crate) fn from_index(index: u32) -> Self {
@@ -39,7 +41,8 @@ impl PreviewScenario {
             Self::Tests => "Tests",
             Self::Code => "Code",
             Self::Htop => "htop",
-            Self::Glyphs => "Glyphs",
+            Self::Typography => "Typography",
+            Self::CurrentFolder => "Current Folder",
         }
     }
 
@@ -52,7 +55,8 @@ impl PreviewScenario {
             Self::Tests => "test matrix",
             Self::Code => "syntax sampler",
             Self::Htop => "htop",
-            Self::Glyphs => "font coverage",
+            Self::Typography => "type specimen",
+            Self::CurrentFolder => "current folder",
         }
     }
 
@@ -67,7 +71,8 @@ impl PreviewScenario {
             Self::Tests => TESTS,
             Self::Code => CODE,
             Self::Htop => HTOP,
-            Self::Glyphs => GLYPHS,
+            Self::Typography => TYPOGRAPHY,
+            Self::CurrentFolder => "\x1b[?25lReading current folder…\r\n\x1b[0m",
         }
     }
 
@@ -81,7 +86,160 @@ impl PreviewScenario {
 
 pub(crate) const PREVIEW_COLUMNS: usize = 58;
 pub(crate) const PREVIEW_ROWS: usize = 11;
-pub(crate) const PREVIEW_HOME_AND_CLEAR: &[u8] = b"\x1b[H\x1b[2J";
+pub(crate) const PREVIEW_HOME_AND_CLEAR: &[u8] = b"\x1b[3J\x1b[H\x1b[2J";
+pub(crate) const PREVIEW_SHOW_CURSOR: &[u8] = b"\x1b[?25h";
+pub(crate) const PREVIEW_INPUT_PROMPT: &str = "\r\x1b[2K\x1b[36m›\x1b[0m ";
+const PREVIEW_INPUT_LIMIT: usize = 256;
+const PREVIEW_INPUT_HISTORY_LIMIT: usize = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PreviewInputEvent<'a> {
+    Text(&'a str),
+    Backspace,
+    Submit,
+    Reset,
+    FocusForward,
+    FocusBackward,
+    Ignore,
+}
+
+impl<'a> PreviewInputEvent<'a> {
+    pub(crate) fn from_commit(committed: &'a str) -> Self {
+        match committed {
+            "\x08" | "\x7f" => Self::Backspace,
+            "\r" | "\n" => Self::Submit,
+            "\x1b" => Self::Reset,
+            "\t" => Self::FocusForward,
+            "\x1b[Z" => Self::FocusBackward,
+            _ if committed.contains('\x1b') || committed.contains('\u{009b}') => Self::Ignore,
+            _ => Self::Text(committed),
+        }
+    }
+}
+
+/// Local, non-executing input for the VTE specimen. Keeping user text outside
+/// the palette model means preview interaction can never dirty the document or
+/// enter its Undo history.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) struct PreviewInput {
+    active: bool,
+    submitted: Vec<String>,
+    text: String,
+}
+
+impl PreviewInput {
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub(crate) fn submitted(&self) -> &[String] {
+        &self.submitted
+    }
+
+    /// Appends printable text committed by VTE's input method. Escape
+    /// introducers reject the complete commit so arrow/function-key sequences
+    /// cannot leave fragments such as `[D` in the scratch line. Other control
+    /// characters are ignored, making multi-line clipboard input harmless.
+    pub(crate) fn commit(&mut self, committed: &str) -> bool {
+        if committed.contains('\x1b') || committed.contains('\u{009b}') {
+            return false;
+        }
+
+        let remaining = PREVIEW_INPUT_LIMIT.saturating_sub(self.text.chars().count());
+        if remaining == 0 {
+            return false;
+        }
+
+        let accepted: String = committed
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(remaining)
+            .collect();
+        if accepted.is_empty() {
+            return false;
+        }
+
+        self.active = true;
+        self.text.push_str(&accepted);
+        true
+    }
+
+    pub(crate) fn backspace(&mut self) -> bool {
+        pop_last_visual_character(&mut self.text)
+    }
+
+    pub(crate) fn submit(&mut self) {
+        self.active = true;
+        if self.text.is_empty() {
+            return;
+        }
+        if self.submitted.len() == PREVIEW_INPUT_HISTORY_LIMIT {
+            self.submitted.remove(0);
+        }
+        self.submitted.push(std::mem::take(&mut self.text));
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.active = false;
+        self.submitted.clear();
+        self.text.clear();
+    }
+}
+
+fn pop_last_visual_character(text: &mut String) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+
+    while let Some(character) = text.pop() {
+        if is_grapheme_extension(character) {
+            continue;
+        }
+
+        // Regional indicators are rendered in pairs as one flag.
+        if is_regional_indicator(character)
+            && text
+                .chars()
+                .rev()
+                .take_while(|character| is_regional_indicator(*character))
+                .count()
+                % 2
+                == 1
+        {
+            text.pop();
+        }
+
+        // Consume the preceding member of a joined Emoji sequence, including
+        // any variation selector or skin-tone modifier attached to it.
+        if text.ends_with('\u{200d}') {
+            text.pop();
+            continue;
+        }
+        break;
+    }
+    true
+}
+
+fn is_grapheme_extension(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x0300..=0x036f
+            | 0x1ab0..=0x1aff
+            | 0x1dc0..=0x1dff
+            | 0x20d0..=0x20ff
+            | 0xfe00..=0xfe0f
+            | 0x1f3fb..=0x1f3ff
+            | 0xe0020..=0xe007f
+    )
+}
+
+fn is_regional_indicator(character: char) -> bool {
+    matches!(character as u32, 0x1f1e6..=0x1f1ff)
+}
 
 const SHELL: &str = concat!(
     "\x1b[?25l",
@@ -179,17 +337,19 @@ const CODE: &str = concat!(
     "\x1b[90m# Rust · Python · TypeScript · shell · JSON · SQL\x1b[0m"
 );
 
-const GLYPHS: &str = concat!(
+const TYPOGRAPHY: &str = concat!(
     "\x1b[?25l",
-    "\x1b[1mCJK / Emoji / Kaomoji Glyph Coverage\x1b[0m\r\n\r\n",
-    "Simplified   终端麻薯，让配色清晰可读。\r\n",
-    "Traditional  雲霧紙白，終端配色工作臺。\r\n",
-    "Japanese     ターミナルの配色を確認します。\r\n",
-    "Korean       터미널 색상과 글꼴을 확인합니다.\r\n\r\n",
-    "Emoji     🌸 🍡 🐱 🚀 ✅ ⚠️  💻 🎨\r\n",
-    "Kaomoji   (｡•̀ᴗ-)✧  ʕ•ᴥ•ʔ  (づ｡◕‿‿◕｡)づ\r\n",
-    "Box       ╭──────╮  ├──────┤  ╰──────╯\r\n",
-    "Blocks    ▁▂▃▄▅▆▇█  ░▒▓█  ←↑↓→  ◆◇○●\x1b[0m"
+    "\x1b[1mTypography · alignment and fallback\x1b[0m\r\n",
+    "\x1b[90m            │123456789012345678│\x1b[0m\r\n",
+    "────────────┼──────────────────┼────────\r\n",
+    "English     │TermiMochi 123    │Latin\r\n",
+    "简体中文    │终端麻薯          │CJK\r\n",
+    "日本語      │かな カナ 漢字    │CJK\r\n",
+    "Emoji       │🌸 🍡 🐱          │fallback\r\n",
+    "Kaomoji     │(｡•̀ᴗ-)✧           │width\r\n",
+    "Nerd Font   │             │5 probes\r\n",
+    "Box / block │╭─╮ ├─┤ ╰─╯ ░▒▓█  │drawing\r\n",
+    "\x1b[90mBoundaries should stay vertically aligned.\x1b[0m"
 );
 
 #[cfg(test)]
@@ -197,6 +357,7 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+    use crate::typography::NERD_FONT_PROBES;
 
     fn visible_text(transcript: &str) -> String {
         let bytes = transcript.as_bytes();
@@ -289,6 +450,26 @@ mod tests {
         let _ = visible_text(transcript);
     }
 
+    fn specimen_cell_width(text: &str) -> usize {
+        text.chars()
+            .map(|character| match character as u32 {
+                0x0300..=0x036f | 0x200d | 0xfe00..=0xfe0f => 0,
+                0x1100..=0x115f
+                | 0x2329..=0x232a
+                | 0x2e80..=0xa4cf
+                | 0xac00..=0xd7a3
+                | 0xf900..=0xfaff
+                | 0xfe10..=0xfe19
+                | 0xfe30..=0xfe6f
+                | 0xff01..=0xff60
+                | 0xffe0..=0xffe6
+                | 0x1f300..=0x1faff
+                | 0x20000..=0x3fffd => 2,
+                _ => 1,
+            })
+            .sum()
+    }
+
     #[test]
     fn every_scenario_has_a_label_title_and_deterministic_transcript() {
         let mut labels = HashSet::new();
@@ -328,7 +509,8 @@ mod tests {
 
     #[test]
     fn dense_scenarios_fill_the_grid_without_wrapping() {
-        assert_eq!(PREVIEW_HOME_AND_CLEAR, b"\x1b[H\x1b[2J");
+        assert_eq!(PREVIEW_HOME_AND_CLEAR, b"\x1b[3J\x1b[H\x1b[2J");
+        assert_eq!(PREVIEW_SHOW_CURSOR, b"\x1b[?25h");
         for scenario in [
             PreviewScenario::Codex,
             PreviewScenario::GitDiff,
@@ -356,7 +538,8 @@ mod tests {
                 "Tests",
                 "Code",
                 "htop",
-                "Glyphs",
+                "Typography",
+                "Current Folder",
             ]
         );
         assert_eq!(
@@ -369,7 +552,8 @@ mod tests {
                 "test matrix",
                 "syntax sampler",
                 "htop",
-                "font coverage",
+                "type specimen",
+                "current folder",
             ]
         );
     }
@@ -611,5 +795,151 @@ mod tests {
         for style in [1, 2, 3, 4, 7] {
             assert!(transcript.contains(&format!("\x1b[{style}m")));
         }
+    }
+
+    #[test]
+    fn typography_specimen_covers_scripts_icons_and_aligned_cells() {
+        let scenario = PreviewScenario::Typography;
+        assert_eq!(scenario.label(), "Typography");
+        assert_eq!(scenario.terminal_title(), "type specimen");
+
+        let visible = visible_text(scenario.transcript());
+        for anchor in [
+            "English",
+            "简体中文",
+            "日本語",
+            "Emoji",
+            "Kaomoji",
+            "Nerd Font",
+            "Box / block",
+        ] {
+            assert!(visible.contains(anchor), "missing type sample: {anchor}");
+        }
+        for glyph in ['🌸', '🍡', '🐱', '｡', 'ᴗ'] {
+            assert!(visible.contains(glyph), "missing specimen glyph: {glyph}");
+        }
+        for glyph in NERD_FONT_PROBES {
+            assert!(
+                visible.contains(glyph),
+                "Nerd Font probe is missing from the specimen: {glyph}"
+            );
+        }
+
+        let rows: Vec<_> = visible.split("\r\n").collect();
+        assert_eq!(rows.len(), PREVIEW_ROWS);
+        for row in &rows[3..10] {
+            let columns: Vec<_> = row.split('│').collect();
+            assert_eq!(columns.len(), 3, "specimen row lost its guides: {row:?}");
+            assert_eq!(specimen_cell_width(columns[0]), 12, "left guide drifted");
+            assert_eq!(specimen_cell_width(columns[1]), 18, "right guide drifted");
+        }
+    }
+
+    #[test]
+    fn preview_input_accepts_printable_unicode_and_filters_controls() {
+        let mut input = PreviewInput::default();
+        assert!(!input.is_active());
+        assert!(input.commit("hello 终端 🌸"));
+        assert!(input.commit("\nnext\tline\u{7f}"));
+        assert!(input.is_active());
+        assert_eq!(input.text(), "hello 终端 🌸nextline");
+    }
+
+    #[test]
+    fn vte_commits_map_to_local_controls_without_interpreting_ansi() {
+        assert_eq!(
+            PreviewInputEvent::from_commit("hello 终端"),
+            PreviewInputEvent::Text("hello 终端")
+        );
+        assert_eq!(
+            PreviewInputEvent::from_commit("\x7f"),
+            PreviewInputEvent::Backspace
+        );
+        assert_eq!(
+            PreviewInputEvent::from_commit("\r"),
+            PreviewInputEvent::Submit
+        );
+        assert_eq!(
+            PreviewInputEvent::from_commit("\x1b"),
+            PreviewInputEvent::Reset
+        );
+        assert_eq!(
+            PreviewInputEvent::from_commit("\t"),
+            PreviewInputEvent::FocusForward
+        );
+        assert_eq!(
+            PreviewInputEvent::from_commit("\x1b[Z"),
+            PreviewInputEvent::FocusBackward
+        );
+        assert_eq!(
+            PreviewInputEvent::from_commit("\x1b[D"),
+            PreviewInputEvent::Ignore
+        );
+        assert_eq!(
+            PreviewInputEvent::from_commit("\u{009b}31m"),
+            PreviewInputEvent::Ignore
+        );
+    }
+
+    #[test]
+    fn preview_input_rejects_escape_sequences_without_visible_fragments() {
+        let mut input = PreviewInput::default();
+        assert!(input.commit("safe"));
+        assert!(!input.commit("\x1b[D"));
+        assert!(!input.commit("\u{009b}31munsafe"));
+        assert_eq!(input.text(), "safe");
+    }
+
+    #[test]
+    fn preview_input_is_bounded_and_resettable() {
+        let mut input = PreviewInput::default();
+        assert!(input.commit(&"a".repeat(PREVIEW_INPUT_LIMIT + 32)));
+        assert_eq!(input.text().chars().count(), PREVIEW_INPUT_LIMIT);
+        assert!(!input.commit("more"));
+
+        input.submit();
+        assert!(input.is_active());
+        assert!(input.text().is_empty());
+        assert_eq!(input.submitted().len(), 1);
+        input.reset();
+        assert!(!input.is_active());
+        assert!(input.text().is_empty());
+        assert!(input.submitted().is_empty());
+    }
+
+    #[test]
+    fn preview_input_keeps_only_recent_local_history() {
+        let mut input = PreviewInput::default();
+        for command in ["one", "two", "three", "four", "five"] {
+            assert!(input.commit(command));
+            input.submit();
+        }
+        assert_eq!(input.submitted(), ["two", "three", "four", "five"]);
+        assert!(input.text().is_empty());
+    }
+
+    #[test]
+    fn preview_backspace_removes_complete_visible_unicode_units() {
+        let mut input = PreviewInput::default();
+        assert!(!input.backspace());
+
+        assert!(input.commit("A简e\u{301}👍🏽👩\u{200d}💻🇨🇳"));
+        assert!(input.backspace());
+        assert_eq!(input.text(), "A简e\u{301}👍🏽👩\u{200d}💻");
+        assert!(input.backspace());
+        assert_eq!(input.text(), "A简e\u{301}👍🏽");
+        assert!(input.backspace());
+        assert_eq!(input.text(), "A简e\u{301}");
+        assert!(input.backspace());
+        assert_eq!(input.text(), "A简");
+        assert!(input.backspace());
+        assert_eq!(input.text(), "A");
+    }
+
+    #[test]
+    fn interactive_prompt_uses_the_editable_ansi_cyan_and_clears_its_line() {
+        assert!(PREVIEW_INPUT_PROMPT.starts_with("\r\x1b[2K"));
+        assert!(PREVIEW_INPUT_PROMPT.contains("\x1b[36m"));
+        assert!(PREVIEW_INPUT_PROMPT.ends_with("\x1b[0m "));
     }
 }

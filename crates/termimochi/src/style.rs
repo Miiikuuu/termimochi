@@ -27,6 +27,10 @@ pub const BASE_CSS: &str = r#"
   box-shadow: none;
 }
 
+.header-actions {
+  margin-right: 2px;
+}
+
 .workbench-header button.tool-button,
 .workbench-header menubutton.tool-menu > button {
   min-height: 28px;
@@ -40,11 +44,11 @@ pub const BASE_CSS: &str = r#"
 }
 
 .workbench-header button.open-button {
-  min-width: 0;
-  min-height: 30px;
-  padding: 3px 9px;
+  min-width: 30px;
+  min-height: 28px;
+  padding: 3px 6px;
   border-radius: 5px;
-  font-weight: 650;
+  color: #515b5e;
 }
 
 .workbench-header button.tool-button:hover,
@@ -70,98 +74,33 @@ pub const BASE_CSS: &str = r#"
   padding: 3px 6px;
 }
 
-.workbench-header splitbutton.save-split {
-  min-height: 30px;
-  color: #30383e;
-  background: #f1f3f5;
-  border: 1px solid alpha(#1e2529, 0.07);
-  border-radius: 7px;
-  box-shadow: 0 1px 2px alpha(#141a20, 0.10);
-}
-
-.workbench-header splitbutton.save-split > button,
-.workbench-header splitbutton.save-split > menubutton > button {
-  min-height: 28px;
-  color: inherit;
-  background: transparent;
-  border: none;
-  box-shadow: none;
-}
-
-.workbench-header splitbutton.save-split > button {
-  padding: 3px 10px;
-  border-radius: 6px 0 0 6px;
-  font-weight: 700;
-}
-
-.workbench-header splitbutton.save-split > menubutton > button {
-  min-width: 28px;
+.workbench-header menubutton.save-menu > button {
+  min-width: 30px;
   padding: 3px 6px;
-  border-radius: 0 6px 6px 0;
+  border-radius: 5px;
+  color: #515b5e;
 }
 
-.workbench-header splitbutton.save-split > separator {
-  min-width: 1px;
-  margin: 6px 0;
-  background: alpha(currentColor, 0.15);
+.workbench-header menubutton.save-menu > button:checked {
+  color: #1e2529;
+  background: #e9edef;
 }
 
-.workbench-header splitbutton.save-split > button:not(:disabled):hover,
-.workbench-header splitbutton.save-split > menubutton > button:not(:disabled):hover {
-  background: alpha(#1e2529, 0.07);
+.workbench-header menubutton.save-menu.save-ready > button {
+  color: #345c72;
 }
 
-.workbench-header splitbutton.save-split > button:not(:disabled):active,
-.workbench-header splitbutton.save-split > menubutton > button:not(:disabled):active {
-  background: alpha(#1e2529, 0.13);
+.workbench-header menubutton.save-menu.save-ready > button:hover {
+  background: alpha(#42657a, 0.10);
 }
 
-.workbench-header splitbutton.save-split > button:disabled {
-  color: #8f9694;
-  background: transparent;
-  opacity: 1;
+.workbench-header menubutton.save-menu.save-ready > button:active {
+  background: alpha(#42657a, 0.17);
 }
 
-.workbench-header splitbutton.save-split.save-ready {
-  color: white;
-  background: #42657a;
-  border-color: alpha(#264654, 0.24);
-  box-shadow: 0 1px 2px alpha(#141a20, 0.14);
-}
-
-.workbench-header splitbutton.save-split.save-ready > separator {
-  background: alpha(white, 0.22);
-}
-
-.workbench-header splitbutton.save-split.save-ready > button:hover,
-.workbench-header splitbutton.save-split.save-ready > menubutton > button:hover {
-  background: alpha(white, 0.10);
-}
-
-.workbench-header splitbutton.save-split.save-ready > button:active,
-.workbench-header splitbutton.save-split.save-ready > menubutton > button:active {
-  background: alpha(#142630, 0.16);
-}
-
-.workbench-header splitbutton.save-split:disabled {
-  color: #969c9b;
-  background: #f5f6f7;
-  border-color: transparent;
-  box-shadow: none;
-}
-
-.workbench-header splitbutton.save-split > button:focus-visible,
-.workbench-header splitbutton.save-split > menubutton > button:focus-visible {
-  outline: none;
-}
-
-.workbench-header splitbutton.save-split:focus-within {
-  outline: 2px solid #42657a;
-  outline-offset: 2px;
-}
-
-.workbench-header splitbutton.save-split.save-ready:focus-within {
-  outline-color: #274c61;
+.workbench-header menubutton.save-menu.save-ready > button:checked {
+  color: #345c72;
+  background: #e8f0f4;
 }
 
 popover.save-popover > contents {
@@ -236,9 +175,67 @@ popover.save-popover modelbutton:hover {
   box-shadow: none;
 }
 
+.editor-workspace,
+.editor-module-stack,
 .editor-scroll,
-.termimochi-editor {
+.typography-scroll,
+.layout-scroll,
+.prompt-scroll,
+.termimochi-editor,
+.termimochi-typography-pane,
+.termimochi-layout-pane,
+.termimochi-prompt-pane {
   background: #f5f6f7;
+}
+
+.activity-rail {
+  min-width: 48px;
+  padding: 12px 0;
+  background: #eef1f3;
+}
+
+.activity-item {
+  min-width: 48px;
+  min-height: 36px;
+}
+
+button.activity-button {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  color: #697174;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  box-shadow: none;
+}
+
+button.activity-button:hover {
+  color: #414b50;
+  background: alpha(#1e2529, 0.06);
+}
+
+button.activity-button:checked {
+  color: #1e2529;
+  background: transparent;
+  box-shadow: none;
+}
+
+button.activity-button:checked:hover {
+  background: alpha(#1e2529, 0.06);
+}
+
+button.activity-button:focus-visible {
+  outline: 2px solid #42657a;
+  outline-offset: -2px;
+}
+
+.activity-indicator {
+  min-width: 2px;
+  min-height: 20px;
+  margin-left: 2px;
+  border-radius: 999px;
+  background: #42657a;
 }
 
 .preview-scroll,
@@ -254,6 +251,27 @@ popover.save-popover modelbutton:hover {
 
 .preview-title-row {
   min-height: 28px;
+}
+
+.preview-source-button > button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 2px;
+  color: #56616a;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 999px;
+}
+
+.preview-source-button > button:hover {
+  color: #20272d;
+  background: #f0f2f3;
+}
+
+.preview-source-detail {
+  font-size: 0.88rem;
+  color: #59636a;
 }
 
 .section-heading {
@@ -309,12 +327,19 @@ button.palette-swatch {
 
 button.palette-swatch:hover {
   border-color: transparent;
-  background: #eef1f3;
+  background: transparent;
 }
 
-button.palette-swatch:focus {
+button.palette-swatch:focus-visible {
   outline: 2px solid #42657a;
   outline-offset: 1px;
+}
+
+button.palette-swatch:checked,
+button.palette-swatch:active {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 button.basic-swatch-button {
@@ -328,10 +353,16 @@ button.ansi-swatch-button {
   border-radius: 3px;
 }
 
-button.selected-swatch {
-  border-color: white;
-  box-shadow: 0 0 0 2px #42657a,
-              inset 0 0 0 1px alpha(#1e2529, 0.18);
+.swatch-pin {
+  opacity: 0;
+}
+
+button.palette-swatch:hover .swatch-pin {
+  opacity: 0.28;
+}
+
+button.palette-swatch:checked .swatch-pin {
+  opacity: 0.92;
 }
 
 .professional-picker entry,
@@ -419,6 +450,59 @@ scale.picker-hue-scale slider {
               0 14px 34px alpha(#0f1720, 0.12);
 }
 
+.terminal-shell.preview-active {
+  box-shadow: 0 3px 8px alpha(#0f1720, 0.18),
+              0 18px 42px alpha(#0f1720, 0.15),
+              0 0 18px alpha(#42657a, 0.16);
+}
+
+.vte-preview {
+  padding: 0;
+}
+
+.preview-inspected {
+  box-shadow: 0 0 0 2px alpha(#526b73, 0.32);
+  transition: box-shadow 180ms ease-out;
+}
+
+.preview-inspect-toggle {
+  font-family: sans-serif;
+  min-height: 26px;
+  padding: 2px 11px;
+  border: none;
+  border-radius: 999px;
+  box-shadow: none;
+  background: #edf0f1;
+  color: #556166;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.preview-inspect-toggle:hover {
+  background: #e2e7e9;
+}
+
+.preview-inspect-toggle:checked {
+  background: #20292d;
+  color: white;
+}
+
+.preview-inspect-hint {
+  font-family: sans-serif;
+  padding: 6px 10px;
+  border-radius: 7px;
+  background: #20292d;
+  color: #ffffff;
+  font-size: 0.8rem;
+  font-weight: 500;
+  box-shadow: 0 3px 9px alpha(black, 0.16);
+}
+
+.vte-preview:focus-visible {
+  outline: 2px solid #42657a;
+  outline-offset: -2px;
+}
+
 .terminal-header {
   min-height: 28px;
 }
@@ -428,6 +512,10 @@ scale.picker-hue-scale slider {
   font-size: 0.86rem;
   font-weight: 700;
   opacity: 0.86;
+}
+
+.terminal-tab {
+  min-height: 24px;
 }
 
 dropdown.preview-scenario button {
@@ -455,8 +543,478 @@ dropdown.preview-scenario button:focus-visible {
   font-weight: 600;
 }
 
-.vte-preview {
-  padding: 5px 1px 2px;
+.terminal-viewport {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.typography-header {
+  min-height: 34px;
+  margin-bottom: 2px;
+}
+
+.typography-title {
+  padding: 3px 0 2px;
+}
+
+.layout-title {
+  min-height: 34px;
+  padding: 3px 0 2px;
+}
+
+.prompt-header {
+  min-height: 34px;
+}
+
+.prompt-title {
+  padding: 3px 0 2px;
+}
+
+button.prompt-export {
+  min-height: 28px;
+  padding: 2px 10px;
+  border: none;
+  border-radius: 999px;
+  color: #ffffff;
+  background: #1e2529;
+  box-shadow: 0 1px 2px alpha(#141a20, 0.14);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+button.prompt-export:hover {
+  background: #30383e;
+}
+
+button.prompt-export:active {
+  background: #141a20;
+}
+
+button.prompt-export:focus-visible {
+  outline: 2px solid #42657a;
+  outline-offset: 2px;
+}
+
+.prompt-starter-row {
+  min-height: 38px;
+  padding: 2px 6px 2px 10px;
+  border: none;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.prompt-starter-title {
+  color: #30383e;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+menubutton.prompt-starter-button > button {
+  min-height: 28px;
+  min-width: 104px;
+  padding: 1px 8px;
+  border: none;
+  border-radius: 6px;
+  color: #30383e;
+  background: #eef1f3;
+  box-shadow: none;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+menubutton.prompt-starter-button > button:hover,
+menubutton.prompt-starter-button > button:checked {
+  background: #e4e8ea;
+}
+
+menubutton.prompt-starter-button > button:focus-visible,
+menubutton.prompt-add-button > button:focus-visible,
+menubutton.prompt-module-more > button:focus-visible,
+button.prompt-module-select:focus-visible,
+button.prompt-menu-item:focus-visible,
+button.prompt-catalog-item:focus-visible {
+  outline: 2px solid #42657a;
+  outline-offset: 1px;
+}
+
+popover.prompt-menu-popover > contents,
+popover.prompt-catalog-popover > contents {
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 8px 28px alpha(#141a20, 0.18);
+}
+
+button.prompt-menu-item,
+button.prompt-catalog-item {
+  min-height: 32px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 6px;
+  color: #30383e;
+  background: transparent;
+  box-shadow: none;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+button.prompt-menu-item:hover,
+button.prompt-catalog-item:hover {
+  background: #eef1f3;
+}
+
+button.prompt-menu-item.destructive-action {
+  color: #94343d;
+}
+
+.prompt-catalog-category {
+  margin-left: 7px;
+  color: #737b7e;
+  font-size: 0.7rem;
+  font-weight: 750;
+}
+
+.prompt-catalog-sample {
+  min-width: 82px;
+  color: #697174;
+  font-family: monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-feature-settings: "tnum";
+}
+
+.prompt-module-count {
+  min-width: 20px;
+  min-height: 20px;
+  border-radius: 999px;
+  color: #697174;
+  background: #e8ebed;
+  font-size: 0.72rem;
+  font-weight: 750;
+  font-feature-settings: "tnum";
+}
+
+menubutton.prompt-add-button > button {
+  min-height: 28px;
+  padding: 1px 8px;
+  border: none;
+  border-radius: 999px;
+  color: #ffffff;
+  background: #1e2529;
+  box-shadow: none;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+menubutton.prompt-add-button > button:hover,
+menubutton.prompt-add-button > button:checked {
+  background: #30383e;
+}
+
+menubutton.prompt-add-button > button:disabled {
+  color: #9aa0a2;
+  background: #e8ebed;
+}
+
+.prompt-module-list {
+  padding: 3px 4px;
+  border: none;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.prompt-module-row {
+  min-height: 42px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.prompt-module-row:hover {
+  background: #f4f6f7;
+}
+
+.prompt-module-row.selected {
+  background: #e9eef1;
+}
+
+button.prompt-module-select {
+  min-height: 42px;
+  padding: 1px 4px 1px 7px;
+  border: none;
+  border-radius: 6px;
+  color: #30383e;
+  background: transparent;
+  box-shadow: none;
+}
+
+button.prompt-module-select:hover,
+button.prompt-module-select:active,
+button.prompt-module-select:checked {
+  background: transparent;
+  box-shadow: none;
+}
+
+menubutton.prompt-module-more > button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  margin-right: 3px;
+  border: none;
+  border-radius: 999px;
+  color: #697174;
+  background: transparent;
+  box-shadow: none;
+}
+
+menubutton.prompt-module-more > button:hover,
+menubutton.prompt-module-more > button:checked {
+  color: #30383e;
+  background: alpha(#1e2529, 0.07);
+}
+
+.prompt-module-sample {
+  color: #697174;
+  font-family: monospace;
+  font-size: 0.74rem;
+  font-weight: 650;
+  font-feature-settings: "tnum";
+}
+
+.prompt-empty-state {
+  min-height: 104px;
+  border: none;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.prompt-empty-mark {
+  color: #697174;
+  font-family: monospace;
+  font-size: 1.05rem;
+  font-weight: 750;
+}
+
+.prompt-empty-label {
+  color: #515b5e;
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.prompt-properties {
+  padding: 3px 5px;
+}
+
+.prompt-property-row {
+  min-height: 38px;
+}
+
+dropdown.prompt-property-control > button {
+  min-height: 30px;
+  padding: 1px 7px;
+  border: none;
+  border-radius: 6px;
+  color: #30383e;
+  background: #eef1f3;
+  box-shadow: none;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+dropdown.prompt-property-control > button:hover {
+  background: #e4e8ea;
+}
+
+dropdown.prompt-property-control > button:focus-visible {
+  outline: 2px solid #42657a;
+  outline-offset: 1px;
+}
+
+.prompt-token-cyan {
+  color: #276c78;
+}
+
+.prompt-token-blue {
+  color: #315f89;
+}
+
+.prompt-token-magenta {
+  color: #744383;
+}
+
+.prompt-token-yellow {
+  color: #76560a;
+}
+
+.prompt-token-green {
+  color: #2b6b4f;
+}
+
+.prompt-token-red {
+  color: #9b3943;
+}
+
+.layout-group {
+  min-width: 0;
+}
+
+.layout-group-title {
+  margin-left: 2px;
+  color: #515b5e;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.layout-card {
+  padding: 3px 5px;
+  border: none;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.layout-row {
+  min-height: 36px;
+  padding: 1px 5px;
+}
+
+.layout-row-label {
+  color: #30383e;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.typography-fields {
+  margin-top: 2px;
+}
+
+.typography-field {
+  min-width: 0;
+}
+
+.typography-field-label {
+  margin-left: 2px;
+  color: #697174;
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+
+.nerd-status-label {
+  color: #515b5e;
+  font-size: 0.76rem;
+  font-weight: 650;
+  font-feature-settings: "tnum";
+}
+
+dropdown.typography-control > button,
+spinbutton.typography-control {
+  min-height: 32px;
+  padding: 0;
+  color: #30383e;
+  background: #ffffff;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  box-shadow: none;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+dropdown.typography-control > button {
+  padding: 1px 7px;
+}
+
+dropdown.layout-control > button,
+spinbutton.layout-control {
+  min-height: 30px;
+  border-radius: 5px;
+  background: #f5f6f7;
+  font-feature-settings: "tnum";
+}
+
+dropdown.layout-control > button:hover,
+spinbutton.layout-control:hover {
+  background: #eceff1;
+}
+
+switch.layout-switch {
+  color: #ffffff;
+  border: none;
+  border-radius: 999px;
+  background: #dfe3e5;
+  box-shadow: none;
+}
+
+switch.layout-switch:hover {
+  background: #d5dade;
+}
+
+switch.layout-switch slider {
+  background: #ffffff;
+  box-shadow: 0 1px 3px alpha(#141a20, 0.18);
+}
+
+switch.layout-switch:checked {
+  background: #1e2529;
+}
+
+switch.layout-switch:checked:hover {
+  background: #30383e;
+}
+
+switch.layout-switch:focus-visible {
+  outline: 2px solid #42657a;
+  outline-offset: 1px;
+}
+
+.font-family-selection,
+.font-family-option {
+  font-size: 0.86rem;
+  font-weight: 400;
+}
+
+.font-family-selection {
+  padding: 0 1px;
+}
+
+.font-family-option {
+  min-height: 28px;
+  padding: 4px 8px;
+}
+
+dropdown.typography-control > button:hover,
+spinbutton.typography-control:hover {
+  background: #eef1f3;
+}
+
+dropdown.typography-control > button:focus-visible,
+spinbutton.typography-control:focus-within {
+  outline: 2px solid #42657a;
+  outline-offset: 1px;
+}
+
+spinbutton.typography-control text {
+  min-width: 34px;
+  padding: 2px 4px 2px 7px;
+  color: inherit;
+  background: transparent;
+}
+
+spinbutton.typography-control button {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  color: #515b5e;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+spinbutton.typography-control button:hover {
+  color: #1e2529;
+  background: alpha(#1e2529, 0.08);
 }
 
 .quality-section {

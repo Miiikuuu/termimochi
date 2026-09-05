@@ -50,6 +50,10 @@ struct Hsv {
 }
 
 impl ColorPicker {
+    pub(crate) fn inspection_field(&self) -> gtk::Entry {
+        self.shared.hex.clone()
+    }
+
     pub(crate) fn new(initial: Rgb) -> Self {
         let square = gtk::DrawingArea::builder()
             .content_width(280)
@@ -226,8 +230,9 @@ impl ColorPicker {
 
 #[derive(Clone)]
 pub(crate) struct ColorSwatch {
-    button: gtk::Button,
+    button: gtk::ToggleButton,
     area: gtk::DrawingArea,
+    pin: gtk::DrawingArea,
     color: Rc<Cell<Rgb>>,
 }
 
@@ -253,8 +258,27 @@ impl ColorSwatch {
             set_rgb_source(context, color);
             let _ = context.fill();
         });
-        let button = gtk::Button::builder()
-            .child(&area)
+        let pin = gtk::DrawingArea::builder()
+            .content_width(if compact { 12 } else { 16 })
+            .content_height(if compact { 12 } else { 16 })
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Start)
+            .margin_top(if compact { 2 } else { 3 })
+            .margin_end(if compact { 2 } else { 3 })
+            .can_target(false)
+            .accessible_role(gtk::AccessibleRole::Presentation)
+            .css_classes(["swatch-pin"])
+            .build();
+        let pin_color = Rc::clone(&color);
+        pin.set_draw_func(move |_, context, width, height| {
+            draw_swatch_pin(context, width, height, pin_color.get());
+        });
+        let swatch = gtk::Overlay::new();
+        swatch.set_child(Some(&area));
+        swatch.add_overlay(&pin);
+        let button = gtk::ToggleButton::builder()
+            .child(&swatch)
+            .has_frame(false)
             .tooltip_text(tooltip)
             .css_classes(if compact {
                 ["palette-swatch", "ansi-swatch-button"]
@@ -269,26 +293,72 @@ impl ColorSwatch {
         Self {
             button,
             area,
+            pin,
             color,
         }
     }
 
-    pub(crate) fn button(&self) -> &gtk::Button {
+    pub(crate) fn button(&self) -> &gtk::ToggleButton {
         &self.button
     }
 
     pub(crate) fn set_color(&self, color: Rgb) {
         self.color.set(color);
         self.area.queue_draw();
+        self.pin.queue_draw();
     }
 
     pub(crate) fn set_selected(&self, selected: bool) {
-        if selected {
-            self.button.add_css_class("selected-swatch");
-        } else {
-            self.button.remove_css_class("selected-swatch");
-        }
+        self.button.set_active(selected);
     }
+}
+
+const SWATCH_PIN_DARK_INK_LUMINANCE: f64 = 0.179;
+
+fn swatch_pin_uses_dark_ink(color: Rgb) -> bool {
+    color.relative_luminance() > SWATCH_PIN_DARK_INK_LUMINANCE
+}
+
+// Geometry follows GNOME Icon Development Kit's CC0 view-pin-angled design
+// by Jakub Steiner. It is mirrored so its point leads into the swatch.
+fn draw_swatch_pin(context: &cairo::Context, width: i32, height: i32, color: Rgb) {
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let _ = context.save();
+    context.scale(f64::from(width) / 16.0, f64::from(height) / 16.0);
+    context.translate(16.0, 0.0);
+    context.scale(-1.0, 1.0);
+    set_rgb_source(
+        context,
+        if swatch_pin_uses_dark_ink(color) {
+            Rgb::new(0, 0, 0)
+        } else {
+            Rgb::new(255, 255, 255)
+        },
+    );
+    context.set_line_cap(cairo::LineCap::Round);
+    context.set_line_join(cairo::LineJoin::Round);
+
+    context.move_to(15.0, 14.997);
+    context.line_to(10.831, 10.828);
+    context.set_line_width(1.179);
+    let _ = context.stroke();
+
+    context.move_to(6.887, 13.778);
+    context.line_to(13.781, 6.883);
+    context.line_to(9.472, 6.021);
+    context.line_to(7.847, 2.229);
+    context.curve_to(7.631, 1.726, 7.18, 1.362, 6.642, 1.259);
+    context.curve_to(6.104, 1.155, 5.55, 1.325, 5.163, 1.712);
+    context.line_to(1.716, 5.16);
+    context.curve_to(1.321, 5.554, 1.144, 6.116, 1.24, 6.665);
+    context.curve_to(1.336, 7.215, 1.693, 7.683, 2.198, 7.92);
+    context.line_to(6.025, 9.469);
+    context.close_path();
+    context.set_line_width(2.438);
+    let _ = context.stroke();
+    let _ = context.restore();
 }
 
 fn channel_entry() -> gtk::Entry {
@@ -668,7 +738,11 @@ fn install_interaction(shared: &Rc<PickerShared>) {
 
 const SURFACE_SCROLL_FACTOR: f64 = 2.5;
 
-fn scroll_parent_vertically(widget: &impl IsA<gtk::Widget>, delta: f64, unit: gdk::ScrollUnit) {
+pub(crate) fn scroll_parent_vertically(
+    widget: &impl IsA<gtk::Widget>,
+    delta: f64,
+    unit: gdk::ScrollUnit,
+) {
     let Some(parent) = widget
         .ancestor(gtk::ScrolledWindow::static_type())
         .and_then(|widget| widget.downcast::<gtk::ScrolledWindow>().ok())
@@ -1026,6 +1100,26 @@ mod tests {
             Rgb::new(231, 232, 229),
         ] {
             assert_eq!(hsv_to_rgb(rgb_to_hsv(color)), color);
+        }
+    }
+
+    #[test]
+    fn swatch_pin_chooses_readable_ink_across_the_rgb_cube() {
+        for red in (0..=255).step_by(17) {
+            for green in (0..=255).step_by(17) {
+                for blue in (0..=255).step_by(17) {
+                    let color = Rgb::new(red, green, blue);
+                    let ink = if swatch_pin_uses_dark_ink(color) {
+                        Rgb::new(0, 0, 0)
+                    } else {
+                        Rgb::new(255, 255, 255)
+                    };
+                    assert!(
+                        termimochi_core::contrast_ratio(color, ink) >= 4.5,
+                        "pin ink is too faint on {color}"
+                    );
+                }
+            }
         }
     }
 

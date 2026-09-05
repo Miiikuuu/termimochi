@@ -1,7 +1,13 @@
 mod color_picker;
+mod layout;
 mod preview;
+mod preview_context;
+mod preview_inspect;
+mod prompt;
 mod ptyxis;
+mod starship_import;
 mod style;
+mod typography;
 mod window;
 
 use adw::prelude::*;
@@ -45,6 +51,10 @@ fn main() -> gtk::glib::ExitCode {
     application.set_accels_for_action("win.save-as", &["<Control><Shift>s"]);
     application.set_accels_for_action("win.undo", &["<Control>z"]);
     application.set_accels_for_action("win.redo", &["<Control><Shift>z", "<Control>y"]);
+    application.set_accels_for_action("win.show-palette", &["<Control>1"]);
+    application.set_accels_for_action("win.show-typography", &["<Control>2"]);
+    application.set_accels_for_action("win.show-layout", &["<Control>3"]);
+    application.set_accels_for_action("win.show-prompt", &["<Control>4"]);
 
     application.run()
 }

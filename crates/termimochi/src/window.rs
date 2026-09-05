@@ -3,6 +3,8 @@ use std::{
     collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     rc::Rc,
+    sync::mpsc,
+    time::Duration,
 };
 
 use adw::prelude::*;
@@ -14,39 +16,42 @@ use termimochi_core::{
 use vte::prelude::*;
 
 use crate::{
-    color_picker::{ColorPicker, ColorSwatch},
-    preview::{PREVIEW_COLUMNS, PREVIEW_ROWS, PreviewScenario},
-    ptyxis::{InstallOutcome, PtyxisInstaller, RollbackOutcome, import_current_palette},
+    color_picker::{ColorPicker, ColorSwatch, scroll_parent_vertically},
+    layout::{
+        DEFAULT_CONTENT_PADDING, LayoutSettings, MAX_COLUMNS, MAX_CONTENT_PADDING, MAX_ROWS,
+        MAX_WINDOW_SPACING, MIN_COLUMNS, MIN_CONTENT_PADDING, MIN_ROWS, MIN_WINDOW_SPACING,
+        PreviewCursorBlink, PreviewCursorShape,
+    },
+    preview::{
+        PREVIEW_COLUMNS, PREVIEW_HOME_AND_CLEAR, PREVIEW_INPUT_PROMPT, PREVIEW_ROWS,
+        PREVIEW_SHOW_CURSOR, PreviewInput, PreviewInputEvent, PreviewScenario,
+    },
+    preview_context::CurrentPreviewContext,
+    preview_inspect::{ANSI_NAMES, PreviewClick, PreviewMap, PreviewTarget},
+    prompt::{
+        PreviewTone, PromptCharacter, PromptHostnameMode, PromptLayout, PromptPreset,
+        PromptPreviewContext, PromptSegmentKind, PromptSettings, STARSHIP_FILE_NAME,
+    },
+    ptyxis::{
+        CurrentTerminalAppearance, InstallOutcome, PtyxisInstaller, RollbackOutcome,
+        import_current_appearance,
+    },
     style::BASE_CSS,
+    typography::{
+        DEFAULT_FONT_FAMILY, MAX_CELL_SCALE, MAX_FONT_SIZE, MIN_CELL_SCALE, MIN_FONT_SIZE,
+        PreviewFontWeight, TypographySettings, detect_nerd_font_support, is_usable_terminal_family,
+    },
 };
 
 const SAMPLE_PALETTE: &str = include_str!("../resources/themes/fog-paper.palette");
 const EDIT_HISTORY_LIMIT: usize = 64;
+const PREVIEW_MIN_HEIGHT: i32 = 128;
 
 const BASIC_COLORS: [(&str, &str, &str); 4] = [
     ("Foreground", "Text", "Default terminal text"),
     ("Background", "Background", "Terminal canvas"),
     ("Cursor", "Cursor", "Input position"),
     ("CursorForeground", "Cursor Text", "Text beneath the cursor"),
-];
-
-const ANSI_NAMES: [&str; 16] = [
-    "Black",
-    "Red",
-    "Green",
-    "Yellow",
-    "Blue",
-    "Magenta",
-    "Cyan",
-    "White",
-    "Bright Black",
-    "Bright Red",
-    "Bright Green",
-    "Bright Yellow",
-    "Bright Blue",
-    "Bright Magenta",
-    "Bright Cyan",
-    "Bright White",
 ];
 
 #[derive(Clone)]
@@ -134,6 +139,14 @@ impl HistorySnapshot for EditorSnapshot {
         self.active_variant = context.active_variant;
         self.selected_color_key = context.selected_color_key;
     }
+}
+
+impl HistorySnapshot for PromptSettings {
+    type Context = ();
+
+    fn context(&self) -> Self::Context {}
+
+    fn set_context(&mut self, (): Self::Context) {}
 }
 
 struct UndoPoint<T: HistorySnapshot> {
@@ -269,10 +282,12 @@ struct Workbench {
     window: glib::WeakRef<adw::ApplicationWindow>,
     toast_overlay: adw::ToastOverlay,
     brand_title: gtk::Label,
-    save_button: adw::SplitButton,
+    save_button: gtk::MenuButton,
     save_action: gio::SimpleAction,
     undo_action: gio::SimpleAction,
     redo_action: gio::SimpleAction,
+    palette_module_button: gtk::ToggleButton,
+    prompt_module_button: gtk::ToggleButton,
     install_action: gio::SimpleAction,
     rollback_action: gio::SimpleAction,
     name_entry: gtk::Entry,
@@ -283,9 +298,65 @@ struct Workbench {
     selected_color_title: gtk::Label,
     color_picker: ColorPicker,
     terminal_css_provider: gtk::CssProvider,
+    preview_content: gtk::Box,
     terminal_title: gtk::Label,
+    preview_terminal_shell: gtk::Box,
+    inspect_button: gtk::ToggleButton,
+    inspect_layer: gtk::Fixed,
+    inspect_label: gtk::Label,
+    inspect_highlight: gtk::DrawingArea,
+    preview_terminal_tab: gtk::Box,
     preview_terminal: vte::Terminal,
+    preview_terminal_canvas: gtk::Box,
+    preview_terminal_viewport: gtk::ScrolledWindow,
+    preview_terminal_scrollbar_revealer: gtk::Revealer,
     preview_selector: gtk::DropDown,
+    prompt_preview_selector: gtk::DropDown,
+    appearance_source: gtk::Label,
+    appearance_details: gtk::Label,
+    preview_context_source: gtk::Label,
+    fit_preview_switch: gtk::Switch,
+    font_family_selector: gtk::DropDown,
+    font_size_input: gtk::SpinButton,
+    font_weight_selector: gtk::DropDown,
+    line_height_input: gtk::SpinButton,
+    cell_width_input: gtk::SpinButton,
+    nerd_status_label: gtk::Label,
+    content_padding_input: gtk::SpinButton,
+    column_count_input: gtk::SpinButton,
+    row_count_input: gtk::SpinButton,
+    cursor_shape_selector: gtk::DropDown,
+    cursor_blink_selector: gtk::DropDown,
+    tab_bar_switch: gtk::Switch,
+    scrollbar_switch: gtk::Switch,
+    window_spacing_input: gtk::SpinButton,
+    prompt_preset_label: gtk::Label,
+    prompt_preset_popover: gtk::Popover,
+    prompt_preset_buttons: Vec<gtk::Button>,
+    prompt_module_list: gtk::Box,
+    prompt_module_count: gtk::Label,
+    prompt_empty_state: gtk::Box,
+    prompt_module_rows: Vec<gtk::Box>,
+    prompt_module_select_buttons: Vec<gtk::ToggleButton>,
+    prompt_module_samples: Vec<gtk::Label>,
+    prompt_module_move_up_buttons: Vec<gtk::Button>,
+    prompt_module_move_down_buttons: Vec<gtk::Button>,
+    prompt_module_remove_buttons: Vec<gtk::Button>,
+    prompt_add_button: gtk::MenuButton,
+    prompt_add_popover: gtk::Popover,
+    prompt_add_module_buttons: Vec<gtk::Button>,
+    prompt_inspector: gtk::Box,
+    prompt_inspector_title: gtk::Label,
+    prompt_tone_selector: gtk::DropDown,
+    prompt_character_selector: gtk::DropDown,
+    prompt_layout_selector: gtk::DropDown,
+    prompt_hostname_selector: gtk::DropDown,
+    prompt_spacing_switch: gtk::Switch,
+    prompt_source_selector: gtk::DropDown,
+    prompt_import_panel: gtk::Box,
+    prompt_design_panel: gtk::Box,
+    prompt_import_status: gtk::Label,
+    prompt_export_button: gtk::Button,
     body_ratio: gtk::Label,
     composer_ratio: gtk::Label,
     summary_icon: gtk::Box,
@@ -295,9 +366,29 @@ struct Workbench {
     diagnostics: gtk::ListBox,
     ptyxis_installer: Option<PtyxisInstaller>,
     model: RefCell<Model>,
+    preview_input: RefCell<PreviewInput>,
+    current_preview_context: RefCell<Option<CurrentPreviewContext>>,
+    preview_directory: RefCell<PathBuf>,
+    preview_generation: Cell<u64>,
+    preview_loading: Cell<bool>,
+    updating_geometry: Cell<bool>,
+    geometry_pending: Cell<bool>,
+    preview_map: RefCell<PreviewMap>,
+    preview_uses_prompt: Cell<bool>,
+    navigating_preview: Cell<bool>,
+    inspect_generation: Cell<u64>,
+    inspect_hit: RefCell<Option<PreviewHit>>,
+    inspect_pointer: Cell<Option<(f64, f64)>>,
+    inspect_hover_pending: Cell<bool>,
+    inspect_origin: Cell<Option<Option<(i64, f64)>>>,
+    prompt_settings: RefCell<PromptSettings>,
+    last_exported_prompt: RefCell<PromptSettings>,
+    selected_prompt_kind: Cell<Option<PromptSegmentKind>>,
+    prompt_history: RefCell<EditHistory<PromptSettings>>,
     history: RefCell<EditHistory<EditorSnapshot>>,
     name_valid: Cell<bool>,
     updating: Cell<bool>,
+    updating_prompt: Cell<bool>,
 }
 
 fn fallback_document() -> (PtyxisPalette, Option<PathBuf>, String, Option<Variant>) {
@@ -325,60 +416,55 @@ fn set_menu_verb_icon(item: &gio::MenuItem, icon_name: &str) {
 }
 
 pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
-    let (palette, current_path, source_label, preferred_variant, startup_notice) = if let Some(
-        path,
-    ) =
-        initial_path.as_deref()
-    {
-        match PtyxisPalette::from_file(path) {
-            Ok(palette) => (
-                palette,
-                Some(path.to_owned()),
-                "Local File".to_owned(),
-                None,
-                None,
-            ),
-            Err(error) => {
-                eprintln!("TermiMochi: {error}");
-                let (palette, path, source, variant) = fallback_document();
-                (
+    let mut appearance = import_current_appearance();
+    let (palette, current_path, source_label, preferred_variant, startup_notice) =
+        if let Some(path) = initial_path.as_deref() {
+            match PtyxisPalette::from_file(path) {
+                Ok(palette) => (
                     palette,
-                    path,
-                    source,
-                    variant,
-                    Some(format!(
-                        "Could not open the theme; using the default template: {error}"
-                    )),
-                )
+                    Some(path.to_owned()),
+                    "Local File".to_owned(),
+                    None,
+                    None,
+                ),
+                Err(error) => {
+                    eprintln!("TermiMochi: {error}");
+                    let (palette, path, source, variant) = fallback_document();
+                    (
+                        palette,
+                        path,
+                        source,
+                        variant,
+                        Some(format!(
+                            "Could not open the theme; using the default template: {error}"
+                        )),
+                    )
+                }
             }
-        }
-    } else {
-        match import_current_palette() {
-            Ok(current) => {
-                let (palette, preferred_variant) = current.into_parts();
-                (
+        } else {
+            match appearance.palette.take() {
+                Some(palette) => (
                     palette,
                     None,
-                    "Current Terminal · Ptyxis".to_owned(),
-                    preferred_variant,
+                    appearance.source_label.clone(),
+                    appearance.preferred_variant,
                     None,
-                )
+                ),
+                None => {
+                    let (palette, path, source, variant) = fallback_document();
+                    (
+                        palette,
+                        path,
+                        source,
+                        variant,
+                        Some(
+                            "Using preview defaults. Open Preview Source for import details."
+                                .to_owned(),
+                        ),
+                    )
+                }
             }
-            Err(error) => {
-                eprintln!("TermiMochi: could not read the current Ptyxis palette: {error}");
-                let (palette, path, source, variant) = fallback_document();
-                (
-                    palette,
-                    path,
-                    source,
-                    variant,
-                    Some(format!(
-                        "Could not read the current Ptyxis palette; using the default template: {error}"
-                    )),
-                )
-            }
-        }
-    };
+        };
     let preferred_variant = preferred_variant.unwrap_or_else(preferred_ui_variant);
     let active_variant = if palette.variant(preferred_variant).is_some() {
         preferred_variant
@@ -387,6 +473,7 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
     } else {
         Variant::Dark
     };
+    let initial_typography = appearance.typography.clone();
 
     // Keep the editor chrome in the warm Fog Paper family while the selected
     // palette continues to control the VTE preview itself.
@@ -398,7 +485,9 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
         .icon_name(crate::APPLICATION_ID)
         .default_width(1080)
         .default_height(780)
-        .width_request(760)
+        // Palette's fixed ANSI grid and the Activity Rail need about 438px;
+        // 800px preserves the right preview's 360px minimum beside them.
+        .width_request(800)
         .height_request(560)
         .build();
     window.add_css_class("termimochi-window");
@@ -427,12 +516,8 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
     brand_lockup.append(&brand_name);
     header_bar.pack_start(&brand_lockup);
 
-    let open_content = adw::ButtonContent::builder()
-        .icon_name("document-open-symbolic")
-        .label("Open Theme")
-        .build();
     let open_button = gtk::Button::builder()
-        .child(&open_content)
+        .icon_name("termimochi-open-symbolic")
         .tooltip_text("Open a Ptyxis .palette file  Ctrl+O")
         .action_name("win.open")
         .css_classes(["tool-button", "open-button"])
@@ -440,9 +525,8 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
     open_button.update_property(&[
         gtk::accessible::Property::Label("Open Theme"),
         gtk::accessible::Property::Description("Choose a Ptyxis .palette file"),
+        gtk::accessible::Property::KeyShortcuts("Control+O"),
     ]);
-    header_bar.pack_start(&open_button);
-
     let undo_action = gio::SimpleAction::new("undo", None);
     undo_action.set_enabled(false);
     let redo_action = gio::SimpleAction::new("redo", None);
@@ -472,7 +556,6 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
     history_controls.set_spacing(2);
     history_controls.append(&undo_button);
     history_controls.append(&redo_button);
-    header_bar.pack_start(&history_controls);
 
     let light_button = gtk::ToggleButton::with_label("Light");
     light_button.set_tooltip_text(Some("Edit and preview the light palette variant"));
@@ -494,6 +577,9 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
 
     let save_menu = gio::Menu::new();
     let save_section = gio::Menu::new();
+    let save_item = gio::MenuItem::new(Some("Save"), Some("win.save"));
+    set_menu_verb_icon(&save_item, "termimochi-save-symbolic");
+    save_section.append_item(&save_item);
     let save_as_item = gio::MenuItem::new(Some("Save As…"), Some("win.save-as"));
     set_menu_verb_icon(&save_as_item, "document-save-as-symbolic");
     save_section.append_item(&save_as_item);
@@ -512,27 +598,21 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
     export_section.append_item(&export_item);
     save_menu.append_section(None, &export_section);
 
-    let save_content = adw::ButtonContent::builder()
-        .icon_name("media-floppy-symbolic")
-        .label("Save")
-        .build();
-    let save_button = adw::SplitButton::builder()
-        .child(&save_content)
-        .tooltip_text("Save  Ctrl+S")
-        .dropdown_tooltip("Save As and Export")
+    let save_button = gtk::MenuButton::builder()
+        .icon_name("termimochi-save-symbolic")
+        .tooltip_text("Save and export options")
         .menu_model(&save_menu)
-        .action_name("win.save")
-        .css_classes(["save-split"])
+        .always_show_arrow(false)
+        .css_classes(["tool-menu", "save-menu"])
         .build();
     if let Some(popover) = save_button.popover() {
         popover.add_css_class("save-popover");
     }
     save_button.update_property(&[
-        gtk::accessible::Property::Label("Save Theme"),
+        gtk::accessible::Property::Label("Save and Export"),
         gtk::accessible::Property::Description(
-            "Save the current theme, or open the adjacent menu for Save As and export options",
+            "Open options to save, save as, or export the current theme",
         ),
-        gtk::accessible::Property::KeyShortcuts("Control+S"),
     ]);
 
     let deployment_menu = gio::Menu::new();
@@ -556,11 +636,17 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
         gtk::accessible::Property::Description("Install or roll back a Ptyxis theme"),
     ]);
 
-    // Keep output actions together while preserving their hierarchy: saving
-    // is primary, file variants live in its dropdown, and deployment stays in
-    // a separate low-frequency overflow menu.
-    header_bar.pack_end(&more_button);
-    header_bar.pack_end(&save_button);
+    // Give the brand a quiet, dedicated left edge. File/history/output actions
+    // form one compact cluster on the right, with infrequent deployment work
+    // remaining in the overflow menu.
+    let header_actions = gtk::Box::new(gtk::Orientation::Horizontal, 3);
+    header_actions.set_valign(gtk::Align::Center);
+    header_actions.add_css_class("header-actions");
+    header_actions.append(&open_button);
+    header_actions.append(&history_controls);
+    header_actions.append(&save_button);
+    header_actions.append(&more_button);
+    header_bar.pack_end(&header_actions);
 
     toolbar_view.add_top_bar(&header_bar);
     toolbar_view.set_content(Some(&toast_overlay));
@@ -574,9 +660,15 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
     main_paned.add_css_class("workbench-split");
     toast_overlay.set_child(Some(&main_paned));
 
+    let preview = build_preview(&variant_switch, &initial_typography);
     let editor = build_editor();
-    let preview = build_preview(&variant_switch);
-    main_paned.set_start_child(Some(&editor.root));
+    let typography = build_typography_editor(&preview.terminal, &initial_typography);
+    let layout = build_layout_editor(&appearance.layout);
+    let initial_prompt = PromptSettings::default();
+    let prompt = build_prompt_editor(&initial_prompt);
+    let editor_workspace =
+        build_editor_workspace(&editor.root, &typography.root, &layout.root, &prompt.root);
+    main_paned.set_start_child(Some(&editor_workspace.root));
     main_paned.set_end_child(Some(&preview.root));
     main_paned.set_resize_start_child(false);
     main_paned.set_shrink_start_child(false);
@@ -600,6 +692,7 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
 
     let window_ref = glib::WeakRef::new();
     window_ref.set(Some(&window));
+    install_editor_module_actions(&window, &editor_workspace);
     let workbench = Rc::new(Workbench {
         window: window_ref,
         toast_overlay,
@@ -608,6 +701,8 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
         save_action,
         undo_action,
         redo_action,
+        palette_module_button: editor_workspace.palette_button.clone(),
+        prompt_module_button: editor_workspace.prompt_button.clone(),
         install_action,
         rollback_action,
         name_entry: editor.name_entry,
@@ -618,9 +713,65 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
         selected_color_title: editor.selected_color_title,
         color_picker: editor.color_picker,
         terminal_css_provider,
+        preview_content: preview.content,
         terminal_title: preview.terminal_title,
+        preview_terminal_shell: preview.terminal_shell,
+        inspect_button: preview.inspect_button,
+        inspect_layer: preview.inspect_layer,
+        inspect_label: preview.inspect_label,
+        inspect_highlight: preview.inspect_highlight,
+        preview_terminal_tab: preview.terminal_tab,
         preview_terminal: preview.terminal,
+        preview_terminal_canvas: preview.terminal_canvas,
+        preview_terminal_viewport: preview.terminal_viewport,
+        preview_terminal_scrollbar_revealer: preview.terminal_scrollbar_revealer,
         preview_selector: preview.selector,
+        prompt_preview_selector: preview.prompt_selector,
+        appearance_source: preview.appearance_source,
+        appearance_details: preview.appearance_details,
+        preview_context_source: preview.context_source,
+        fit_preview_switch: preview.fit_switch,
+        font_family_selector: typography.font_family_selector,
+        font_size_input: typography.font_size_input,
+        font_weight_selector: typography.font_weight_selector,
+        line_height_input: typography.line_height_input,
+        cell_width_input: typography.cell_width_input,
+        nerd_status_label: typography.nerd_status_label,
+        content_padding_input: layout.content_padding_input,
+        column_count_input: layout.column_count_input,
+        row_count_input: layout.row_count_input,
+        cursor_shape_selector: layout.cursor_shape_selector,
+        cursor_blink_selector: layout.cursor_blink_selector,
+        tab_bar_switch: layout.tab_bar_switch,
+        scrollbar_switch: layout.scrollbar_switch,
+        window_spacing_input: layout.window_spacing_input,
+        prompt_preset_label: prompt.preset_label,
+        prompt_preset_popover: prompt.preset_popover,
+        prompt_preset_buttons: prompt.preset_buttons,
+        prompt_module_list: prompt.module_list,
+        prompt_module_count: prompt.module_count,
+        prompt_empty_state: prompt.empty_state,
+        prompt_module_rows: prompt.module_rows,
+        prompt_module_select_buttons: prompt.module_select_buttons,
+        prompt_module_samples: prompt.module_samples,
+        prompt_module_move_up_buttons: prompt.module_move_up_buttons,
+        prompt_module_move_down_buttons: prompt.module_move_down_buttons,
+        prompt_module_remove_buttons: prompt.module_remove_buttons,
+        prompt_add_button: prompt.add_button,
+        prompt_add_popover: prompt.add_popover,
+        prompt_add_module_buttons: prompt.add_module_buttons,
+        prompt_inspector: prompt.inspector,
+        prompt_inspector_title: prompt.inspector_title,
+        prompt_tone_selector: prompt.tone_selector,
+        prompt_character_selector: prompt.character_selector,
+        prompt_layout_selector: prompt.layout_selector,
+        prompt_hostname_selector: prompt.hostname_selector,
+        prompt_spacing_switch: prompt.spacing_switch,
+        prompt_source_selector: prompt.source_selector,
+        prompt_import_panel: prompt.import_panel,
+        prompt_design_panel: prompt.design_panel,
+        prompt_import_status: prompt.import_status,
+        prompt_export_button: prompt.export_button,
         body_ratio: preview.body_ratio,
         composer_ratio: preview.composer_ratio,
         summary_icon: preview.summary_icon,
@@ -635,14 +786,48 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
             current_path,
             source_label,
         )),
+        preview_input: RefCell::new(PreviewInput::default()),
+        current_preview_context: RefCell::new(None),
+        preview_directory: RefCell::new(
+            std::env::current_dir().unwrap_or_else(|_| glib::home_dir()),
+        ),
+        preview_generation: Cell::new(0),
+        preview_loading: Cell::new(false),
+        updating_geometry: Cell::new(false),
+        geometry_pending: Cell::new(false),
+        preview_map: RefCell::new(PreviewMap::default()),
+        preview_uses_prompt: Cell::new(false),
+        navigating_preview: Cell::new(false),
+        inspect_generation: Cell::new(0),
+        inspect_hit: RefCell::new(None),
+        inspect_pointer: Cell::new(None),
+        inspect_hover_pending: Cell::new(false),
+        inspect_origin: Cell::new(None),
+        last_exported_prompt: RefCell::new(initial_prompt.clone()),
+        prompt_settings: RefCell::new(initial_prompt),
+        selected_prompt_kind: Cell::new(Some(PromptSegmentKind::Directory)),
+        prompt_history: RefCell::new(EditHistory::new(EDIT_HISTORY_LIMIT)),
         history: RefCell::new(EditHistory::new(EDIT_HISTORY_LIMIT)),
         name_valid: Cell::new(true),
         updating: Cell::new(false),
+        updating_prompt: Cell::new(false),
     });
 
     Workbench::install_actions(&workbench);
     Workbench::connect_signals(&workbench);
     workbench.refresh_all();
+    workbench.show_appearance_source(&appearance);
+    workbench
+        .preview_terminal
+        .set_bold_is_bright(appearance.bold_is_bright);
+    workbench
+        .preview_terminal
+        .set_cjk_ambiguous_width(appearance.cjk_ambiguous_width);
+    workbench.refresh_current_context();
+    // VTE only animates its cursor while focused. Make the harmless local
+    // scratch terminal the initial focus so the preview feels alive on first
+    // presentation; interacting with any editor control moves focus normally.
+    gtk::prelude::GtkWindowExt::set_focus(&window, Some(&workbench.preview_terminal));
     if let Some(notice) = startup_notice {
         workbench.toast(&notice);
     }
@@ -656,9 +841,24 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
 
 struct PreviewWidgets {
     root: gtk::ScrolledWindow,
+    content: gtk::Box,
     terminal_title: gtk::Label,
+    terminal_shell: gtk::Box,
+    inspect_button: gtk::ToggleButton,
+    inspect_layer: gtk::Fixed,
+    inspect_label: gtk::Label,
+    inspect_highlight: gtk::DrawingArea,
+    terminal_tab: gtk::Box,
     terminal: vte::Terminal,
+    terminal_canvas: gtk::Box,
+    terminal_viewport: gtk::ScrolledWindow,
+    terminal_scrollbar_revealer: gtk::Revealer,
     selector: gtk::DropDown,
+    prompt_selector: gtk::DropDown,
+    appearance_source: gtk::Label,
+    appearance_details: gtk::Label,
+    context_source: gtk::Label,
+    fit_switch: gtk::Switch,
     body_ratio: gtk::Label,
     composer_ratio: gtk::Label,
     summary_icon: gtk::Box,
@@ -668,12 +868,163 @@ struct PreviewWidgets {
     diagnostics: gtk::ListBox,
 }
 
+#[derive(Clone, Debug)]
+struct PreviewHit {
+    target: PreviewTarget,
+    bounds: gtk::graphene::Rect,
+}
+
 struct EditorWidgets {
     root: gtk::ScrolledWindow,
     name_entry: gtk::Entry,
     controls: BTreeMap<String, ColorControl>,
     selected_color_title: gtk::Label,
     color_picker: ColorPicker,
+}
+
+struct TypographyWidgets {
+    root: gtk::ScrolledWindow,
+    font_family_selector: gtk::DropDown,
+    font_size_input: gtk::SpinButton,
+    font_weight_selector: gtk::DropDown,
+    line_height_input: gtk::SpinButton,
+    cell_width_input: gtk::SpinButton,
+    nerd_status_label: gtk::Label,
+}
+
+struct LayoutWidgets {
+    root: gtk::ScrolledWindow,
+    content_padding_input: gtk::SpinButton,
+    column_count_input: gtk::SpinButton,
+    row_count_input: gtk::SpinButton,
+    cursor_shape_selector: gtk::DropDown,
+    cursor_blink_selector: gtk::DropDown,
+    tab_bar_switch: gtk::Switch,
+    scrollbar_switch: gtk::Switch,
+    window_spacing_input: gtk::SpinButton,
+}
+
+struct PromptWidgets {
+    root: gtk::ScrolledWindow,
+    source_selector: gtk::DropDown,
+    import_panel: gtk::Box,
+    design_panel: gtk::Box,
+    import_status: gtk::Label,
+    export_button: gtk::Button,
+    preset_label: gtk::Label,
+    preset_popover: gtk::Popover,
+    preset_buttons: Vec<gtk::Button>,
+    module_list: gtk::Box,
+    module_count: gtk::Label,
+    empty_state: gtk::Box,
+    module_rows: Vec<gtk::Box>,
+    module_select_buttons: Vec<gtk::ToggleButton>,
+    module_samples: Vec<gtk::Label>,
+    module_move_up_buttons: Vec<gtk::Button>,
+    module_move_down_buttons: Vec<gtk::Button>,
+    module_remove_buttons: Vec<gtk::Button>,
+    add_button: gtk::MenuButton,
+    add_popover: gtk::Popover,
+    add_module_buttons: Vec<gtk::Button>,
+    inspector: gtk::Box,
+    inspector_title: gtk::Label,
+    tone_selector: gtk::DropDown,
+    character_selector: gtk::DropDown,
+    layout_selector: gtk::DropDown,
+    hostname_selector: gtk::DropDown,
+    spacing_switch: gtk::Switch,
+}
+
+struct PromptSegmentRow {
+    root: gtk::Box,
+    select_button: gtk::ToggleButton,
+    sample: gtk::Label,
+    move_up_button: gtk::Button,
+    move_down_button: gtk::Button,
+    remove_button: gtk::Button,
+}
+
+struct EditorWorkspaceWidgets {
+    root: gtk::Box,
+    palette_button: gtk::ToggleButton,
+    typography_button: gtk::ToggleButton,
+    layout_button: gtk::ToggleButton,
+    prompt_button: gtk::ToggleButton,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EditorModule {
+    Palette,
+    Typography,
+    Layout,
+    Prompt,
+}
+
+impl EditorModule {
+    const ALL: [Self; 4] = [Self::Palette, Self::Typography, Self::Layout, Self::Prompt];
+
+    const fn stack_name(self) -> &'static str {
+        match self {
+            Self::Palette => "palette",
+            Self::Typography => "typography",
+            Self::Layout => "layout",
+            Self::Prompt => "prompt",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Palette => "Palette",
+            Self::Typography => "Typography",
+            Self::Layout => "Layout",
+            Self::Prompt => "Prompt",
+        }
+    }
+
+    const fn icon_name(self) -> &'static str {
+        match self {
+            Self::Palette => "preferences-color-symbolic",
+            Self::Typography => "font-x-generic-symbolic",
+            Self::Layout => "termimochi-layout-symbolic",
+            Self::Prompt => "termimochi-prompt-symbolic",
+        }
+    }
+
+    const fn action_name(self) -> &'static str {
+        match self {
+            Self::Palette => "show-palette",
+            Self::Typography => "show-typography",
+            Self::Layout => "show-layout",
+            Self::Prompt => "show-prompt",
+        }
+    }
+
+    const fn shortcut(self) -> &'static str {
+        match self {
+            Self::Palette => "Control+1",
+            Self::Typography => "Control+2",
+            Self::Layout => "Control+3",
+            Self::Prompt => "Control+4",
+        }
+    }
+
+    const fn shortcut_hint(self) -> &'static str {
+        match self {
+            Self::Palette => "Ctrl+1",
+            Self::Typography => "Ctrl+2",
+            Self::Layout => "Ctrl+3",
+            Self::Prompt => "Ctrl+4",
+        }
+    }
+
+    const fn description(self) -> &'static str {
+        match self {
+            Self::Palette => "Show the Palette editor",
+            Self::Typography => "Show the Typography editor",
+            Self::Layout => "Show the Layout editor",
+            Self::Prompt => "Show the Prompt editor",
+        }
+    }
 }
 
 fn build_editor() -> EditorWidgets {
@@ -720,9 +1071,15 @@ fn build_editor() -> EditorWidgets {
         .column_homogeneous(true)
         .row_spacing(6)
         .build();
+    let mut swatch_group: Option<gtk::ToggleButton> = None;
     for (index, (key, title, detail)) in BASIC_COLORS.into_iter().enumerate() {
         let tile = gtk::Box::new(gtk::Orientation::Vertical, 5);
         let swatch = ColorSwatch::new(false, &format!("{key} · {detail}"));
+        if let Some(group) = &swatch_group {
+            swatch.button().set_group(Some(group));
+        } else {
+            swatch_group = Some(swatch.button().clone());
+        }
         let label = gtk::Label::new(Some(title));
         label.add_css_class("palette-label");
         tile.append(swatch.button());
@@ -745,6 +1102,9 @@ fn build_editor() -> EditorWidgets {
     for (index, name) in ANSI_NAMES.iter().enumerate() {
         let key = format!("Color{index}");
         let swatch = ColorSwatch::new(true, &format!("{key} · {name}"));
+        if let Some(group) = &swatch_group {
+            swatch.button().set_group(Some(group));
+        }
         ansi_grid.attach(
             swatch.button(),
             (index % 8 + 1) as i32,
@@ -774,7 +1134,9 @@ fn build_editor() -> EditorWidgets {
 
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
-        .min_content_width(380)
+        // The Activity Rail is part of the existing 430px editor allocation.
+        // Keep the module's own minimum below that shared allocation.
+        .min_content_width(330)
         .css_classes(["editor-scroll"])
         .child(&content)
         .build();
@@ -787,7 +1149,1109 @@ fn build_editor() -> EditorWidgets {
     }
 }
 
-fn build_preview(variant_switch: &gtk::Box) -> PreviewWidgets {
+fn build_typography_editor(
+    terminal: &vte::Terminal,
+    initial_typography: &TypographySettings,
+) -> TypographyWidgets {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    content.add_css_class("termimochi-typography-pane");
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(15);
+    content.set_margin_end(15);
+
+    let typography_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    typography_header.add_css_class("typography-header");
+    typography_header.set_valign(gtk::Align::Center);
+    let typography_heading = gtk::Label::new(Some("Typography"));
+    typography_heading.set_xalign(0.0);
+    typography_heading.set_hexpand(true);
+    typography_heading.set_valign(gtk::Align::Center);
+    typography_heading.add_css_class("preview-heading");
+    typography_heading.add_css_class("typography-title");
+    let nerd_status_label = gtk::Label::new(Some("Checking Nerd Font…"));
+    nerd_status_label.set_xalign(1.0);
+    nerd_status_label.set_valign(gtk::Align::Center);
+    nerd_status_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    nerd_status_label.add_css_class("nerd-status-label");
+    typography_header.append(&typography_heading);
+    typography_header.append(&nerd_status_label);
+    content.append(&typography_header);
+
+    let (font_families, default_font_index) = monospace_font_choices(terminal, initial_typography);
+    let family_names: Vec<_> = font_families.iter().map(String::as_str).collect();
+    let font_family_selector = gtk::DropDown::from_strings(&family_names);
+    font_family_selector.set_selected(default_font_index);
+    font_family_selector.set_enable_search(true);
+    font_family_selector.set_hexpand(true);
+    font_family_selector.add_css_class("typography-control");
+    font_family_selector.add_css_class("font-family-control");
+    let selected_font_factory = font_family_factory("font-family-selection");
+    font_family_selector.set_factory(Some(&selected_font_factory));
+    let font_list_factory = font_family_factory("font-family-option");
+    font_family_selector.set_list_factory(Some(&font_list_factory));
+    font_family_selector.set_tooltip_text(Some(
+        "Installed monospace font used by this preview; palette files do not store fonts",
+    ));
+    font_family_selector.update_property(&[
+        gtk::accessible::Property::Label("Font Family"),
+        gtk::accessible::Property::Description(
+            "Choose an installed monospace font for the terminal preview",
+        ),
+    ]);
+
+    let font_size_input = typography_spin_button(
+        initial_typography.size,
+        MIN_FONT_SIZE,
+        MAX_FONT_SIZE,
+        0.5,
+        1,
+        "Font Size",
+        "Font size in points",
+    );
+    font_size_input.add_css_class("font-size-control");
+
+    let weight_labels = PreviewFontWeight::ALL.map(PreviewFontWeight::label);
+    let font_weight_selector = gtk::DropDown::from_strings(&weight_labels);
+    font_weight_selector.set_selected(initial_typography.weight.index());
+    font_weight_selector.set_hexpand(true);
+    font_weight_selector.add_css_class("typography-control");
+    font_weight_selector.add_css_class("font-weight-control");
+    font_weight_selector.set_tooltip_text(Some("Preview font weight"));
+    font_weight_selector.update_property(&[gtk::accessible::Property::Label("Font Weight")]);
+
+    let line_height_input = typography_spin_button(
+        initial_typography.line_height,
+        MIN_CELL_SCALE,
+        MAX_CELL_SCALE,
+        0.05,
+        2,
+        "Line Height",
+        "Terminal cell height scale from 1.00 to 2.00",
+    );
+    let cell_width_input = typography_spin_button(
+        initial_typography.cell_width,
+        MIN_CELL_SCALE,
+        MAX_CELL_SCALE,
+        0.05,
+        2,
+        "Cell Width",
+        "Terminal cell width scale from 1.00 to 2.00",
+    );
+
+    let typography_fields = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    typography_fields.add_css_class("typography-fields");
+    for field in [
+        typography_field("Font Family", &font_family_selector),
+        typography_field("Font Size", &font_size_input),
+        typography_field("Font Weight", &font_weight_selector),
+        typography_field("Line Height", &line_height_input),
+        typography_field("Cell Width", &cell_width_input),
+    ] {
+        typography_fields.append(&field);
+    }
+    content.append(&typography_fields);
+
+    // Typography inputs remain keyboard/click editable, while wheel and
+    // touchpad gestures move this module instead of changing values.
+    let typography_scroll = gtk::EventControllerScroll::new(
+        gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::HORIZONTAL,
+    );
+    typography_scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let scroll_source = content.clone();
+    typography_scroll.connect_scroll(move |controller, _, delta_y| {
+        scroll_parent_vertically(&scroll_source, delta_y, controller.unit());
+        glib::Propagation::Stop
+    });
+    content.add_controller(typography_scroll);
+
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_width(330)
+        .css_classes(["typography-scroll"])
+        .child(&content)
+        .build();
+
+    TypographyWidgets {
+        root: scroll,
+        font_family_selector,
+        font_size_input,
+        font_weight_selector,
+        line_height_input,
+        cell_width_input,
+        nerd_status_label,
+    }
+}
+
+fn build_layout_editor(defaults: &LayoutSettings) -> LayoutWidgets {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 15);
+    content.add_css_class("termimochi-layout-pane");
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(15);
+    content.set_margin_end(15);
+
+    let heading = gtk::Label::new(Some("Layout"));
+    heading.set_xalign(0.0);
+    heading.set_valign(gtk::Align::Center);
+    heading.add_css_class("preview-heading");
+    heading.add_css_class("layout-title");
+    content.append(&heading);
+
+    let content_padding_input = layout_spin_button(
+        defaults.content_padding,
+        MIN_CONTENT_PADDING,
+        MAX_CONTENT_PADDING,
+        "Content Padding",
+        "Space in pixels between terminal text and the terminal edge",
+    );
+    let column_count_input = layout_spin_button(
+        i32::try_from(defaults.columns).expect("default columns fit i32"),
+        i32::try_from(MIN_COLUMNS).expect("minimum columns fit i32"),
+        i32::try_from(MAX_COLUMNS).expect("maximum columns fit i32"),
+        "Columns",
+        "Number of columns in the terminal preview",
+    );
+    let row_count_input = layout_spin_button(
+        i32::try_from(defaults.rows).expect("default rows fit i32"),
+        i32::try_from(MIN_ROWS).expect("minimum rows fit i32"),
+        i32::try_from(MAX_ROWS).expect("maximum rows fit i32"),
+        "Rows",
+        "Number of rows in the terminal preview",
+    );
+    content.append(&layout_group(
+        "Terminal",
+        [
+            layout_row("Content Padding", &content_padding_input),
+            layout_row("Columns", &column_count_input),
+            layout_row("Rows", &row_count_input),
+        ],
+    ));
+
+    let cursor_shape_labels = PreviewCursorShape::ALL.map(PreviewCursorShape::label);
+    let cursor_shape_selector = layout_drop_down(
+        &cursor_shape_labels,
+        defaults.cursor_shape.index(),
+        "Cursor Shape",
+        "Shape of the cursor shown in the terminal preview",
+    );
+    let cursor_blink_labels = PreviewCursorBlink::ALL.map(PreviewCursorBlink::label);
+    let cursor_blink_selector = layout_drop_down(
+        &cursor_blink_labels,
+        defaults.cursor_blink.index(),
+        "Cursor Blink",
+        "Use the system cursor blink setting, force blinking on, or keep it off",
+    );
+    content.append(&layout_group(
+        "Cursor",
+        [
+            layout_row("Shape", &cursor_shape_selector),
+            layout_row("Blink", &cursor_blink_selector),
+        ],
+    ));
+
+    let tab_bar_switch = layout_switch(
+        defaults.tab_bar,
+        "Tab Bar",
+        "Show the terminal tab title in the preview",
+    );
+    let scrollbar_switch = layout_switch(
+        defaults.scrollbar,
+        "Scrollbar",
+        "Show a scrollbar connected to the terminal scrollback",
+    );
+    let window_spacing_input = layout_spin_button(
+        defaults.window_spacing,
+        MIN_WINDOW_SPACING,
+        MAX_WINDOW_SPACING,
+        "Window Spacing",
+        "Whitespace in pixels around the live preview",
+    );
+    content.append(&layout_group(
+        "Window",
+        [
+            layout_row("Tab Bar", &tab_bar_switch),
+            layout_row("Scrollbar", &scrollbar_switch),
+            layout_row("Window Spacing", &window_spacing_input),
+        ],
+    ));
+
+    // Preserve deliberate numeric values while letting wheel and touchpad
+    // gestures move the module, matching the Typography editor behavior.
+    let layout_scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    layout_scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let scroll_source = content.clone();
+    layout_scroll.connect_scroll(move |controller, _, delta_y| {
+        scroll_parent_vertically(&scroll_source, delta_y, controller.unit());
+        glib::Propagation::Stop
+    });
+    content.add_controller(layout_scroll);
+
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_width(330)
+        .css_classes(["layout-scroll"])
+        .child(&content)
+        .build();
+
+    LayoutWidgets {
+        root: scroll,
+        content_padding_input,
+        column_count_input,
+        row_count_input,
+        cursor_shape_selector,
+        cursor_blink_selector,
+        tab_bar_switch,
+        scrollbar_switch,
+        window_spacing_input,
+    }
+}
+
+fn build_prompt_editor(settings: &PromptSettings) -> PromptWidgets {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    content.add_css_class("termimochi-prompt-pane");
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(15);
+    content.set_margin_end(15);
+
+    let heading = gtk::Label::new(Some("Shell Prompt"));
+    heading.set_xalign(0.0);
+    heading.set_valign(gtk::Align::Center);
+    heading.add_css_class("preview-heading");
+    heading.add_css_class("prompt-title");
+    heading.set_hexpand(true);
+
+    let export_icon = gtk::Image::builder()
+        .icon_name("document-save-as-symbolic")
+        .pixel_size(14)
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
+    let export_label = gtk::Label::new(Some("Export .toml"));
+    let export_content = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+    export_content.append(&export_icon);
+    export_content.append(&export_label);
+    let export_button = gtk::Button::builder()
+        .child(&export_content)
+        .action_name("win.export-starship")
+        .tooltip_text("Save a Starship config; shell startup files stay unchanged")
+        .css_classes(["prompt-export"])
+        .build();
+    export_button.update_property(&[
+        gtk::accessible::Property::Label("Export starship.toml"),
+        gtk::accessible::Property::Description(
+            "Choose where to export the Starship configuration. Shell startup files are never changed",
+        ),
+    ]);
+
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    header.set_hexpand(true);
+    header.set_valign(gtk::Align::Center);
+    header.add_css_class("prompt-header");
+    header.append(&heading);
+    header.append(&export_button);
+    content.append(&header);
+
+    let source_selector = gtk::DropDown::from_strings(&["Your Starship", "Designer"]);
+    source_selector.add_css_class("prompt-property-control");
+    source_selector.update_property(&[gtk::accessible::Property::Label("Prompt Source")]);
+    content.append(&layout_row("Prompt Source", &source_selector));
+    let import_panel = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    import_panel.set_margin_top(12);
+    let import_heading = gtk::Label::new(Some("Your setup, unchanged"));
+    import_heading.set_xalign(0.0);
+    import_heading.add_css_class("section-heading");
+    import_panel.append(&import_heading);
+    let import_status = gtk::Label::new(Some("Reading starship.toml…"));
+    import_status.set_xalign(0.0);
+    import_status.set_wrap(true);
+    import_status.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    import_status.set_max_width_chars(32);
+    import_status.add_css_class("preview-source-detail");
+    import_status.update_property(&[gtk::accessible::Property::Label("Imported Starship Status")]);
+    import_panel.append(&import_status);
+    let reload = gtk::Button::builder()
+        .label("Reload Starship")
+        .action_name("win.refresh-preview-folder")
+        .css_classes(["prompt-menu-item"])
+        .build();
+    import_panel.append(&reload);
+    let note = gtk::Label::new(Some(
+        "Read-only. Switch to Designer to create a separate prompt.",
+    ));
+    note.set_xalign(0.0);
+    note.set_wrap(true);
+    note.set_max_width_chars(32);
+    note.add_css_class("preview-source-detail");
+    import_panel.append(&note);
+    content.append(&import_panel);
+    let page = content;
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    content.set_visible(false);
+    page.append(&content);
+    export_button.set_visible(false);
+
+    let preset_label = gtk::Label::new(Some(
+        settings
+            .source_preset()
+            .map_or("Custom", PromptPreset::label),
+    ));
+    preset_label.set_xalign(0.0);
+    let preset_chevron = gtk::Image::builder()
+        .icon_name("pan-down-symbolic")
+        .pixel_size(12)
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
+    let preset_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    preset_content.append(&preset_label);
+    preset_content.append(&preset_chevron);
+    let preset_popover = gtk::Popover::new();
+    preset_popover.add_css_class("prompt-menu-popover");
+    let preset_menu = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    preset_menu.set_margin_top(6);
+    preset_menu.set_margin_bottom(6);
+    preset_menu.set_margin_start(6);
+    preset_menu.set_margin_end(6);
+    let preset_buttons = PromptPreset::ALL
+        .into_iter()
+        .map(|preset| {
+            let button = gtk::Button::with_label(preset.label());
+            button.set_halign(gtk::Align::Fill);
+            button.set_tooltip_text(Some(&format!(
+                "Replace the prompt with the {} starting point",
+                preset.label()
+            )));
+            button.add_css_class("prompt-menu-item");
+            preset_menu.append(&button);
+            button
+        })
+        .collect::<Vec<_>>();
+    preset_popover.set_child(Some(&preset_menu));
+    let preset_button = gtk::MenuButton::builder()
+        .child(&preset_content)
+        .tooltip_text("Choose a starting point")
+        .css_classes(["prompt-starter-button"])
+        .build();
+    preset_button.set_popover(Some(&preset_popover));
+    preset_button.update_property(&[
+        gtk::accessible::Property::Label("Prompt starting point"),
+        gtk::accessible::Property::Description(
+            "Choose a starting prompt. Applying it resets structure and appearance; later edits create a custom prompt",
+        ),
+    ]);
+
+    let starter_title = gtk::Label::new(Some("Starting Point"));
+    starter_title.set_xalign(0.0);
+    starter_title.set_hexpand(true);
+    starter_title.add_css_class("prompt-starter-title");
+    let starter_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    starter_row.set_hexpand(true);
+    starter_row.set_valign(gtk::Align::Center);
+    starter_row.add_css_class("prompt-starter-row");
+    starter_row.append(&starter_title);
+    starter_row.append(&preset_button);
+    content.append(&starter_row);
+
+    let add_icon = gtk::Image::builder()
+        .icon_name("list-add-symbolic")
+        .pixel_size(13)
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
+    let add_label = gtk::Label::new(Some("Add Module"));
+    let add_content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    add_content.append(&add_icon);
+    add_content.append(&add_label);
+    let add_popover = gtk::Popover::new();
+    add_popover.add_css_class("prompt-catalog-popover");
+    let catalog = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    catalog.set_margin_top(8);
+    catalog.set_margin_bottom(8);
+    catalog.set_margin_start(8);
+    catalog.set_margin_end(8);
+    let mut previous_category = "";
+    let mut add_module_buttons = Vec::with_capacity(PromptSegmentKind::ALL.len());
+    for kind in PromptSegmentKind::ALL {
+        if kind.category() != previous_category {
+            let category = gtk::Label::new(Some(kind.category()));
+            category.set_xalign(0.0);
+            category.add_css_class("prompt-catalog-category");
+            if !previous_category.is_empty() {
+                category.set_margin_top(5);
+            }
+            catalog.append(&category);
+            previous_category = kind.category();
+        }
+        let label = gtk::Label::new(Some(kind.label()));
+        label.set_xalign(0.0);
+        label.set_hexpand(true);
+        let sample = gtk::Label::new(Some(kind.sample()));
+        sample.set_xalign(1.0);
+        sample.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        sample.add_css_class("prompt-catalog-sample");
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        row.append(&label);
+        row.append(&sample);
+        let button = gtk::Button::builder()
+            .child(&row)
+            .hexpand(true)
+            .tooltip_text(kind.description())
+            .css_classes(["prompt-catalog-item"])
+            .build();
+        button.update_property(&[
+            gtk::accessible::Property::Label(kind.label()),
+            gtk::accessible::Property::Description(&format!(
+                "{}. Example: {}",
+                kind.description(),
+                kind.sample()
+            )),
+        ]);
+        catalog.append(&button);
+        add_module_buttons.push(button);
+    }
+    let catalog_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .min_content_width(280)
+        .max_content_height(390)
+        .propagate_natural_height(true)
+        .child(&catalog)
+        .build();
+    add_popover.set_child(Some(&catalog_scroll));
+    let add_button = gtk::MenuButton::builder()
+        .child(&add_content)
+        .tooltip_text("Add a prompt module")
+        .css_classes(["prompt-add-button"])
+        .build();
+    add_button.set_popover(Some(&add_popover));
+    add_button.update_property(&[
+        gtk::accessible::Property::Label("Add Prompt Module"),
+        gtk::accessible::Property::Description(
+            "Open the categorized module library and add a module at the end",
+        ),
+    ]);
+
+    let module_count = gtk::Label::new(None);
+    module_count.add_css_class("prompt-module-count");
+    let structure_title = gtk::Label::new(Some("Prompt Structure"));
+    structure_title.set_xalign(0.0);
+    structure_title.set_hexpand(true);
+    structure_title.add_css_class("layout-group-title");
+    let structure_header = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+    structure_header.set_valign(gtk::Align::Center);
+    structure_header.append(&structure_title);
+    structure_header.append(&module_count);
+    structure_header.append(&add_button);
+
+    let module_list = gtk::Box::new(gtk::Orientation::Vertical, 1);
+    module_list.add_css_class("prompt-module-list");
+    let segment_rows = PromptSegmentKind::ALL
+        .into_iter()
+        .map(prompt_segment_row)
+        .collect::<Vec<_>>();
+    for row in &segment_rows {
+        module_list.append(&row.root);
+    }
+    let module_rows = segment_rows
+        .iter()
+        .map(|row| row.root.clone())
+        .collect::<Vec<_>>();
+    let module_select_buttons = segment_rows
+        .iter()
+        .map(|row| row.select_button.clone())
+        .collect::<Vec<_>>();
+    if let Some(first) = module_select_buttons.first() {
+        for button in module_select_buttons.iter().skip(1) {
+            button.set_group(Some(first));
+        }
+    }
+    let module_samples = segment_rows
+        .iter()
+        .map(|row| row.sample.clone())
+        .collect::<Vec<_>>();
+    let module_move_up_buttons = segment_rows
+        .iter()
+        .map(|row| row.move_up_button.clone())
+        .collect::<Vec<_>>();
+    let module_move_down_buttons = segment_rows
+        .iter()
+        .map(|row| row.move_down_button.clone())
+        .collect::<Vec<_>>();
+    let module_remove_buttons = segment_rows
+        .iter()
+        .map(|row| row.remove_button.clone())
+        .collect::<Vec<_>>();
+
+    let empty_mark = gtk::Label::new(Some(">_"));
+    empty_mark.add_css_class("prompt-empty-mark");
+    let empty_label = gtk::Label::new(Some("No modules yet"));
+    empty_label.add_css_class("prompt-empty-label");
+    let empty_state = gtk::Box::new(gtk::Orientation::Vertical, 5);
+    empty_state.set_valign(gtk::Align::Center);
+    empty_state.add_css_class("prompt-empty-state");
+    empty_state.append(&empty_mark);
+    empty_state.append(&empty_label);
+
+    let structure = gtk::Box::new(gtk::Orientation::Vertical, 5);
+    structure.add_css_class("layout-group");
+    structure.append(&structure_header);
+    structure.append(&module_list);
+    structure.append(&empty_state);
+    content.append(&structure);
+
+    let tone_labels = PreviewTone::ALL.map(PreviewTone::label);
+    let tone_selector = gtk::DropDown::from_strings(&tone_labels);
+    tone_selector.set_hexpand(false);
+    tone_selector.set_width_request(116);
+    tone_selector.add_css_class("prompt-property-control");
+    tone_selector.update_property(&[
+        gtk::accessible::Property::Label("Module accent"),
+        gtk::accessible::Property::Description("Choose the selected module's terminal color"),
+    ]);
+    let inspector_title = gtk::Label::new(Some("Module Accent"));
+    inspector_title.set_xalign(0.0);
+    inspector_title.set_hexpand(true);
+    inspector_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    inspector_title.add_css_class("layout-row-label");
+    let inspector = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    inspector.add_css_class("layout-row");
+    inspector.add_css_class("prompt-property-row");
+    inspector.append(&inspector_title);
+    inspector.append(&tone_selector);
+
+    let character_labels = PromptCharacter::ALL.map(PromptCharacter::label);
+    let character_selector = gtk::DropDown::from_strings(&character_labels);
+    character_selector.set_hexpand(false);
+    character_selector.set_width_request(116);
+    character_selector.add_css_class("prompt-property-control");
+    character_selector.update_property(&[
+        gtk::accessible::Property::Label("Prompt symbol"),
+        gtk::accessible::Property::Description("Choose the final input symbol"),
+    ]);
+    let character_label = gtk::Label::new(Some("Prompt Symbol"));
+    character_label.set_xalign(0.0);
+    character_label.set_hexpand(true);
+    character_label.add_css_class("layout-row-label");
+    let character_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    character_row.add_css_class("layout-row");
+    character_row.add_css_class("prompt-property-row");
+    character_row.append(&character_label);
+    character_row.append(&character_selector);
+
+    let appearance_card = gtk::Box::new(gtk::Orientation::Vertical, 1);
+    appearance_card.add_css_class("layout-card");
+    appearance_card.add_css_class("prompt-properties");
+    appearance_card.append(&inspector);
+    appearance_card.append(&character_row);
+    let layout_labels = PromptLayout::ALL.map(PromptLayout::label);
+    let layout_selector = gtk::DropDown::from_strings(&layout_labels);
+    layout_selector.add_css_class("prompt-property-control");
+    layout_selector.update_property(&[gtk::accessible::Property::Label("Prompt Layout")]);
+    appearance_card.append(&layout_row("Prompt Layout", &layout_selector));
+    let spacing_switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
+    spacing_switch.update_property(&[gtk::accessible::Property::Label("Space Between Prompts")]);
+    appearance_card.append(&layout_row("Space Between Prompts", &spacing_switch));
+    let appearance = gtk::Box::new(gtk::Orientation::Vertical, 5);
+    appearance.add_css_class("layout-group");
+    let appearance_title = gtk::Label::new(Some("Appearance"));
+    appearance_title.set_xalign(0.0);
+    appearance_title.add_css_class("layout-group-title");
+    appearance.append(&appearance_title);
+    appearance.append(&appearance_card);
+    content.append(&appearance);
+
+    let hostname_labels = PromptHostnameMode::ALL.map(PromptHostnameMode::label);
+    let hostname_selector = gtk::DropDown::from_strings(&hostname_labels);
+    hostname_selector.add_css_class("prompt-property-control");
+    hostname_selector.update_property(&[gtk::accessible::Property::Label("Host Visibility")]);
+    let compatibility = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    compatibility.append(&layout_row("Host Visibility", &hostname_selector));
+    let compatibility_note = gtk::Label::new(Some(
+        "Starship · Bash, Zsh, Fish and more. Choose ASCII > for basic fonts. Designer creates a separate configuration; it does not overwrite your imported prompt.",
+    ));
+    compatibility_note.set_wrap(true);
+    compatibility_note.set_xalign(0.0);
+    compatibility_note.set_max_width_chars(36);
+    compatibility_note.add_css_class("preview-source-detail");
+    compatibility.append(&compatibility_note);
+    let compatibility_expander = gtk::Expander::builder()
+        .label("Compatibility")
+        .child(&compatibility)
+        .build();
+    content.append(&compatibility_expander);
+
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_width(330)
+        .css_classes(["prompt-scroll"])
+        .child(&page)
+        .build();
+
+    PromptWidgets {
+        root: scroll,
+        source_selector,
+        import_panel,
+        design_panel: content,
+        import_status,
+        export_button,
+        preset_label,
+        preset_popover,
+        preset_buttons,
+        module_list,
+        module_count,
+        empty_state,
+        module_rows,
+        module_select_buttons,
+        module_samples,
+        module_move_up_buttons,
+        module_move_down_buttons,
+        module_remove_buttons,
+        add_button,
+        add_popover,
+        add_module_buttons,
+        inspector,
+        inspector_title,
+        tone_selector,
+        character_selector,
+        layout_selector,
+        hostname_selector,
+        spacing_switch,
+    }
+}
+
+fn prompt_segment_row(kind: PromptSegmentKind) -> PromptSegmentRow {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    row.set_hexpand(true);
+    row.set_valign(gtk::Align::Center);
+    row.add_css_class("prompt-module-row");
+
+    let label = gtk::Label::new(Some(kind.label()));
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label.add_css_class("layout-row-label");
+
+    let sample = gtk::Label::new(Some(kind.sample()));
+    sample.set_xalign(1.0);
+    sample.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    sample.add_css_class("prompt-module-sample");
+    let selection_content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    selection_content.append(&label);
+    selection_content.append(&sample);
+    let select_button = gtk::ToggleButton::builder()
+        .child(&selection_content)
+        .hexpand(true)
+        .tooltip_text(kind.description())
+        .css_classes(["prompt-module-select"])
+        .build();
+    select_button.update_property(&[
+        gtk::accessible::Property::Label(kind.label()),
+        gtk::accessible::Property::Description(kind.description()),
+    ]);
+
+    let move_up_button = prompt_menu_action("Move Up", "go-up-symbolic", false);
+    let move_down_button = prompt_menu_action("Move Down", "go-down-symbolic", false);
+    let remove_button = prompt_menu_action("Remove", "edit-delete-symbolic", true);
+    let actions = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    actions.set_margin_top(6);
+    actions.set_margin_bottom(6);
+    actions.set_margin_start(6);
+    actions.set_margin_end(6);
+    actions.append(&move_up_button);
+    actions.append(&move_down_button);
+    actions.append(&remove_button);
+    let actions_popover = gtk::Popover::new();
+    actions_popover.add_css_class("prompt-menu-popover");
+    actions_popover.set_child(Some(&actions));
+    let more_button = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text(format!("Actions for {}", kind.label()))
+        .css_classes(["prompt-module-more"])
+        .build();
+    more_button.set_popover(Some(&actions_popover));
+    more_button.update_property(&[
+        gtk::accessible::Property::Label("Module Actions"),
+        gtk::accessible::Property::Description(&format!("Move or remove {}", kind.label())),
+    ]);
+
+    row.append(&select_button);
+    row.append(&more_button);
+    PromptSegmentRow {
+        root: row,
+        select_button,
+        sample,
+        move_up_button,
+        move_down_button,
+        remove_button,
+    }
+}
+
+fn prompt_menu_action(label: &str, icon_name: &str, destructive: bool) -> gtk::Button {
+    let icon = gtk::Image::builder()
+        .icon_name(icon_name)
+        .pixel_size(14)
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
+    let text = gtk::Label::new(Some(label));
+    text.set_xalign(0.0);
+    text.set_hexpand(true);
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    content.append(&icon);
+    content.append(&text);
+    let button = gtk::Button::builder()
+        .child(&content)
+        .hexpand(true)
+        .css_classes(["prompt-menu-item"])
+        .build();
+    if destructive {
+        button.add_css_class("destructive-action");
+    }
+    button
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PromptPreviewScenario {
+    CurrentFolder,
+    Projects,
+    Failure,
+    Ssh,
+    Root,
+    Alignment,
+}
+
+impl PromptPreviewScenario {
+    const ALL: [Self; 6] = [
+        Self::CurrentFolder,
+        Self::Projects,
+        Self::Failure,
+        Self::Ssh,
+        Self::Root,
+        Self::Alignment,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::CurrentFolder => "Current Folder",
+            Self::Projects => "Projects",
+            Self::Failure => "Failure",
+            Self::Ssh => "SSH",
+            Self::Root => "Root",
+            Self::Alignment => "Alignment",
+        }
+    }
+
+    fn from_index(index: u32) -> Self {
+        Self::ALL
+            .get(index as usize)
+            .copied()
+            .unwrap_or(Self::CurrentFolder)
+    }
+}
+
+fn prompt_preview_contexts() -> [PromptPreviewContext<'static>; 4] {
+    let base = PromptPreviewContext {
+        username: "mii",
+        hostname: "mochi",
+        path: "~/tm",
+        git_branch: Some("dev"),
+        git_status: Some("!?"),
+        rust_version: Some("v1.89"),
+        node_version: None,
+        python_version: None,
+        go_version: None,
+        command_duration: Some("8ms"),
+        jobs: None,
+        time: Some("23:42"),
+        exit_status: 0,
+        is_root: false,
+        is_ssh: false,
+    };
+    let node = PromptPreviewContext {
+        path: "~/web",
+        git_branch: None,
+        git_status: None,
+        rust_version: None,
+        node_version: Some("v24"),
+        command_duration: Some("1s"),
+        ..base
+    };
+    let go = PromptPreviewContext {
+        path: "~/api",
+        git_branch: Some("main"),
+        git_status: None,
+        rust_version: None,
+        node_version: None,
+        go_version: Some("v1.25"),
+        command_duration: Some("24ms"),
+        ..base
+    };
+    let failed = PromptPreviewContext {
+        path: "~/py",
+        git_branch: Some("fix"),
+        git_status: None,
+        rust_version: None,
+        node_version: None,
+        python_version: Some("v3.14"),
+        command_duration: None,
+        jobs: Some("2"),
+        exit_status: 1,
+        ..base
+    };
+    [base, node, go, failed]
+}
+
+fn close_containing_popover(button: &gtk::Button) {
+    if let Some(widget) = button.ancestor(gtk::Popover::static_type())
+        && let Ok(popover) = widget.downcast::<gtk::Popover>()
+    {
+        popover.popdown();
+    }
+}
+
+fn layout_spin_button(
+    value: i32,
+    minimum: i32,
+    maximum: i32,
+    accessible_label: &str,
+    description: &str,
+) -> gtk::SpinButton {
+    let input = typography_spin_button(
+        f64::from(value),
+        f64::from(minimum),
+        f64::from(maximum),
+        1.0,
+        0,
+        accessible_label,
+        description,
+    );
+    input.set_hexpand(false);
+    input.set_width_request(116);
+    input.add_css_class("layout-control");
+    input
+}
+
+fn layout_drop_down(
+    labels: &[&str],
+    selected: u32,
+    accessible_label: &str,
+    description: &str,
+) -> gtk::DropDown {
+    let selector = gtk::DropDown::from_strings(labels);
+    selector.set_selected(selected);
+    selector.set_width_request(116);
+    selector.set_halign(gtk::Align::End);
+    selector.add_css_class("typography-control");
+    selector.add_css_class("layout-control");
+    selector.set_tooltip_text(Some(description));
+    selector.update_property(&[
+        gtk::accessible::Property::Label(accessible_label),
+        gtk::accessible::Property::Description(description),
+    ]);
+    selector
+}
+
+fn layout_switch(active: bool, accessible_label: &str, description: &str) -> gtk::Switch {
+    let switch = gtk::Switch::builder()
+        .active(active)
+        .valign(gtk::Align::Center)
+        .halign(gtk::Align::End)
+        .build();
+    switch.add_css_class("layout-switch");
+    switch.set_tooltip_text(Some(description));
+    switch.update_property(&[
+        gtk::accessible::Property::Label(accessible_label),
+        gtk::accessible::Property::Description(description),
+    ]);
+    switch
+}
+
+fn layout_row(title: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.set_hexpand(true);
+    row.set_valign(gtk::Align::Center);
+    row.add_css_class("layout-row");
+    let label = gtk::Label::new(Some(title));
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label.add_css_class("layout-row-label");
+    child.set_halign(gtk::Align::End);
+    row.append(&label);
+    row.append(child);
+    row
+}
+
+fn layout_group<const N: usize>(title: &str, rows: [gtk::Box; N]) -> gtk::Box {
+    let group = gtk::Box::new(gtk::Orientation::Vertical, 5);
+    group.add_css_class("layout-group");
+    let heading = gtk::Label::new(Some(title));
+    heading.set_xalign(0.0);
+    heading.add_css_class("layout-group-title");
+    group.append(&heading);
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 1);
+    card.add_css_class("layout-card");
+    for row in rows {
+        card.append(&row);
+    }
+    group.append(&card);
+    group
+}
+
+fn build_activity_item(module: EditorModule) -> (gtk::Overlay, gtk::ToggleButton) {
+    let image = gtk::Image::builder()
+        .icon_name(module.icon_name())
+        .pixel_size(20)
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
+    let button = gtk::ToggleButton::builder()
+        .child(&image)
+        .width_request(36)
+        .height_request(36)
+        .halign(gtk::Align::Center)
+        .tooltip_text(format!("{}  {}", module.label(), module.shortcut_hint()))
+        .css_classes(["activity-button"])
+        .build();
+    button.update_property(&[
+        gtk::accessible::Property::Label(module.label()),
+        gtk::accessible::Property::Description(module.description()),
+        gtk::accessible::Property::KeyShortcuts(module.shortcut()),
+    ]);
+
+    let indicator = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    indicator.set_size_request(2, 20);
+    indicator.set_halign(gtk::Align::Start);
+    indicator.set_valign(gtk::Align::Center);
+    indicator.set_can_target(false);
+    indicator.set_visible(false);
+    indicator.add_css_class("activity-indicator");
+
+    let item = gtk::Overlay::new();
+    item.set_width_request(48);
+    item.set_child(Some(&button));
+    item.add_overlay(&indicator);
+    item.add_css_class("activity-item");
+
+    let indicator_ref = indicator.clone();
+    button.connect_toggled(move |button| indicator_ref.set_visible(button.is_active()));
+
+    (item, button)
+}
+
+fn build_editor_workspace(
+    palette: &gtk::ScrolledWindow,
+    typography: &gtk::ScrolledWindow,
+    layout: &gtk::ScrolledWindow,
+    prompt: &gtk::ScrolledWindow,
+) -> EditorWorkspaceWidgets {
+    let stack = gtk::Stack::builder()
+        .hexpand(true)
+        .vexpand(true)
+        .hhomogeneous(true)
+        .vhomogeneous(true)
+        .transition_type(gtk::StackTransitionType::Crossfade)
+        .transition_duration(120)
+        .css_classes(["editor-module-stack"])
+        .build();
+    stack.add_named(palette, Some(EditorModule::Palette.stack_name()));
+    stack.add_named(typography, Some(EditorModule::Typography.stack_name()));
+    stack.add_named(layout, Some(EditorModule::Layout.stack_name()));
+    stack.add_named(prompt, Some(EditorModule::Prompt.stack_name()));
+
+    let rail = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    rail.set_width_request(48);
+    rail.set_vexpand(true);
+    rail.set_valign(gtk::Align::Fill);
+    rail.add_css_class("activity-rail");
+    rail.update_property(&[
+        gtk::accessible::Property::Label("Editor Modules"),
+        gtk::accessible::Property::Description(
+            "Switch the editor module without changing the live preview",
+        ),
+    ]);
+
+    let (palette_item, palette_button) = build_activity_item(EditorModule::Palette);
+    let (typography_item, typography_button) = build_activity_item(EditorModule::Typography);
+    let (layout_item, layout_button) = build_activity_item(EditorModule::Layout);
+    let (prompt_item, prompt_button) = build_activity_item(EditorModule::Prompt);
+    typography_button.set_group(Some(&palette_button));
+    layout_button.set_group(Some(&palette_button));
+    prompt_button.set_group(Some(&palette_button));
+    rail.append(&palette_item);
+    rail.append(&typography_item);
+    rail.append(&layout_item);
+    rail.append(&prompt_item);
+
+    let stack_ref = stack.clone();
+    palette_button.connect_toggled(move |button| {
+        if button.is_active() {
+            stack_ref.set_visible_child_name(EditorModule::Palette.stack_name());
+        }
+    });
+    let stack_ref = stack.clone();
+    typography_button.connect_toggled(move |button| {
+        if button.is_active() {
+            stack_ref.set_visible_child_name(EditorModule::Typography.stack_name());
+        }
+    });
+    let stack_ref = stack.clone();
+    layout_button.connect_toggled(move |button| {
+        if button.is_active() {
+            stack_ref.set_visible_child_name(EditorModule::Layout.stack_name());
+        }
+    });
+    let stack_ref = stack.clone();
+    prompt_button.connect_toggled(move |button| {
+        if button.is_active() {
+            stack_ref.set_visible_child_name(EditorModule::Prompt.stack_name());
+        }
+    });
+    palette_button.set_active(true);
+    stack.set_visible_child_name(EditorModule::Palette.stack_name());
+
+    let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    root.set_hexpand(true);
+    root.set_vexpand(true);
+    root.add_css_class("editor-workspace");
+    root.append(&rail);
+    root.append(&stack);
+
+    EditorWorkspaceWidgets {
+        root,
+        palette_button,
+        typography_button,
+        layout_button,
+        prompt_button,
+    }
+}
+
+fn install_editor_module_actions(
+    window: &adw::ApplicationWindow,
+    workspace: &EditorWorkspaceWidgets,
+) {
+    for module in EditorModule::ALL {
+        let button = match module {
+            EditorModule::Palette => workspace.palette_button.clone(),
+            EditorModule::Typography => workspace.typography_button.clone(),
+            EditorModule::Layout => workspace.layout_button.clone(),
+            EditorModule::Prompt => workspace.prompt_button.clone(),
+        };
+        let action = gio::SimpleAction::new(module.action_name(), None);
+        action.connect_activate(move |_, _| {
+            if !button.is_active() {
+                // Moving focus settles an in-progress field edit before its
+                // page is hidden. Repeating the current module shortcut stays
+                // a no-op and does not interrupt typing.
+                button.grab_focus();
+                button.set_active(true);
+            }
+        });
+        window.add_action(&action);
+    }
+}
+
+fn build_preview(
+    variant_switch: &gtk::Box,
+    initial_typography: &TypographySettings,
+) -> PreviewWidgets {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     content.add_css_class("termimochi-preview-pane");
     content.set_margin_top(16);
@@ -801,6 +2265,65 @@ fn build_preview(variant_switch: &gtk::Box) -> PreviewWidgets {
     heading.set_hexpand(true);
     heading.set_ellipsize(gtk::pango::EllipsizeMode::End);
     heading.add_css_class("preview-heading");
+    let appearance_source = gtk::Label::new(Some("Reading terminal appearance…"));
+    appearance_source.set_xalign(0.0);
+    appearance_source.add_css_class("layout-group-title");
+    let appearance_details = gtk::Label::new(None);
+    appearance_details.set_xalign(0.0);
+    appearance_details.set_wrap(true);
+    appearance_details.set_max_width_chars(38);
+    appearance_details.add_css_class("preview-source-detail");
+    let context_source = gtk::Label::new(Some("Reading current folder…"));
+    context_source.set_xalign(0.0);
+    context_source.set_wrap(true);
+    context_source.set_max_width_chars(38);
+    context_source.add_css_class("preview-source-detail");
+    let fit_switch = gtk::Switch::builder()
+        .active(true)
+        .valign(gtk::Align::Center)
+        .build();
+    fit_switch.update_property(&[gtk::accessible::Property::Label("Fit Preview Width")]);
+    let source_content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    source_content.set_margin_top(14);
+    source_content.set_margin_bottom(14);
+    source_content.set_margin_start(14);
+    source_content.set_margin_end(14);
+    source_content.append(&appearance_source);
+    source_content.append(&appearance_details);
+    source_content.append(
+        &gtk::Button::builder()
+            .label("Reload Terminal Appearance")
+            .action_name("win.reload-terminal")
+            .css_classes(["prompt-menu-item"])
+            .build(),
+    );
+    source_content.append(&layout_row("Fit Preview Width", &fit_switch));
+    source_content.append(&context_source);
+    for (label, action) in [
+        ("Choose Preview Folder…", "win.preview-folder"),
+        ("Refresh Folder", "win.refresh-preview-folder"),
+    ] {
+        source_content.append(
+            &gtk::Button::builder()
+                .label(label)
+                .action_name(action)
+                .css_classes(["prompt-menu-item"])
+                .build(),
+        );
+    }
+    let source_popover = gtk::Popover::builder().child(&source_content).build();
+    let source_button = gtk::MenuButton::builder()
+        .icon_name("preferences-system-symbolic")
+        .popover(&source_popover)
+        .tooltip_text("Preview source and terminal appearance")
+        .css_classes(["preview-source-button"])
+        .build();
+    source_button.update_property(&[
+        gtk::accessible::Property::Label("Preview Source"),
+        gtk::accessible::Property::Description(
+            "Inspect the terminal profile, reload its appearance, or choose the preview folder",
+        ),
+    ]);
     variant_switch.set_valign(gtk::Align::Center);
     variant_switch.set_halign(gtk::Align::End);
     variant_switch.set_hexpand(false);
@@ -810,6 +2333,20 @@ fn build_preview(variant_switch: &gtk::Box) -> PreviewWidgets {
     preview_header.set_valign(gtk::Align::Center);
     preview_header.add_css_class("preview-title-row");
     preview_header.append(&heading);
+    let inspect_button = gtk::ToggleButton::with_label("Inspect");
+    inspect_button.set_valign(gtk::Align::Center);
+    inspect_button.add_css_class("preview-inspect-toggle");
+    inspect_button.set_tooltip_text(Some(
+        "Enable point-to-edit · hover to identify a detail · Esc to exit",
+    ));
+    inspect_button.update_property(&[
+        gtk::accessible::Property::Label("Inspect Preview"),
+        gtk::accessible::Property::Description(
+            "Off by default. Enable hover feedback and click-to-edit without changing the preview",
+        ),
+    ]);
+    preview_header.append(&inspect_button);
+    preview_header.append(&source_button);
     preview_header.append(variant_switch);
     content.append(&preview_header);
 
@@ -821,27 +2358,47 @@ fn build_preview(variant_switch: &gtk::Box) -> PreviewWidgets {
     let terminal_header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     terminal_header.add_css_class("terminal-header");
     let terminal_title = gtk::Label::new(Some("bash"));
-    terminal_title.set_hexpand(true);
     terminal_title.set_xalign(0.0);
     terminal_title.add_css_class("terminal-chrome");
+    let terminal_tab = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    terminal_tab.set_valign(gtk::Align::Center);
+    terminal_tab.add_css_class("terminal-tab");
+    terminal_tab.append(&terminal_title);
+    let terminal_header_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    terminal_header_spacer.set_hexpand(true);
     let scenario_labels = PreviewScenario::ALL.map(PreviewScenario::label);
     let selector = gtk::DropDown::from_strings(&scenario_labels);
-    selector.set_tooltip_text(Some("Switch VTE preview scenario"));
+    selector.set_selected((PreviewScenario::ALL.len() - 1) as u32);
+    selector.set_tooltip_text(Some(
+        "Current Folder uses a local snapshot; other entries are test samples",
+    ));
+    selector.update_property(&[gtk::accessible::Property::Label("Preview Scenario")]);
     selector.add_css_class("preview-scenario");
-    terminal_header.append(&terminal_title);
+    let prompt_labels = PromptPreviewScenario::ALL.map(PromptPreviewScenario::label);
+    let prompt_selector = gtk::DropDown::from_strings(&prompt_labels);
+    prompt_selector.set_visible(false);
+    prompt_selector.add_css_class("preview-scenario");
+    prompt_selector.update_property(&[gtk::accessible::Property::Label("Prompt Preview Scenario")]);
+    prompt_selector.set_tooltip_text(Some(
+        "Check the prompt in your current folder or a controlled sample",
+    ));
+    terminal_header.append(&terminal_tab);
+    terminal_header.append(&terminal_header_spacer);
     terminal_header.append(&selector);
+    terminal_header.append(&prompt_selector);
     terminal.append(&terminal_header);
 
     let vte_terminal = vte::Terminal::builder()
         .audible_bell(false)
         .bold_is_bright(false)
-        .cursor_blink_mode(vte::CursorBlinkMode::Off)
-        .input_enabled(false)
-        .scrollback_lines(0)
+        .cursor_blink_mode(vte::CursorBlinkMode::System)
+        .input_enabled(true)
+        .scroll_on_keystroke(true)
+        .scroll_on_output(true)
+        .scrollback_lines(256)
         .build();
     vte_terminal.set_hexpand(true);
     vte_terminal.set_vexpand(false);
-    vte_terminal.set_height_request(195);
     vte_terminal.set_size(
         PREVIEW_COLUMNS
             .try_into()
@@ -850,24 +2407,135 @@ fn build_preview(variant_switch: &gtk::Box) -> PreviewWidgets {
             .try_into()
             .expect("preview row count fits c_long"),
     );
-    // This is a read-only preview inside another scrolled window. Keeping VTE
-    // out of pointer hit-testing lets wheel/touchpad events reach that parent.
-    vte_terminal.set_can_target(false);
-    vte_terminal.set_focusable(false);
-    vte_terminal.set_font(Some(&gtk::pango::FontDescription::from_string(
-        "Monospace 10.5",
-    )));
+    // VTE owns text input and selection. Scrollback is handled before the
+    // outer pane, including when the profile hides its scrollbar.
+    vte_terminal.set_can_target(true);
+    vte_terminal.set_focusable(true);
+    vte_terminal.set_font(Some(&initial_typography.font_description()));
+    vte_terminal.set_margin_top(DEFAULT_CONTENT_PADDING);
+    vte_terminal.set_margin_bottom(DEFAULT_CONTENT_PADDING);
+    vte_terminal.set_margin_start(DEFAULT_CONTENT_PADDING);
+    vte_terminal.set_margin_end(DEFAULT_CONTENT_PADDING);
     vte_terminal.add_css_class("vte-preview");
-    terminal.append(&vte_terminal);
+    vte_terminal.set_tooltip_text(Some(
+        "Drag to select text · type to try input · enable Inspect to find a detail's settings",
+    ));
+    vte_terminal.update_property(&[
+        gtk::accessible::Property::Label("Interactive Terminal Preview"),
+        gtk::accessible::Property::Description(
+            "Drag to select and copy. Type locally; commands are never executed. Enable Inspect for hover feedback and point-to-edit. Escape restores the sample when Inspect is off",
+        ),
+        gtk::accessible::Property::KeyShortcuts("Escape"),
+    ]);
+    // VTE implements GtkScrollable itself and otherwise follows the viewport
+    // width by changing its column count. A plain wrapper gives the horizontal
+    // scroller a fixed-size canvas, preserving the selected grid when the
+    // window is narrow.
+    let terminal_canvas = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    terminal_canvas.set_vexpand(false);
+    terminal_canvas.add_css_class("terminal-canvas");
+    terminal_canvas.append(&vte_terminal);
+    let terminal_scrollbar = gtk::Scrollbar::new(
+        gtk::Orientation::Vertical,
+        vte_terminal.vadjustment().as_ref(),
+    );
+    terminal_scrollbar.set_vexpand(true);
+    terminal_scrollbar.set_valign(gtk::Align::Fill);
+    terminal_scrollbar.set_tooltip_text(Some("Terminal scrollback"));
+    terminal_scrollbar.add_css_class("terminal-scrollbar");
+    terminal_scrollbar.update_property(&[gtk::accessible::Property::Label("Terminal Scrollbar")]);
+    let terminal_scrollbar_revealer = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::None)
+        .reveal_child(false)
+        .child(&terminal_scrollbar)
+        .build();
+    terminal_scrollbar_revealer.set_vexpand(true);
+    terminal_scrollbar_revealer.set_valign(gtk::Align::Fill);
+    let terminal_viewport = gtk::ScrolledWindow::builder()
+        // Keep the selected column grid intact at narrow window sizes. The
+        // external policy keeps its rail invisible while touchpad and
+        // Shift+wheel panning remain available.
+        .hscrollbar_policy(gtk::PolicyType::External)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_width(false)
+        .vexpand(false)
+        .height_request(PREVIEW_MIN_HEIGHT)
+        .css_classes(["terminal-viewport"])
+        .child(&terminal_canvas)
+        .build();
+    terminal_viewport.set_hexpand(true);
+    terminal_viewport.set_tooltip_text(Some(
+        "Terminal preview · use Shift+wheel or a sideways touchpad gesture to pan wide grids",
+    ));
+    terminal_viewport.update_property(&[
+        gtk::accessible::Property::Label("Terminal Preview"),
+        gtk::accessible::Property::Description(
+            "A terminal grid that can be panned horizontally when it is wider than the preview",
+        ),
+    ]);
+    // VTE sits inside a horizontal scroller. Prioritize its row-based
+    // scrollback, then pass gestures at either boundary to the outer pane.
+    let terminal_scroll =
+        gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    terminal_scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+    // Start outside the inner horizontal ScrolledWindow. Passing the viewport
+    // itself would resolve that widget as its own ancestor and swallow the
+    // vertical gesture instead of reaching the outer preview scroller.
+    let terminal_scroll_source = content.clone();
+    let scrollback_terminal = vte_terminal.clone();
+    terminal_scroll.connect_scroll(move |controller, _, delta_y| {
+        if let Some(adjustment) = scrollback_terminal.vadjustment() {
+            let destination = preview_scrollback_destination(
+                adjustment.value(),
+                adjustment.lower(),
+                adjustment.upper(),
+                adjustment.page_size(),
+                delta_y,
+                scrollback_terminal.char_height() as f64,
+                controller.unit(),
+            );
+            if let Some(destination) = destination {
+                adjustment.set_value(destination);
+                return glib::Propagation::Stop;
+            }
+        }
+        scroll_parent_vertically(&terminal_scroll_source, delta_y, controller.unit());
+        glib::Propagation::Stop
+    });
+    terminal_viewport.add_controller(terminal_scroll);
+    let terminal_stage = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    terminal_stage.set_hexpand(true);
+    terminal_stage.set_vexpand(false);
+    terminal_stage.add_css_class("terminal-stage");
+    terminal_stage.append(&terminal_viewport);
+    terminal_stage.append(&terminal_scrollbar_revealer);
+    terminal.append(&terminal_stage);
 
-    content.append(&terminal);
+    let terminal_overlay = gtk::Overlay::new();
+    terminal_overlay.set_child(Some(&terminal));
+    let inspect_highlight = gtk::DrawingArea::new();
+    inspect_highlight.set_can_target(false);
+    inspect_highlight.set_focusable(false);
+    terminal_overlay.add_overlay(&inspect_highlight);
+    let inspect_layer = gtk::Fixed::new();
+    inspect_layer.set_can_target(false);
+    inspect_layer.set_focusable(false);
+    let inspect_label = gtk::Label::new(None);
+    inspect_label.add_css_class("preview-inspect-hint");
+    inspect_label.set_can_target(false);
+    inspect_label.set_max_width_chars(36);
+    inspect_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    inspect_label.set_visible(false);
+    inspect_layer.put(&inspect_label, 0.0, 0.0);
+    terminal_overlay.add_overlay(&inspect_layer);
+    content.append(&terminal_overlay);
 
     let quality = gtk::Box::new(gtk::Orientation::Vertical, 4);
     quality.add_css_class("quality-section");
 
     let metrics = gtk::Box::new(gtk::Orientation::Horizontal, 14);
     metrics.add_css_class("quality-row");
-    let quality_heading = gtk::Label::new(Some("Contrast"));
+    let quality_heading = gtk::Label::new(Some("Palette Contrast"));
     quality_heading.set_xalign(0.0);
     quality_heading.set_hexpand(true);
     quality_heading.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -927,9 +2595,24 @@ fn build_preview(variant_switch: &gtk::Box) -> PreviewWidgets {
 
     PreviewWidgets {
         root: scroll,
+        content,
         terminal_title,
+        terminal_shell: terminal,
+        inspect_button,
+        inspect_layer,
+        inspect_label,
+        inspect_highlight,
+        terminal_tab,
         terminal: vte_terminal,
+        terminal_canvas,
+        terminal_viewport,
+        terminal_scrollbar_revealer,
         selector,
+        prompt_selector,
+        appearance_source,
+        appearance_details,
+        context_source,
+        fit_switch,
         body_ratio,
         composer_ratio,
         summary_icon,
@@ -938,6 +2621,245 @@ fn build_preview(variant_switch: &gtk::Box) -> PreviewWidgets {
         diagnostic_surface,
         diagnostics,
     }
+}
+
+fn typography_field(title: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
+    let field = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    field.set_hexpand(true);
+    field.add_css_class("typography-field");
+    child.set_hexpand(true);
+    child.set_halign(gtk::Align::Fill);
+    let label = gtk::Label::new(Some(title));
+    label.set_xalign(0.0);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label.add_css_class("typography-field-label");
+    field.append(&label);
+    field.append(child);
+    field
+}
+
+#[allow(clippy::too_many_arguments)]
+fn typography_spin_button(
+    value: f64,
+    minimum: f64,
+    maximum: f64,
+    step: f64,
+    digits: u32,
+    accessible_label: &str,
+    description: &str,
+) -> gtk::SpinButton {
+    let adjustment = gtk::Adjustment::new(value, minimum, maximum, step, step * 4.0, 0.0);
+    let input = gtk::SpinButton::builder()
+        .adjustment(&adjustment)
+        .climb_rate(step)
+        .digits(digits)
+        .hexpand(true)
+        .numeric(true)
+        .snap_to_ticks(true)
+        .width_chars(5)
+        .build();
+    input.add_css_class("typography-control");
+    input.set_tooltip_text(Some(description));
+    input.update_property(&[
+        gtk::accessible::Property::Label(accessible_label),
+        gtk::accessible::Property::Description(description),
+    ]);
+    input
+}
+
+fn monospace_font_choices(
+    terminal: &vte::Terminal,
+    preferred: &TypographySettings,
+) -> (Vec<String>, u32) {
+    let context = terminal.pango_context();
+    let mut names: Vec<_> = context
+        .list_families()
+        .into_iter()
+        .filter(|family| is_usable_terminal_family(&context, family))
+        .map(|family| family.name().to_string())
+        .collect();
+    names.sort_by_key(|name| name.to_lowercase());
+    names.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+
+    let resolved_family = context
+        .load_font(&preferred.font_description())
+        .and_then(|font| font.face())
+        .map(|face| face.family().name().to_string());
+    let system_family = context
+        .load_font(&TypographySettings::default().font_description())
+        .and_then(|font| font.face())
+        .map(|face| face.family().name().to_string());
+
+    if names.is_empty() {
+        return (vec![DEFAULT_FONT_FAMILY.to_owned()], 0);
+    }
+    let default_index = preferred_font_index(
+        &names,
+        &preferred.family,
+        resolved_family.as_deref(),
+        system_family.as_deref(),
+    );
+    (names, default_index)
+}
+
+fn font_family_factory(css_class: &'static str) -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(move |_, object| {
+        let Some(item) = object.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let label = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .single_line_mode(true)
+            .max_width_chars(32)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes([css_class])
+            .build();
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, object| {
+        let Some(item) = object.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let Some(label) = item.child().and_downcast::<gtk::Label>() else {
+            return;
+        };
+        let Some(font) = item.item().and_downcast::<gtk::StringObject>() else {
+            return;
+        };
+        let family = font.string();
+        let mut description = gtk::pango::FontDescription::new();
+        description.set_family(&family);
+        let attributes = gtk::pango::AttrList::new();
+        attributes.insert(gtk::pango::AttrFontDesc::new(&description));
+        label.set_text(&family);
+        label.set_attributes(Some(&attributes));
+        label.set_tooltip_text(Some(&family));
+    });
+    factory.connect_unbind(|_, object| {
+        let Some(label) = object
+            .downcast_ref::<gtk::ListItem>()
+            .and_then(gtk::ListItem::child)
+            .and_downcast::<gtk::Label>()
+        else {
+            return;
+        };
+        label.set_text("");
+        label.set_attributes(None);
+        label.set_tooltip_text(None);
+    });
+    factory
+}
+
+fn preferred_font_index(
+    names: &[String],
+    requested: &str,
+    resolved_requested: Option<&str>,
+    resolved_system: Option<&str>,
+) -> u32 {
+    [Some(requested), resolved_requested, resolved_system]
+        .into_iter()
+        .flatten()
+        .find_map(|candidate| {
+            names
+                .iter()
+                .position(|name| name.eq_ignore_ascii_case(candidate))
+        })
+        .and_then(|index| u32::try_from(index).ok())
+        .unwrap_or(0)
+}
+
+/// GTK adjustments can be relative to the retained ring while VTE text APIs
+/// use absolute rows (notably after reset). Locate the visible range using
+/// VTE's own extraction instead of assuming the two coordinate systems match.
+fn preview_visible_origin(terminal: &vte::Terminal) -> Option<(i64, f64)> {
+    let visible = terminal.text_format(vte::Format::Text)?;
+    if visible.trim().is_empty() {
+        return None;
+    }
+    let adjustment = terminal.vadjustment()?;
+    let units = if terminal.is_scroll_unit_is_pixels() {
+        terminal.char_height() as f64
+    } else {
+        1.0
+    };
+    let fraction = (adjustment.value() / units).fract();
+    let rows = terminal.row_count() + i64::from(fraction > 0.0);
+    let cursor_row = terminal.cursor_position().1;
+    let first = (cursor_row - terminal.scrollback_lines() - rows).max(0);
+    let mut matched = None;
+    for row in first..=cursor_row {
+        let text = terminal
+            .text_range_format(vte::Format::Text, row, 0, row + rows, 0)
+            .0;
+        if text.as_ref() == Some(&visible) {
+            // Identical repeated screens have no safe unique absolute anchor.
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some((row, fraction));
+        }
+    }
+    matched
+}
+
+fn preview_scrollback_destination(
+    value: f64,
+    lower: f64,
+    upper: f64,
+    page_size: f64,
+    delta: f64,
+    cell_height: f64,
+    unit: gdk::ScrollUnit,
+) -> Option<f64> {
+    if !delta.is_finite() || delta == 0.0 {
+        return None;
+    }
+    let rows = if unit == gdk::ScrollUnit::Surface {
+        delta / cell_height.max(1.0)
+    } else {
+        delta * 3.0
+    };
+    let destination = (value + rows).clamp(lower, (upper - page_size).max(lower));
+    ((destination - value).abs() > f64::EPSILON).then_some(destination)
+}
+
+fn fitted_preview_columns(
+    configured: usize,
+    viewport_width: i64,
+    cell_width: i64,
+    padding: i32,
+    fit: bool,
+) -> usize {
+    if !fit || viewport_width <= 0 || cell_width <= 0 {
+        return configured;
+    }
+    let available = viewport_width.saturating_sub(i64::from(padding).saturating_mul(2));
+    usize::try_from((available / cell_width).max(12))
+        .unwrap_or(configured)
+        .min(configured)
+}
+
+fn terminal_grid_extent(
+    cell_pixels: std::os::raw::c_long,
+    cell_count: usize,
+    padding: i64,
+    minimum: i32,
+) -> i32 {
+    let cell_pixels = i128::from(cell_pixels.max(0));
+    let cell_count = i128::try_from(cell_count).unwrap_or(i128::MAX);
+    let extent = cell_pixels
+        .saturating_mul(cell_count)
+        .saturating_add(i128::from(padding.max(0)));
+    extent.clamp(i128::from(minimum.max(1)), i128::from(i32::MAX)) as i32
+}
+
+fn add_widget_padding(extent: i32, padding_each_side: i32) -> i32 {
+    let padding = i64::from(padding_each_side.max(0)).saturating_mul(2);
+    i64::from(extent.max(1))
+        .saturating_add(padding)
+        .clamp(1, i64::from(i32::MAX)) as i32
 }
 
 fn inline_metric(title: &str) -> (gtk::Box, gtk::Label) {
@@ -1052,6 +2974,20 @@ impl Workbench {
     }
 
     fn refresh_history_actions(&self) {
+        if self.prompt_module_button.is_active() {
+            let history = self.prompt_history.borrow();
+            let designer = self.prompt_source_selector.selected() == 1;
+            self.undo_action.set_enabled(designer && history.can_undo());
+            self.redo_action.set_enabled(designer && history.can_redo());
+            return;
+        }
+        if !self.palette_module_button.is_active() {
+            // Typography and Layout are preview-only. Avoid letting Undo/Redo
+            // silently mutate the hidden Palette or Prompt module.
+            self.undo_action.set_enabled(false);
+            self.redo_action.set_enabled(false);
+            return;
+        }
         let has_draft = self.has_draft();
         let history = self.history.borrow();
         self.undo_action
@@ -1061,6 +2997,16 @@ impl Workbench {
     }
 
     fn undo_edit(&self) {
+        if self.prompt_module_button.is_active() {
+            let current = self.prompt_settings.borrow().clone();
+            let target = self.prompt_history.borrow_mut().undo(current);
+            if let Some(target) = target {
+                self.restore_prompt_settings(target);
+            } else {
+                self.refresh_history_actions();
+            }
+            return;
+        }
         if self.has_draft() {
             let current = self.editor_snapshot();
             let target = self.history.borrow_mut().undo_pending(current);
@@ -1082,6 +3028,16 @@ impl Workbench {
     }
 
     fn redo_edit(&self) {
+        if self.prompt_module_button.is_active() {
+            let current = self.prompt_settings.borrow().clone();
+            let target = self.prompt_history.borrow_mut().redo(current);
+            if let Some(target) = target {
+                self.restore_prompt_settings(target);
+            } else {
+                self.refresh_history_actions();
+            }
+            return;
+        }
         self.finish_active_edit();
         if self.has_draft() {
             self.refresh_history_actions();
@@ -1117,6 +3073,139 @@ impl Workbench {
         };
         *self.selected_color_key.borrow_mut() = selected_color_key;
         self.refresh_all();
+    }
+
+    fn restore_prompt_settings(&self, settings: PromptSettings) {
+        *self.prompt_settings.borrow_mut() = settings;
+        self.refresh_prompt_controls();
+        self.redraw_preview_contents();
+        self.refresh_history_actions();
+    }
+
+    fn update_prompt_settings(&self, update: impl FnOnce(&mut PromptSettings)) {
+        if self.updating_prompt.get() {
+            return;
+        }
+        let before = self.prompt_settings.borrow().clone();
+        let mut after = before.clone();
+        update(&mut after);
+        if before == after {
+            self.refresh_prompt_controls();
+            return;
+        }
+
+        let mut history = self.prompt_history.borrow_mut();
+        history.begin(before);
+        history.mark_changed();
+        history.commit(after.clone());
+        drop(history);
+        *self.prompt_settings.borrow_mut() = after;
+        self.preview_uses_prompt.set(true);
+        self.refresh_prompt_controls();
+        self.redraw_preview_contents();
+        self.refresh_history_actions();
+    }
+
+    fn refresh_prompt_controls(&self) {
+        let settings = self.prompt_settings.borrow().clone();
+        let active_kinds = settings
+            .enabled_segments()
+            .map(|segment| segment.kind)
+            .collect::<Vec<_>>();
+        let selected = self
+            .selected_prompt_kind
+            .get()
+            .filter(|kind| settings.is_enabled(*kind))
+            .or_else(|| active_kinds.first().copied());
+        self.selected_prompt_kind.set(selected);
+
+        self.updating_prompt.set(true);
+        self.prompt_preset_label.set_text(
+            settings
+                .source_preset()
+                .map_or("Custom", PromptPreset::label),
+        );
+        self.prompt_module_count
+            .set_text(&settings.enabled_count().to_string());
+        self.prompt_module_count.set_tooltip_text(Some(&format!(
+            "{} active modules",
+            settings.enabled_count()
+        )));
+        self.prompt_empty_state
+            .set_visible(settings.enabled_count() == 0);
+        self.prompt_module_list
+            .set_visible(settings.enabled_count() != 0);
+        self.prompt_add_button
+            .set_sensitive(settings.enabled_count() < PromptSegmentKind::ALL.len());
+        if settings.enabled_count() == PromptSegmentKind::ALL.len() {
+            self.prompt_add_button
+                .set_tooltip_text(Some("All modules are already in the prompt"));
+        } else {
+            self.prompt_add_button
+                .set_tooltip_text(Some("Add a prompt module"));
+        }
+
+        let mut previous: Option<&gtk::Box> = None;
+        for segment in settings.segments().iter().filter(|segment| segment.enabled) {
+            let index = usize::try_from(segment.kind.index()).unwrap_or_default();
+            let row = &self.prompt_module_rows[index];
+            self.prompt_module_list.reorder_child_after(row, previous);
+            previous = Some(row);
+        }
+
+        for kind in PromptSegmentKind::ALL {
+            let index = usize::try_from(kind.index()).unwrap_or_default();
+            let enabled = settings.is_enabled(kind);
+            let row = &self.prompt_module_rows[index];
+            row.set_visible(enabled);
+            if selected == Some(kind) {
+                row.add_css_class("selected");
+            } else {
+                row.remove_css_class("selected");
+            }
+            self.prompt_module_select_buttons[index].set_active(selected == Some(kind));
+
+            let sample = &self.prompt_module_samples[index];
+            for tone in PreviewTone::ALL {
+                let class = tone.css_class();
+                sample.remove_css_class(class);
+            }
+            sample.set_text(kind.sample());
+            sample.add_css_class(settings.tone(kind).css_class());
+
+            if let Some((position, total)) = settings.active_position(kind) {
+                self.prompt_module_move_up_buttons[index].set_sensitive(position > 0);
+                self.prompt_module_move_down_buttons[index].set_sensitive(position + 1 < total);
+                self.prompt_module_select_buttons[index].update_property(&[
+                    gtk::accessible::Property::Label(kind.label()),
+                    gtk::accessible::Property::Description(&format!(
+                        "{}. Position {} of {}",
+                        kind.description(),
+                        position + 1,
+                        total
+                    )),
+                ]);
+            }
+            self.prompt_add_module_buttons[index].set_sensitive(!enabled);
+            self.prompt_add_module_buttons[index].set_visible(true);
+        }
+
+        self.prompt_inspector.set_visible(selected.is_some());
+        if let Some(kind) = selected {
+            self.prompt_inspector_title
+                .set_text(&format!("{} Accent", kind.label()));
+            self.prompt_tone_selector
+                .set_selected(settings.tone(kind).index());
+        }
+        self.prompt_character_selector
+            .set_selected(settings.character().index());
+        self.prompt_layout_selector
+            .set_selected(settings.layout().index());
+        self.prompt_hostname_selector
+            .set_selected(settings.hostname_mode().index());
+        self.prompt_spacing_switch
+            .set_active(settings.add_newline());
+        self.updating_prompt.set(false);
     }
 
     fn install_actions(this: &Rc<Self>) {
@@ -1164,6 +3253,40 @@ impl Workbench {
         });
         window.add_action(&save_as);
 
+        let export_starship = gio::SimpleAction::new("export-starship", None);
+        let weak = Rc::downgrade(this);
+        export_starship.connect_activate(move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                this.choose_starship_export();
+            }
+        });
+        window.add_action(&export_starship);
+
+        let reload_terminal = gio::SimpleAction::new("reload-terminal", None);
+        let weak = Rc::downgrade(this);
+        reload_terminal.connect_activate(move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                this.confirm_discard(|this| this.reload_terminal_appearance());
+            }
+        });
+        window.add_action(&reload_terminal);
+        let preview_folder = gio::SimpleAction::new("preview-folder", None);
+        let weak = Rc::downgrade(this);
+        preview_folder.connect_activate(move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                this.choose_preview_folder();
+            }
+        });
+        window.add_action(&preview_folder);
+        let refresh_folder = gio::SimpleAction::new("refresh-preview-folder", None);
+        let weak = Rc::downgrade(this);
+        refresh_folder.connect_activate(move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                this.refresh_current_context();
+            }
+        });
+        window.add_action(&refresh_folder);
+
         let weak = Rc::downgrade(this);
         this.install_action.connect_activate(move |_, _| {
             if let Some(this) = weak.upgrade() {
@@ -1199,16 +3322,240 @@ impl Workbench {
                 return glib::Propagation::Proceed;
             };
             this.settle_active_edit();
-            if !this.model.borrow().dirty && !this.has_draft() {
+            if !this.model.borrow().dirty
+                && !this.has_draft()
+                && !this.prompt_has_unexported_changes()
+            {
                 return glib::Propagation::Proceed;
             }
-            this.confirm_discard(|this| {
-                this.model.borrow_mut().dirty = false;
-                this.discard_drafts();
-                this.window().close();
-            });
+            this.confirm_close_discard();
             glib::Propagation::Stop
         });
+
+        let weak = Rc::downgrade(this);
+        this.palette_module_button.connect_toggled(move |button| {
+            if let Some(this) = weak.upgrade() {
+                if !button.is_active() {
+                    this.settle_active_edit();
+                }
+                this.refresh_history_actions();
+            }
+        });
+
+        let weak = Rc::downgrade(this);
+        this.prompt_module_button.connect_toggled(move |button| {
+            if let Some(this) = weak.upgrade() {
+                if !this.navigating_preview.get() {
+                    this.preview_uses_prompt.set(button.is_active());
+                    this.preview_input.borrow_mut().reset();
+                    this.redraw_preview_contents();
+                }
+                this.refresh_history_actions();
+            }
+        });
+
+        let weak = Rc::downgrade(this);
+        this.prompt_source_selector
+            .connect_selected_notify(move |selector| {
+                if let Some(this) = weak.upgrade() {
+                    let designer = selector.selected() == 1;
+                    this.prompt_design_panel.set_visible(designer);
+                    this.prompt_import_panel.set_visible(!designer);
+                    this.prompt_export_button.set_visible(designer);
+                    if !this.navigating_preview.get() {
+                        this.preview_uses_prompt.set(true);
+                        this.preview_input.borrow_mut().reset();
+                        this.redraw_preview_contents();
+                    }
+                    this.refresh_history_actions();
+                }
+            });
+
+        for (index, button) in this.prompt_preset_buttons.iter().enumerate() {
+            let weak = Rc::downgrade(this);
+            button.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    let preset = PromptPreset::from_index(u32::try_from(index).unwrap_or(1));
+                    this.selected_prompt_kind.set(None);
+                    this.update_prompt_settings(|settings| settings.apply_preset(preset));
+                    this.prompt_preset_popover.popdown();
+                    if let Some(kind) = this.selected_prompt_kind.get() {
+                        let index = usize::try_from(kind.index()).unwrap_or_default();
+                        this.prompt_module_select_buttons[index].grab_focus();
+                    } else {
+                        this.prompt_add_button.grab_focus();
+                    }
+                }
+            });
+        }
+
+        for kind in PromptSegmentKind::ALL {
+            let index = usize::try_from(kind.index()).unwrap_or_default();
+
+            let weak = Rc::downgrade(this);
+            this.prompt_module_select_buttons[index].connect_toggled(move |button| {
+                if !button.is_active() {
+                    return;
+                }
+                if let Some(this) = weak.upgrade() {
+                    if this.updating_prompt.get() {
+                        return;
+                    }
+                    this.selected_prompt_kind.set(Some(kind));
+                    this.refresh_prompt_controls();
+                }
+            });
+
+            let weak = Rc::downgrade(this);
+            this.prompt_add_module_buttons[index].connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.selected_prompt_kind.set(Some(kind));
+                    this.update_prompt_settings(|settings| {
+                        settings.add_module(kind);
+                    });
+                    this.prompt_add_popover.popdown();
+                    this.prompt_module_select_buttons[index].grab_focus();
+                }
+            });
+
+            let weak = Rc::downgrade(this);
+            this.prompt_module_move_up_buttons[index].connect_clicked(move |button| {
+                if let Some(this) = weak.upgrade() {
+                    this.selected_prompt_kind.set(Some(kind));
+                    this.update_prompt_settings(|settings| {
+                        settings.move_module_up(kind);
+                    });
+                    close_containing_popover(button);
+                    this.prompt_module_select_buttons[index].grab_focus();
+                }
+            });
+
+            let weak = Rc::downgrade(this);
+            this.prompt_module_move_down_buttons[index].connect_clicked(move |button| {
+                if let Some(this) = weak.upgrade() {
+                    this.selected_prompt_kind.set(Some(kind));
+                    this.update_prompt_settings(|settings| {
+                        settings.move_module_down(kind);
+                    });
+                    close_containing_popover(button);
+                    this.prompt_module_select_buttons[index].grab_focus();
+                }
+            });
+
+            let weak = Rc::downgrade(this);
+            this.prompt_module_remove_buttons[index].connect_clicked(move |button| {
+                if let Some(this) = weak.upgrade() {
+                    let replacement = if this.selected_prompt_kind.get() == Some(kind) {
+                        let settings = this.prompt_settings.borrow();
+                        let active = settings
+                            .enabled_segments()
+                            .map(|segment| segment.kind)
+                            .collect::<Vec<_>>();
+                        active
+                            .iter()
+                            .position(|active_kind| *active_kind == kind)
+                            .and_then(|position| {
+                                active
+                                    .get(position + 1)
+                                    .or_else(|| position.checked_sub(1).and_then(|p| active.get(p)))
+                            })
+                            .copied()
+                    } else {
+                        this.selected_prompt_kind.get()
+                    };
+                    this.selected_prompt_kind.set(replacement);
+                    this.update_prompt_settings(|settings| {
+                        settings.remove_module(kind);
+                    });
+                    close_containing_popover(button);
+                    if let Some(replacement) = replacement {
+                        let replacement_index =
+                            usize::try_from(replacement.index()).unwrap_or_default();
+                        this.prompt_module_select_buttons[replacement_index].grab_focus();
+                    } else {
+                        this.prompt_add_button.grab_focus();
+                    }
+                }
+            });
+        }
+
+        let weak = Rc::downgrade(this);
+        this.prompt_tone_selector
+            .connect_selected_notify(move |selector| {
+                if let Some(this) = weak.upgrade() {
+                    let Some(kind) = this.selected_prompt_kind.get() else {
+                        return;
+                    };
+                    let tone = PreviewTone::from_index(selector.selected());
+                    this.update_prompt_settings(|settings| {
+                        settings.set_tone(kind, tone);
+                    });
+                }
+            });
+
+        let weak = Rc::downgrade(this);
+        this.prompt_character_selector
+            .connect_selected_notify(move |selector| {
+                if let Some(this) = weak.upgrade() {
+                    let character = PromptCharacter::from_index(selector.selected());
+                    this.update_prompt_settings(|settings| {
+                        settings.set_character(character);
+                    });
+                }
+            });
+
+        let weak = Rc::downgrade(this);
+        this.prompt_layout_selector
+            .connect_selected_notify(move |selector| {
+                if let Some(this) = weak.upgrade() {
+                    this.update_prompt_settings(|settings| {
+                        settings.set_layout(PromptLayout::from_index(selector.selected()));
+                    });
+                }
+            });
+        let weak = Rc::downgrade(this);
+        this.prompt_hostname_selector
+            .connect_selected_notify(move |selector| {
+                if let Some(this) = weak.upgrade() {
+                    this.update_prompt_settings(|settings| {
+                        settings
+                            .set_hostname_mode(PromptHostnameMode::from_index(selector.selected()));
+                    });
+                }
+            });
+        let weak = Rc::downgrade(this);
+        this.prompt_spacing_switch
+            .connect_active_notify(move |switch| {
+                if let Some(this) = weak.upgrade() {
+                    this.update_prompt_settings(|settings| {
+                        settings.set_add_newline(switch.is_active());
+                    });
+                }
+            });
+        let weak = Rc::downgrade(this);
+        this.prompt_preview_selector
+            .connect_selected_notify(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.preview_uses_prompt.set(true);
+                    this.preview_input.borrow_mut().reset();
+                    this.redraw_preview_contents();
+                }
+            });
+        let weak = Rc::downgrade(this);
+        this.fit_preview_switch.connect_active_notify(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.refresh_terminal_geometry(&this.layout_settings());
+                this.redraw_preview_contents();
+            }
+        });
+        let weak = Rc::downgrade(this);
+        this.preview_terminal_viewport
+            .hadjustment()
+            .connect_page_size_notify(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.schedule_preview_reflow();
+                }
+            });
 
         let weak = Rc::downgrade(this);
         this.light_button.connect_toggled(move |button| {
@@ -1231,9 +3578,113 @@ impl Workbench {
         let weak = Rc::downgrade(this);
         this.preview_selector.connect_selected_notify(move |_| {
             if let Some(this) = weak.upgrade() {
+                this.preview_uses_prompt.set(false);
+                this.preview_input.borrow_mut().reset();
                 this.refresh_preview();
             }
         });
+
+        let terminal_shell = this.preview_terminal_shell.clone();
+        this.preview_terminal
+            .connect_has_focus_notify(move |terminal| {
+                if terminal.has_focus() {
+                    terminal_shell.add_css_class("preview-active");
+                } else {
+                    terminal_shell.remove_css_class("preview-active");
+                }
+            });
+
+        let weak = Rc::downgrade(this);
+        this.preview_terminal.connect_commit(move |_, text, _| {
+            if let Some(this) = weak.upgrade() {
+                this.commit_preview_input(text);
+            }
+        });
+
+        Self::connect_preview_inspection(this);
+
+        // Character metrics are authoritative only after VTE is realized.
+        // Reapply once here so its fixed preview grid becomes the scrollable
+        // child's minimum size instead of being recomputed from the viewport.
+        let weak = Rc::downgrade(this);
+        this.preview_terminal.connect_realize(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.refresh_typography();
+            }
+        });
+
+        let weak = Rc::downgrade(this);
+        this.preview_terminal
+            .connect_char_size_changed(move |_, _, _| {
+                if let Some(this) = weak.upgrade() {
+                    this.schedule_preview_reflow();
+                }
+            });
+
+        let weak = Rc::downgrade(this);
+        this.font_family_selector.connect_selected_notify(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.refresh_typography();
+            }
+        });
+
+        let weak = Rc::downgrade(this);
+        this.font_weight_selector.connect_selected_notify(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.refresh_typography();
+            }
+        });
+
+        for input in [
+            &this.font_size_input,
+            &this.line_height_input,
+            &this.cell_width_input,
+        ] {
+            let weak = Rc::downgrade(this);
+            input.connect_value_changed(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.refresh_typography();
+                }
+            });
+        }
+
+        for input in [&this.content_padding_input, &this.window_spacing_input] {
+            let weak = Rc::downgrade(this);
+            input.connect_value_changed(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.refresh_layout();
+                }
+            });
+        }
+
+        for input in [&this.column_count_input, &this.row_count_input] {
+            let weak = Rc::downgrade(this);
+            input.connect_value_changed(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.preview_input.borrow_mut().reset();
+                    this.refresh_layout();
+                    this.refresh_preview();
+                }
+            });
+        }
+
+        for selector in [&this.cursor_shape_selector, &this.cursor_blink_selector] {
+            let weak = Rc::downgrade(this);
+            selector.connect_selected_notify(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.refresh_layout();
+                }
+            });
+        }
+
+        for switch in [&this.tab_bar_switch, &this.scrollbar_switch] {
+            let weak = Rc::downgrade(this);
+            switch.connect_active_notify(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.refresh_layout();
+                }
+            });
+        }
 
         let weak = Rc::downgrade(this);
         this.name_entry.connect_changed(move |entry| {
@@ -1358,9 +3809,6 @@ impl Workbench {
         if *self.selected_color_key.borrow() != key {
             self.settle_active_edit();
         }
-        for control in self.controls.values() {
-            control.swatch.set_selected(false);
-        }
         selected.swatch.set_selected(true);
         *self.selected_color_key.borrow_mut() = key.to_owned();
 
@@ -1446,6 +3894,9 @@ impl Workbench {
         let selected_key = self.selected_color_key.borrow().clone();
         self.select_color(&selected_key);
         self.refresh_titles();
+        self.refresh_typography();
+        self.refresh_layout();
+        self.refresh_prompt_controls();
         self.refresh_preview();
         self.refresh_deployment();
         self.refresh_history_actions();
@@ -1480,6 +3931,741 @@ impl Workbench {
         }
     }
 
+    // Drive controls from VTE's committed terminal stream rather than a
+    // capture-phase key handler. This lets IME preedit and window shortcuts
+    // resolve before the local scratch line interprets Enter or Backspace.
+    fn commit_preview_input(&self, committed: &str) {
+        match PreviewInputEvent::from_commit(committed) {
+            PreviewInputEvent::Backspace => {
+                if self.preview_input.borrow_mut().backspace() {
+                    self.redraw_preview_contents();
+                }
+            }
+            PreviewInputEvent::Submit => {
+                self.preview_input.borrow_mut().submit();
+                self.redraw_preview_contents();
+            }
+            PreviewInputEvent::Reset => {
+                self.preview_input.borrow_mut().reset();
+                self.refresh_preview();
+                if self.prompt_module_button.is_active() {
+                    self.prompt_module_button.grab_focus();
+                } else {
+                    self.preview_selector.grab_focus();
+                }
+            }
+            PreviewInputEvent::FocusForward => {
+                gtk::prelude::WidgetExt::child_focus(
+                    &self.window(),
+                    gtk::DirectionType::TabForward,
+                );
+            }
+            PreviewInputEvent::FocusBackward => {
+                gtk::prelude::WidgetExt::child_focus(
+                    &self.window(),
+                    gtk::DirectionType::TabBackward,
+                );
+            }
+            PreviewInputEvent::Text(text) => {
+                let changed = self.preview_input.borrow_mut().commit(text);
+                if changed {
+                    self.redraw_preview_contents();
+                }
+            }
+            PreviewInputEvent::Ignore => {}
+        }
+    }
+
+    fn redraw_preview_contents(&self) {
+        *self.preview_map.borrow_mut() = PreviewMap::default();
+        self.invalidate_preview_inspection();
+        self.preview_terminal.reset(true, true);
+        // Queue a screen clear with the feed, so pending VTE input from the
+        // loading state or a previous scene cannot survive an async redraw.
+        self.feed_preview(PREVIEW_HOME_AND_CLEAR);
+        if self.preview_uses_prompt.get() {
+            self.preview_selector.set_visible(false);
+            self.prompt_preview_selector
+                .set_visible(self.prompt_source_selector.selected() == 1);
+            self.terminal_title.set_text("starship · sample");
+            self.redraw_prompt_preview();
+            self.feed_preview(PREVIEW_SHOW_CURSOR);
+            return;
+        }
+
+        self.preview_selector.set_visible(true);
+        self.prompt_preview_selector.set_visible(false);
+        let scenario = PreviewScenario::from_index(self.preview_selector.selected());
+        if scenario == PreviewScenario::CurrentFolder {
+            self.redraw_current_folder(false);
+            self.feed_preview(PREVIEW_SHOW_CURSOR);
+            return;
+        }
+        self.terminal_title.set_text(scenario.terminal_title());
+        for chunk in scenario.refresh_chunks() {
+            self.feed_preview(chunk);
+        }
+
+        let input = self.preview_input.borrow();
+        if input.is_active() {
+            for line in input.submitted() {
+                self.feed_preview(b"\r\n");
+                self.feed_preview(PREVIEW_INPUT_PROMPT.as_bytes());
+                self.feed_preview(line.as_bytes());
+            }
+            self.feed_preview(b"\r\n");
+            self.feed_preview(PREVIEW_INPUT_PROMPT.as_bytes());
+            self.feed_preview(input.text().as_bytes());
+        }
+        self.feed_preview(PREVIEW_SHOW_CURSOR);
+    }
+
+    fn redraw_prompt_preview(&self) {
+        if self.prompt_source_selector.selected() == 0 {
+            self.redraw_current_folder(false);
+            return;
+        }
+        let scenario = PromptPreviewScenario::from_index(self.prompt_preview_selector.selected());
+        if scenario == PromptPreviewScenario::CurrentFolder {
+            self.redraw_current_folder(true);
+            return;
+        }
+        let settings = self.prompt_settings.borrow();
+        let [rust_success, node_success, go_success, failed] = prompt_preview_contexts();
+
+        if scenario != PromptPreviewScenario::Projects {
+            let context = match scenario {
+                PromptPreviewScenario::Failure => failed,
+                PromptPreviewScenario::Ssh => PromptPreviewContext {
+                    username: "deploy",
+                    hostname: "staging.example.net",
+                    path: "/srv/api",
+                    rust_version: None,
+                    is_ssh: true,
+                    ..rust_success
+                },
+                PromptPreviewScenario::Root => PromptPreviewContext {
+                    username: "root",
+                    path: "/etc",
+                    git_branch: None,
+                    git_status: None,
+                    rust_version: None,
+                    is_root: true,
+                    ..rust_success
+                },
+                PromptPreviewScenario::Alignment => PromptPreviewContext {
+                    path: "~/Projects/终端/preview",
+                    git_branch: Some("feature/宽度"),
+                    rust_version: None,
+                    ..rust_success
+                },
+                _ => rust_success,
+            };
+            if scenario == PromptPreviewScenario::Alignment {
+                self.feed_preview(
+                    "English  | 中文对齐 | 日本語  | 한국어\r\nEmoji    | 🌸 ✨ 🦀 | (≧◡≦) | A → B\r\n\r\n".as_bytes(),
+                );
+            }
+            self.feed_designed_prompt(&settings, &context);
+            let command = match scenario {
+                PromptPreviewScenario::Failure => "false",
+                PromptPreviewScenario::Ssh => "hostname",
+                PromptPreviewScenario::Root => "whoami",
+                _ => "printf 'hello 你好'",
+            };
+            self.feed_preview(command.as_bytes());
+            self.feed_preview(b"\r\n");
+            let output = match scenario {
+                PromptPreviewScenario::Ssh => "staging.example.net\r\n",
+                PromptPreviewScenario::Root => "root\r\n",
+                PromptPreviewScenario::Alignment => "hello 你好\r\n",
+                _ => "",
+            };
+            self.feed_preview(output.as_bytes());
+            self.feed_prompt_input(&settings, &context);
+            return;
+        }
+
+        self.feed_designed_prompt(&settings, &rust_success);
+        self.feed_preview(b"cargo test\r\n");
+        self.feed_preview(b"\x1b[2m94 passed\x1b[0m\r\n");
+        self.feed_designed_prompt(&settings, &node_success);
+        self.feed_preview(b"npm test\r\n");
+        self.feed_preview(b"\x1b[2m18 passed\x1b[0m\r\n");
+        self.feed_designed_prompt(&settings, &go_success);
+        self.feed_preview(b"false\r\n");
+
+        self.feed_prompt_input(&settings, &failed);
+    }
+
+    fn feed_prompt_input(&self, settings: &PromptSettings, context: &PromptPreviewContext<'_>) {
+        let input = self.preview_input.borrow();
+        for line in input.submitted() {
+            self.feed_designed_prompt(settings, context);
+            self.feed_preview(line.as_bytes());
+            self.feed_preview(b"\r\n");
+        }
+        self.feed_designed_prompt(settings, context);
+        self.feed_preview(input.text().as_bytes());
+    }
+
+    fn redraw_current_folder(&self, use_designed_prompt: bool) {
+        let snapshot = self.current_preview_context.borrow();
+        let Some(snapshot) = snapshot.as_ref() else {
+            self.terminal_title.set_text("current folder");
+            self.feed_preview(b"Reading current folder...\r\n");
+            return;
+        };
+        self.terminal_title.set_text(&format!(
+            "{} · context",
+            if use_designed_prompt || snapshot.imported_prompt.ansi.is_some() {
+                "starship"
+            } else {
+                &snapshot.shell
+            },
+        ));
+        let context = snapshot.as_prompt_context();
+        let settings = self.prompt_settings.borrow();
+        let prompt = if use_designed_prompt {
+            settings.preview_ansi(&context)
+        } else if let Some(ansi) = &snapshot.imported_prompt.ansi {
+            ansi.clone()
+        } else {
+            format!(
+                "\x1b[32m{}@{}\x1b[0m:\x1b[34m{}\x1b[0m{} ",
+                context.username,
+                context.hostname,
+                context.path,
+                if context.is_root { '#' } else { '$' },
+            )
+        };
+        let feed_prompt = || {
+            if use_designed_prompt {
+                self.feed_designed_prompt(&settings, &context);
+            } else {
+                self.feed_scoped_preview(&prompt, Some(PreviewTarget::Prompt));
+            }
+        };
+        feed_prompt();
+        self.feed_preview(b"pwd\r\n");
+        // Snapshot fields are sanitized at the read boundary before reaching VTE.
+        self.feed_preview(snapshot.absolute_path.as_bytes());
+        self.feed_preview(b"\r\n");
+        feed_prompt();
+        if snapshot.git_branch.is_some() {
+            self.feed_preview(b"git status --short\r\n");
+            for line in &snapshot.git_status_lines {
+                self.feed_preview(b"\x1b[33m");
+                self.feed_preview(line.as_bytes());
+                self.feed_preview(b"\x1b[0m\r\n");
+            }
+        } else {
+            self.feed_preview(b"ls\r\n");
+            self.feed_preview(snapshot.entries.join("  ").as_bytes());
+            self.feed_preview(b"\r\n");
+        }
+        let input = self.preview_input.borrow();
+        for line in input.submitted() {
+            feed_prompt();
+            self.feed_preview(line.as_bytes());
+            self.feed_preview(b"\r\n");
+        }
+        feed_prompt();
+        self.feed_preview(input.text().as_bytes());
+    }
+
+    fn feed_preview(&self, bytes: &[u8]) {
+        let text = std::str::from_utf8(bytes).expect("preview feeds are UTF-8");
+        self.feed_scoped_preview(text, None);
+    }
+
+    fn feed_scoped_preview(&self, text: &str, scope: Option<PreviewTarget>) {
+        self.preview_map.borrow_mut().record(
+            text,
+            scope,
+            self.preview_terminal.is_bold_is_bright(),
+        );
+        self.preview_terminal.feed(text.as_bytes());
+    }
+
+    fn feed_designed_prompt(&self, settings: &PromptSettings, context: &PromptPreviewContext<'_>) {
+        for (kind, text) in settings.preview_ansi_runs(context) {
+            self.feed_scoped_preview(
+                &text,
+                Some(kind.map_or(PreviewTarget::PromptCharacter, PreviewTarget::PromptSegment)),
+            );
+        }
+    }
+
+    fn connect_preview_inspection(this: &Rc<Self>) {
+        let weak = Rc::downgrade(this);
+        this.inspect_button.connect_toggled(move |button| {
+            if let Some(this) = weak.upgrade() {
+                this.invalidate_preview_inspection();
+                this.preview_terminal_viewport.set_has_tooltip(!button.is_active());
+                this.preview_terminal.set_tooltip_text(if button.is_active() { None } else {
+                    Some("Drag to select text · type to try input · enable Inspect to find a detail's settings")
+                });
+            }
+        });
+
+        let weak = Rc::downgrade(this);
+        this.inspect_highlight.set_draw_func(move |_, cr, _, _| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let hit = this.inspect_hit.borrow();
+            let Some(hit) = hit.as_ref() else {
+                return;
+            };
+            let r = &hit.bounds;
+            cr.rectangle(
+                f64::from(r.x()),
+                f64::from(r.y()),
+                f64::from(r.width()),
+                f64::from(r.height()),
+            );
+            cr.set_source_rgba(0.25, 0.53, 0.65, 0.14);
+            let _ = cr.fill_preserve();
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.85);
+            cr.set_line_width(3.0);
+            let _ = cr.stroke_preserve();
+            cr.set_source_rgba(0.20, 0.43, 0.54, 0.95);
+            cr.set_line_width(1.0);
+            let _ = cr.stroke();
+        });
+
+        let weak = Rc::downgrade(this);
+        this.preview_terminal.connect_contents_changed(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.invalidate_preview_inspection();
+            }
+        });
+        for adjustment in [
+            this.preview_terminal.vadjustment(),
+            Some(this.preview_terminal_viewport.hadjustment()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let weak = Rc::downgrade(this);
+            adjustment.connect_value_changed(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.invalidate_preview_inspection();
+                }
+            });
+        }
+
+        let key = gtk::EventControllerKey::new();
+        key.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(this);
+        key.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk::Key::Escape
+                && let Some(this) = weak.upgrade()
+                && this.inspect_button.is_active()
+                && this.preview_terminal.has_focus()
+            {
+                this.inspect_button.set_active(false);
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        // Capture on the ancestor, before VTE's own key controller can turn
+        // Escape into a scratch-input reset.
+        this.preview_terminal_shell.add_controller(key);
+
+        let controller = gtk::EventControllerLegacy::new();
+        controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let click = RefCell::new(PreviewClick::default());
+        let pressed_target = Cell::new(None);
+        let pressed_generation = Cell::new(0);
+        let weak = Rc::downgrade(this);
+        controller.connect_event(move |_, event| {
+            let Some(this) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            if !this.inspect_button.is_active() {
+                click.borrow_mut().cancel();
+                pressed_target.set(None);
+                return glib::Propagation::Proceed;
+            }
+            let threshold = f64::from(
+                this.preview_terminal
+                    .settings()
+                    .gtk_dnd_drag_threshold()
+                    .max(1),
+            );
+            let Some((x, y)) = event.position() else {
+                return glib::Propagation::Proceed;
+            };
+            let primary = event
+                .downcast_ref::<gdk::ButtonEvent>()
+                .is_some_and(|event| event.button() == 1);
+            match event.event_type() {
+                gdk::EventType::ButtonPress => {
+                    this.inspect_pointer.set(None);
+                    this.inspect_generation
+                        .set(this.inspect_generation.get().wrapping_add(1));
+                    let modified = event.modifier_state().intersects(
+                        gdk::ModifierType::CONTROL_MASK
+                            | gdk::ModifierType::ALT_MASK
+                            | gdk::ModifierType::SHIFT_MASK
+                            | gdk::ModifierType::SUPER_MASK,
+                    );
+                    if primary && !modified {
+                        click.borrow_mut().press(x, y);
+                        pressed_generation.set(this.inspect_generation.get());
+                        let hit = this.preview_hit_at(x, y);
+                        pressed_target.set(hit.as_ref().map(|hit| hit.target));
+                        this.show_inspection_feedback(x, y, hit);
+                    } else {
+                        click.borrow_mut().cancel();
+                        pressed_target.set(None);
+                        this.clear_inspection_feedback();
+                    }
+                }
+                gdk::EventType::EnterNotify | gdk::EventType::MotionNotify => {
+                    click.borrow_mut().motion(x, y, threshold);
+                    if event.modifier_state().intersects(
+                        gdk::ModifierType::BUTTON1_MASK
+                            | gdk::ModifierType::BUTTON2_MASK
+                            | gdk::ModifierType::BUTTON3_MASK,
+                    ) {
+                        this.clear_inspection_feedback();
+                    } else {
+                        this.schedule_inspection_hover(x, y);
+                    }
+                }
+                gdk::EventType::ButtonRelease if primary => {
+                    this.inspect_pointer.set(None);
+                    if click.borrow_mut().release(x, y, threshold)
+                        && pressed_generation.get() == this.inspect_generation.get()
+                    {
+                        let hit = this.preview_hit_at(x, y);
+                        let target = hit.as_ref().map(|hit| hit.target);
+                        this.show_inspection_feedback(x, y, hit);
+                        let pressed = pressed_target.take();
+                        if target.is_none() || target != pressed {
+                            return glib::Propagation::Proceed;
+                        }
+                        let generation = this.inspect_generation.get();
+                        let delay = this
+                            .preview_terminal
+                            .settings()
+                            .gtk_double_click_time()
+                            .clamp(100, 1000) as u64;
+                        let weak = Rc::downgrade(&this);
+                        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+                            if let Some(this) = weak.upgrade()
+                                && generation == this.inspect_generation.get()
+                                && this.inspect_button.is_active()
+                                && !this.preview_terminal.has_selection()
+                                && this.inspect_hit.borrow().as_ref().map(|hit| hit.target)
+                                    == target
+                                && let Some(target) = target
+                            {
+                                this.inspect_preview_target(target);
+                            }
+                        });
+                    }
+                }
+                gdk::EventType::Scroll
+                | gdk::EventType::TouchCancel
+                | gdk::EventType::LeaveNotify => {
+                    click.borrow_mut().cancel();
+                    pressed_target.set(None);
+                    this.invalidate_preview_inspection();
+                }
+                _ => {}
+            }
+            // Observing instead of claiming is essential: VTE still owns
+            // selection, word selection, primary paste and its input method.
+            glib::Propagation::Proceed
+        });
+        this.preview_terminal_shell.add_controller(controller);
+    }
+
+    fn clear_inspection_feedback(&self) {
+        self.inspect_pointer.set(None);
+        self.inspect_hit.borrow_mut().take();
+        self.inspect_label.set_visible(false);
+        self.inspect_highlight.queue_draw();
+        self.preview_terminal.set_cursor_from_name(None);
+    }
+
+    fn invalidate_preview_inspection(&self) {
+        self.inspect_origin.set(None);
+        self.inspect_generation
+            .set(self.inspect_generation.get().wrapping_add(1));
+        self.clear_inspection_feedback();
+    }
+
+    fn schedule_inspection_hover(self: &Rc<Self>, x: f64, y: f64) {
+        self.inspect_pointer.set(Some((x, y)));
+        if self.inspect_hover_pending.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_millis(35), move || {
+            if let Some(this) = weak.upgrade() {
+                this.inspect_hover_pending.set(false);
+                if this.inspect_button.is_active()
+                    && let Some((x, y)) = this.inspect_pointer.take()
+                {
+                    let hit = this.preview_hit_at(x, y);
+                    this.show_inspection_feedback(x, y, hit);
+                }
+            }
+        });
+    }
+
+    fn show_inspection_feedback(&self, x: f64, y: f64, hit: Option<PreviewHit>) {
+        let label = hit
+            .as_ref()
+            .map_or_else(|| "No editable detail".into(), |hit| hit.target.label());
+        self.inspect_label.set_text(&label);
+        self.preview_terminal
+            .set_cursor_from_name(hit.as_ref().map(|_| "crosshair"));
+        *self.inspect_hit.borrow_mut() = hit;
+        self.inspect_highlight.queue_draw();
+        let Some(native) = self.inspect_layer.native() else {
+            return;
+        };
+        let (dx, dy) = native.surface_transform();
+        let Ok(native) = native.dynamic_cast::<gtk::Widget>() else {
+            return;
+        };
+        let Some(p) = native.compute_point(
+            &self.inspect_layer,
+            &gtk::graphene::Point::new((x - dx) as f32, (y - dy) as f32),
+        ) else {
+            return;
+        };
+        self.inspect_label.set_visible(true);
+        // GtkFixed may allocate an ellipsized label at its minimum width.
+        // Reserve the actual text width so feedback never collapses to "…".
+        let (text_width, _) = self
+            .inspect_label
+            .create_pango_layout(Some(&label))
+            .pixel_size();
+        self.inspect_label
+            .set_width_request((text_width + 20).min((self.inspect_layer.width() - 12).max(1)));
+        let (_, width, _, _) = self.inspect_label.measure(gtk::Orientation::Horizontal, -1);
+        let (_, height, _, _) = self
+            .inspect_label
+            .measure(gtk::Orientation::Vertical, width);
+        let left = (p.x() + 14.0)
+            .min((self.inspect_layer.width() - width - 6).max(6) as f32)
+            .max(6.0);
+        let top = if p.y() + height as f32 + 20.0 < self.inspect_layer.height() as f32 {
+            p.y() + 18.0
+        } else {
+            p.y() - height as f32 - 12.0
+        };
+        self.inspect_layer.move_(
+            &self.inspect_label,
+            f64::from(left),
+            f64::from(top.max(6.0)),
+        );
+    }
+
+    #[cfg(test)]
+    fn preview_target_at(&self, x: f64, y: f64) -> Option<PreviewTarget> {
+        self.preview_hit_at(x, y).map(|hit| hit.target)
+    }
+
+    fn preview_hit_at(&self, x: f64, y: f64) -> Option<PreviewHit> {
+        let native = self.preview_terminal.native()?;
+        let (dx, dy) = native.surface_transform();
+        let origin = native.dynamic_cast::<gtk::Widget>().ok()?;
+        // Match GTK's event dispatch: remove the native surface translation
+        // before converting into child-widget coordinates (CSD shadows count).
+        let point = gtk::graphene::Point::new((x - dx) as f32, (y - dy) as f32);
+        let within = |widget: &gtk::Widget| {
+            let p = origin.compute_point(widget, &point)?;
+            (widget.is_visible()
+                && p.x() >= 0.0
+                && p.y() >= 0.0
+                && p.x() < widget.width() as f32
+                && p.y() < widget.height() as f32)
+                .then_some(p)
+        };
+        let hit = |target, widget: &gtk::Widget, rect: gtk::graphene::Rect| {
+            let p = widget.compute_point(
+                &self.inspect_layer,
+                &gtk::graphene::Point::new(rect.x(), rect.y()),
+            )?;
+            let left = p.x().max(1.0);
+            let top = p.y().max(1.0);
+            let right = (p.x() + rect.width()).min(self.inspect_layer.width() as f32 - 1.0);
+            let bottom = (p.y() + rect.height()).min(self.inspect_layer.height() as f32 - 1.0);
+            (right > left && bottom > top).then_some(PreviewHit {
+                target,
+                bounds: gtk::graphene::Rect::new(left, top, right - left, bottom - top),
+            })
+        };
+        if within(self.preview_terminal_tab.upcast_ref()).is_some() {
+            let tab = &self.preview_terminal_tab;
+            return hit(
+                PreviewTarget::TabBar,
+                tab.upcast_ref(),
+                gtk::graphene::Rect::new(0.0, 0.0, tab.width() as f32, tab.height() as f32),
+            );
+        }
+        let terminal = &self.preview_terminal;
+        within(self.preview_terminal_viewport.upcast_ref())?;
+        let Some(p) = within(terminal.upcast_ref()) else {
+            let canvas = &self.preview_terminal_canvas;
+            let p = within(canvas.upcast_ref())?;
+            let r = terminal.compute_bounds(canvas)?;
+            let rect = if p.x() < r.x() {
+                gtk::graphene::Rect::new(0.0, r.y(), r.x(), r.height())
+            } else if p.x() >= r.x() + r.width() {
+                gtk::graphene::Rect::new(
+                    r.x() + r.width(),
+                    r.y(),
+                    canvas.width() as f32 - r.x() - r.width(),
+                    r.height(),
+                )
+            } else if p.y() < r.y() {
+                gtk::graphene::Rect::new(r.x(), 0.0, r.width(), r.y())
+            } else {
+                gtk::graphene::Rect::new(
+                    r.x(),
+                    r.y() + r.height(),
+                    r.width(),
+                    canvas.height() as f32 - r.y() - r.height(),
+                )
+            };
+            return hit(PreviewTarget::Padding, canvas.upcast_ref(), rect);
+        };
+        // .vte-preview has zero CSS padding; Layout uses widget margins.
+        let px = f64::from(p.x());
+        let py = f64::from(p.y());
+        let cw = terminal.char_width();
+        let ch = terminal.char_height();
+        if cw <= 0 || ch <= 0 {
+            return None;
+        }
+        if px < 0.0 || py < 0.0 {
+            return None;
+        }
+        let mut col = (px / cw as f64).floor() as i64;
+        let (top, fraction) = self.inspect_origin.get().unwrap_or_else(|| {
+            let origin = preview_visible_origin(terminal);
+            self.inspect_origin.set(Some(origin));
+            origin
+        })?;
+        let row = top + (py / ch as f64 + fraction).floor() as i64;
+        if col >= terminal.column_count() {
+            return None;
+        }
+        if terminal.cursor_position() == (col, row) {
+            return hit(
+                PreviewTarget::Cursor,
+                terminal.upcast_ref(),
+                gtk::graphene::Rect::new(
+                    (col * cw) as f32,
+                    ((row - top) as f64 - fraction) as f32 * ch as f32,
+                    cw as f32,
+                    ch as f32,
+                ),
+            );
+        }
+        let text = |sr, sc, er, ec| {
+            terminal
+                .text_range_format(vte::Format::Text, sr, sc, er, ec)
+                .0
+                .unwrap_or_default()
+        };
+        // VTE ranges are half-open, in terminal columns (not UTF-8 bytes).
+        let mut cell = text(row, col, row, col + 1);
+        if cell.is_empty() && col > 0 {
+            let previous = text(row, col - 1, row, col);
+            if previous.chars().next().is_some_and(|ch| {
+                glib::Unichar::is_wide(ch)
+                    || (terminal.cjk_ambiguous_width() == 2 && glib::Unichar::is_wide_cjk(ch))
+            }) {
+                col -= 1;
+                cell = previous;
+            }
+        }
+        if cell.trim().is_empty() {
+            return None;
+        }
+        let first =
+            (terminal.cursor_position().1 - terminal.scrollback_lines() - terminal.row_count())
+                .max(0);
+        let end = terminal.cursor_position().1.max(row);
+        let buffer = text(first, 0, end, terminal.column_count());
+        let prefix = text(first, 0, row, col);
+        let target = self.preview_map.borrow().resolve(&buffer, &prefix, &cell)?;
+        let wide = cell.chars().next().is_some_and(|ch| {
+            glib::Unichar::is_wide(ch)
+                || (terminal.cjk_ambiguous_width() == 2 && glib::Unichar::is_wide_cjk(ch))
+        });
+        hit(
+            target,
+            terminal.upcast_ref(),
+            gtk::graphene::Rect::new(
+                (col * cw) as f32,
+                ((row - top) as f64 - fraction) as f32 * ch as f32,
+                (cw * if wide { 2 } else { 1 }) as f32,
+                ch as f32,
+            ),
+        )
+    }
+
+    fn inspect_preview_target(&self, target: PreviewTarget) {
+        let module = match target {
+            PreviewTarget::Ansi(_) => EditorModule::Palette,
+            PreviewTarget::Typography => EditorModule::Typography,
+            PreviewTarget::Cursor | PreviewTarget::Padding | PreviewTarget::TabBar => {
+                EditorModule::Layout
+            }
+            PreviewTarget::Prompt
+            | PreviewTarget::PromptSegment(_)
+            | PreviewTarget::PromptCharacter => EditorModule::Prompt,
+        };
+        self.navigating_preview.set(true);
+        match target {
+            PreviewTarget::Prompt => self.prompt_source_selector.set_selected(0),
+            PreviewTarget::PromptSegment(_) | PreviewTarget::PromptCharacter => {
+                self.prompt_source_selector.set_selected(1)
+            }
+            _ => {}
+        }
+        gio::prelude::ActionGroupExt::activate_action(&self.window(), module.action_name(), None);
+        self.navigating_preview.set(false);
+        let focus: Option<gtk::Widget> = match target {
+            PreviewTarget::Ansi(index) => {
+                self.select_color(&format!("Color{index}"));
+                Some(self.color_picker.inspection_field().upcast())
+            }
+            PreviewTarget::Typography => Some(self.font_family_selector.clone().upcast()),
+            PreviewTarget::Cursor => Some(self.cursor_shape_selector.clone().upcast()),
+            PreviewTarget::Padding => Some(self.content_padding_input.clone().upcast()),
+            PreviewTarget::TabBar => Some(self.tab_bar_switch.clone().upcast()),
+            PreviewTarget::Prompt => Some(self.prompt_source_selector.clone().upcast()),
+            PreviewTarget::PromptCharacter => Some(self.prompt_character_selector.clone().upcast()),
+            PreviewTarget::PromptSegment(kind) => {
+                self.selected_prompt_kind.set(Some(kind));
+                self.refresh_prompt_controls();
+                Some(self.prompt_tone_selector.clone().upcast())
+            }
+        };
+        if let Some(widget) = focus {
+            widget.add_css_class("preview-inspected");
+            // Focus scrolls the editor to the selected field; restore focus to
+            // VTE afterwards so point-to-edit doesn't interrupt scratch input.
+            widget.grab_focus();
+            glib::timeout_add_local_once(Duration::from_millis(1100), move || {
+                widget.remove_css_class("preview-inspected")
+            });
+        }
+        self.preview_terminal.grab_focus();
+    }
+
     fn refresh_preview(&self) {
         let model = self.model.borrow();
         let kind = model.active_variant;
@@ -1504,7 +4690,6 @@ impl Workbench {
         let cursor_rgba = rgba_from_rgb(variant.get("Cursor").unwrap_or(foreground));
         let cursor_foreground_rgba =
             rgba_from_rgb(variant.get("CursorForeground").unwrap_or(background));
-        self.preview_terminal.reset(true, true);
         self.preview_terminal.set_colors(
             Some(&foreground_rgba),
             Some(&background_rgba),
@@ -1513,13 +4698,9 @@ impl Workbench {
         self.preview_terminal.set_color_cursor(Some(&cursor_rgba));
         self.preview_terminal
             .set_color_cursor_foreground(Some(&cursor_foreground_rgba));
-        let scenario = PreviewScenario::from_index(self.preview_selector.selected());
-        self.terminal_title.set_text(scenario.terminal_title());
-        // VTE's reset is queued; explicitly home the cursor and clear the
-        // viewport in the same feed stream before drawing the next scenario.
-        for chunk in scenario.refresh_chunks() {
-            self.preview_terminal.feed(chunk);
-        }
+        // Reconstructing the small deterministic transcript also guarantees
+        // that deleting text which wrapped across rows leaves no stale cells.
+        self.redraw_preview_contents();
 
         set_metric(
             &self.body_ratio,
@@ -1538,6 +4719,151 @@ impl Workbench {
         let issues: Vec<_> = report.issues_for(kind).cloned().collect();
         drop(model);
         self.refresh_diagnostics(&issues);
+    }
+
+    fn typography_settings(&self) -> TypographySettings {
+        let family = self
+            .font_family_selector
+            .selected_item()
+            .and_then(|item| item.downcast::<gtk::StringObject>().ok())
+            .map(|item| item.string().to_string())
+            .unwrap_or_else(|| DEFAULT_FONT_FAMILY.to_owned());
+        TypographySettings::new(
+            &family,
+            self.font_size_input.value(),
+            PreviewFontWeight::from_index(self.font_weight_selector.selected()),
+            self.line_height_input.value(),
+            self.cell_width_input.value(),
+        )
+    }
+
+    fn layout_settings(&self) -> LayoutSettings {
+        LayoutSettings::new(
+            self.content_padding_input.value_as_int(),
+            usize::try_from(self.column_count_input.value_as_int()).unwrap_or(MIN_COLUMNS),
+            usize::try_from(self.row_count_input.value_as_int()).unwrap_or(MIN_ROWS),
+            PreviewCursorShape::from_index(self.cursor_shape_selector.selected()),
+            PreviewCursorBlink::from_index(self.cursor_blink_selector.selected()),
+            self.tab_bar_switch.is_active(),
+            self.scrollbar_switch.is_active(),
+            self.window_spacing_input.value_as_int(),
+        )
+    }
+
+    fn schedule_preview_reflow(self: &Rc<Self>) {
+        if self.geometry_pending.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            this.geometry_pending.set(false);
+            // Adjustment notifications occur during GTK allocation. Apply
+            // the new grid afterwards and replay content at that width;
+            // buffered VTE input can otherwise retain the initial wide grid.
+            this.refresh_terminal_geometry(&this.layout_settings());
+            this.redraw_preview_contents();
+        });
+    }
+
+    fn refresh_terminal_geometry(&self, layout: &LayoutSettings) {
+        if self.updating_geometry.replace(true) {
+            return;
+        }
+        let viewport_width = self.preview_terminal_viewport.hadjustment().page_size() as i64;
+        let cell_width = self.preview_terminal.char_width();
+        let columns = fitted_preview_columns(
+            layout.columns,
+            viewport_width,
+            cell_width,
+            layout.content_padding,
+            self.fit_preview_switch.is_active(),
+        );
+        self.preview_terminal.set_size(
+            columns
+                .try_into()
+                .expect("normalized terminal columns fit c_long"),
+            layout
+                .rows
+                .try_into()
+                .expect("normalized terminal rows fit c_long"),
+        );
+        self.preview_terminal.set_margin_top(layout.content_padding);
+        self.preview_terminal
+            .set_margin_bottom(layout.content_padding);
+        self.preview_terminal
+            .set_margin_start(layout.content_padding);
+        self.preview_terminal.set_margin_end(layout.content_padding);
+
+        let terminal_width =
+            terminal_grid_extent(self.preview_terminal.char_width(), columns, 0, 1);
+        let terminal_height = terminal_grid_extent(
+            self.preview_terminal.char_height(),
+            layout.rows,
+            0,
+            PREVIEW_MIN_HEIGHT,
+        );
+        let preview_width = add_widget_padding(terminal_width, layout.content_padding);
+        let preview_height = add_widget_padding(terminal_height, layout.content_padding);
+        self.preview_terminal.set_width_request(terminal_width);
+        self.preview_terminal.set_height_request(terminal_height);
+        self.preview_terminal_canvas
+            .set_width_request(preview_width);
+        self.preview_terminal_canvas
+            .set_height_request(preview_height);
+        self.preview_terminal_viewport
+            .set_height_request(preview_height);
+        self.updating_geometry.set(false);
+    }
+
+    fn refresh_layout(&self) {
+        if self.updating.get() {
+            return;
+        }
+        let layout = self.layout_settings();
+        self.preview_terminal
+            .set_cursor_shape(layout.cursor_shape.vte_shape());
+        self.preview_terminal
+            .set_cursor_blink_mode(layout.cursor_blink.vte_mode());
+        self.preview_terminal_tab.set_visible(layout.tab_bar);
+        self.preview_terminal_scrollbar_revealer
+            .set_reveal_child(layout.scrollbar);
+        self.preview_content.set_margin_top(layout.window_spacing);
+        self.preview_content
+            .set_margin_bottom(layout.window_spacing);
+        self.preview_content.set_margin_start(layout.window_spacing);
+        self.preview_content.set_margin_end(layout.window_spacing);
+        self.refresh_terminal_geometry(&layout);
+    }
+
+    fn refresh_typography(&self) {
+        if self.updating.get() {
+            return;
+        }
+        let settings = self.typography_settings();
+        let description = settings.font_description();
+        self.preview_terminal.set_font(Some(&description));
+        self.preview_terminal
+            .set_cell_height_scale(settings.line_height);
+        self.preview_terminal
+            .set_cell_width_scale(settings.cell_width);
+        self.refresh_terminal_geometry(&self.layout_settings());
+
+        let support =
+            detect_nerd_font_support(&self.preview_terminal.pango_context(), &description);
+        let label = support.label();
+        self.nerd_status_label.set_text(&label);
+        let detail = format!(
+            "{}. Coverage is checked on the selected face without font fallback.",
+            support.detail()
+        );
+        self.nerd_status_label.set_tooltip_text(Some(&detail));
+        self.nerd_status_label.update_property(&[
+            gtk::accessible::Property::Label(&label),
+            gtk::accessible::Property::Description(&detail),
+        ]);
     }
 
     fn refresh_diagnostics(&self, issues: &[Issue]) {
@@ -1828,6 +5154,81 @@ impl Workbench {
         self.refresh_deployment();
     }
 
+    fn choose_starship_export(self: &Rc<Self>) {
+        if self.prompt_source_selector.selected() == 0 {
+            self.toast("Your Starship configuration is read-only. Switch to Designer to export a new design.");
+            return;
+        }
+        let exported_settings = self.prompt_settings.borrow().clone();
+        let contents = exported_settings.to_starship_toml();
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("Starship configuration"));
+        filter.add_pattern("*.toml");
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk::FileDialog::builder()
+            .title("Export starship.toml")
+            .accept_label("Export")
+            .initial_name(STARSHIP_FILE_NAME)
+            .modal(true)
+            .filters(&filters)
+            .default_filter(&filter)
+            .build();
+        let weak = Rc::downgrade(self);
+        dialog.save(
+            Some(&self.window()),
+            gio::Cancellable::NONE,
+            move |result| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok(file) => {
+                        let Some(path) = file.path() else {
+                            this.toast("Only local files can be exported");
+                            return;
+                        };
+                        if !is_starship_toml_path(&path) {
+                            this.toast(
+                                "Choose a .toml file; shell startup files are never overwritten",
+                            );
+                            return;
+                        }
+                        if let Some(source) = this.model.borrow().current_path.clone() {
+                            match paths_refer_to_same_file(&source, &path) {
+                                Ok(true) => {
+                                    this.toast(
+                                        "The Starship export cannot overwrite the theme being edited",
+                                    );
+                                    return;
+                                }
+                                Ok(false) => {}
+                                Err(error) => {
+                                    this.toast(&format!(
+                                        "Could not verify the export path: {error}"
+                                    ));
+                                    return;
+                                }
+                            }
+                        }
+                        match write_atomically(&path, contents.as_bytes()) {
+                            Ok(()) => {
+                                *this.last_exported_prompt.borrow_mut() =
+                                    exported_settings.clone();
+                                this.toast(
+                                    "Exported starship.toml · shell startup files were not changed",
+                                );
+                            }
+                            Err(error) => this.toast(&format!("Export failed: {error}")),
+                        }
+                    }
+                    Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
+                    Err(error) => this.toast(&format!("Could not export: {error}")),
+                }
+            },
+        );
+    }
+
     fn choose_export(self: &Rc<Self>, format: ExportFormat) {
         self.settle_active_edit();
         if !self.require_valid_name() {
@@ -1975,6 +5376,248 @@ impl Workbench {
                 }
             },
         );
+    }
+
+    fn prompt_has_unexported_changes(&self) -> bool {
+        has_unexported_prompt_changes(
+            &self.prompt_settings.borrow(),
+            &self.last_exported_prompt.borrow(),
+        )
+    }
+
+    fn confirm_close_discard(self: &Rc<Self>) {
+        self.settle_active_edit();
+        let theme_changed = self.model.borrow().dirty || self.has_draft();
+        let prompt_changed = self.prompt_has_unexported_changes();
+        if !theme_changed && !prompt_changed {
+            self.window().close();
+            return;
+        }
+
+        let (message, detail) = match (theme_changed, prompt_changed) {
+            (true, true) => (
+                "Discard theme and prompt changes?",
+                "Theme changes since the last save and prompt changes since the last successful export will be lost.",
+            ),
+            (true, false) => (
+                "Discard unsaved theme changes?",
+                "Theme changes made since the last save will be lost.",
+            ),
+            (false, true) => (
+                "Discard unexported prompt changes?",
+                "Prompt changes made since the last successful export will be lost.",
+            ),
+            (false, false) => unreachable!("clean documents close without confirmation"),
+        };
+        let dialog = gtk::AlertDialog::builder()
+            .message(message)
+            .detail(detail)
+            .buttons(["Cancel", "Discard Changes"])
+            .cancel_button(0)
+            .default_button(0)
+            .modal(true)
+            .build();
+        let weak = Rc::downgrade(self);
+        dialog.choose(
+            Some(&self.window()),
+            gio::Cancellable::NONE,
+            move |result| {
+                if result != Ok(1) {
+                    return;
+                }
+                if let Some(this) = weak.upgrade() {
+                    this.model.borrow_mut().dirty = false;
+                    this.discard_drafts();
+                    let current_prompt = this.prompt_settings.borrow().clone();
+                    *this.last_exported_prompt.borrow_mut() = current_prompt;
+                    this.window().close();
+                }
+            },
+        );
+    }
+
+    fn show_appearance_source(&self, appearance: &CurrentTerminalAppearance) {
+        self.appearance_source.set_text(&appearance.source_label);
+        let typography = &appearance.typography;
+        let layout = &appearance.layout;
+        self.appearance_details.set_text(&format!(
+            "{} · {} pt · {} × {}\nProfile snapshot, not an attached terminal tab.",
+            typography.family, typography.size, layout.columns, layout.rows,
+        ));
+        self.appearance_details
+            .set_tooltip_text(Some(&appearance.notices.join("\n")));
+    }
+
+    fn reload_terminal_appearance(self: &Rc<Self>) {
+        let mut appearance = import_current_appearance();
+        let Some(palette) = appearance.palette.take() else {
+            self.toast("Terminal palette unavailable. Your current theme is unchanged.");
+            return;
+        };
+        self.show_appearance_source(&appearance);
+        self.finish_active_edit();
+        let preferred = appearance.preferred_variant.unwrap_or(Variant::Light);
+        let variant = if palette.variant(preferred).is_some() {
+            preferred
+        } else if palette.variant(Variant::Light).is_some() {
+            Variant::Light
+        } else {
+            Variant::Dark
+        };
+        *self.model.borrow_mut() =
+            Model::new(palette, variant, None, appearance.source_label.clone());
+        self.history.borrow_mut().clear();
+        *self.selected_color_key.borrow_mut() = "Foreground".to_owned();
+        self.updating.set(true);
+        let typography = &appearance.typography;
+        let (names, index) = monospace_font_choices(&self.preview_terminal, typography);
+        let names: Vec<_> = names.iter().map(String::as_str).collect();
+        self.font_family_selector
+            .set_model(Some(&gtk::StringList::new(&names)));
+        self.font_family_selector.set_selected(index);
+        self.font_size_input.set_value(typography.size);
+        self.font_weight_selector
+            .set_selected(typography.weight.index());
+        self.line_height_input.set_value(typography.line_height);
+        self.cell_width_input.set_value(typography.cell_width);
+        let layout = &appearance.layout;
+        self.content_padding_input
+            .set_value(f64::from(layout.content_padding));
+        self.column_count_input.set_value(layout.columns as f64);
+        self.row_count_input.set_value(layout.rows as f64);
+        self.cursor_shape_selector
+            .set_selected(layout.cursor_shape.index());
+        self.cursor_blink_selector
+            .set_selected(layout.cursor_blink.index());
+        self.tab_bar_switch.set_active(layout.tab_bar);
+        self.scrollbar_switch.set_active(layout.scrollbar);
+        self.window_spacing_input
+            .set_value(f64::from(layout.window_spacing));
+        self.preview_terminal
+            .set_bold_is_bright(appearance.bold_is_bright);
+        self.preview_terminal
+            .set_cjk_ambiguous_width(appearance.cjk_ambiguous_width);
+        self.updating.set(false);
+        self.preview_input.borrow_mut().reset();
+        self.refresh_all();
+        self.toast("Terminal appearance reloaded. Prompt design is unchanged.");
+    }
+
+    fn choose_preview_folder(self: &Rc<Self>) {
+        let dialog = gtk::FileDialog::builder()
+            .title("Choose Preview Folder")
+            .accept_label("Preview")
+            .initial_folder(&gio::File::for_path(&*self.preview_directory.borrow()))
+            .modal(true)
+            .build();
+        let weak = Rc::downgrade(self);
+        dialog.select_folder(
+            Some(&self.window()),
+            gio::Cancellable::NONE,
+            move |result| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok(file) => {
+                        let Some(path) = file.path() else {
+                            this.toast("Choose a local folder for preview");
+                            return;
+                        };
+                        *this.preview_directory.borrow_mut() = path;
+                        this.current_preview_context.borrow_mut().take();
+                        this.preview_input.borrow_mut().reset();
+                        this.preview_selector
+                            .set_selected((PreviewScenario::ALL.len() - 1) as u32);
+                        this.prompt_preview_selector.set_selected(0);
+                        this.refresh_current_context();
+                    }
+                    Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
+                    Err(error) => this.toast(&format!("Could not open folder: {error}")),
+                }
+            },
+        );
+    }
+
+    fn refresh_current_context(self: &Rc<Self>) {
+        let generation = self.preview_generation.get().wrapping_add(1);
+        self.preview_generation.set(generation);
+        // Coalesce repeated refreshes into one follow-up instead of spawning
+        // unbounded probes while the previous folder is still being read.
+        if self.preview_loading.replace(true) {
+            return;
+        }
+        self.preview_context_source
+            .set_text("Reading folder context…");
+        self.prompt_import_status.set_text("Reading starship.toml…");
+        let directory = self.preview_directory.borrow().clone();
+        let columns = usize::try_from(self.preview_terminal.column_count()).unwrap_or(80);
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(CurrentPreviewContext::load_for_width(directory, columns));
+        });
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_millis(40), move || {
+            let Some(this) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            match receiver.try_recv() {
+                Ok(context) => {
+                    this.preview_loading.set(false);
+                    if this.preview_generation.get() != generation {
+                        this.refresh_current_context();
+                        return glib::ControlFlow::Break;
+                    }
+                    this.preview_context_source.set_text(&format!(
+                        "{} · {}\n{}",
+                        context.shell,
+                        context.path,
+                        context.imported_prompt.label(),
+                    ));
+                    this.preview_context_source.set_tooltip_text(Some(&format!(
+                        "{}\n{}\n{}",
+                        context.detail,
+                        context.imported_prompt.path.display(),
+                        context.imported_prompt.detail
+                    )));
+                    let notice = if context.imported_prompt.ansi.is_some() {
+                        context
+                            .imported_prompt
+                            .detail
+                            .split_once("\nSkipped")
+                            .map(|(_, rest)| format!("\n\nSkipped{rest}"))
+                            .unwrap_or_default()
+                    } else {
+                        format!("\n\n{}", context.imported_prompt.detail)
+                    };
+                    this.prompt_import_status.set_text(&format!(
+                        "{}\n{}{}",
+                        context.imported_prompt.label(),
+                        context.imported_prompt.path.display(),
+                        notice
+                    ));
+                    this.prompt_import_status
+                        .set_tooltip_text(Some(&context.imported_prompt.detail));
+                    *this.current_preview_context.borrow_mut() = Some(context);
+                    this.redraw_preview_contents();
+                    glib::ControlFlow::Break
+                }
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    this.preview_loading.set(false);
+                    if this.preview_generation.get() != generation {
+                        this.refresh_current_context();
+                        return glib::ControlFlow::Break;
+                    }
+                    this.preview_context_source
+                        .set_text("Folder context unavailable. You can still use sample scenes.");
+                    this.prompt_import_status.set_text(
+                        "Starship preview unavailable. Try reloading or switch to Designer.",
+                    );
+                    glib::ControlFlow::Break
+                }
+            }
+        });
     }
 
     fn open_path(&self, path: &Path) {
@@ -2136,6 +5779,10 @@ fn save_button_state(dirty: bool, has_path: bool, inputs_valid: bool) -> (bool, 
     (enabled, emphasized)
 }
 
+fn has_unexported_prompt_changes(current: &PromptSettings, last_exported: &PromptSettings) -> bool {
+    current != last_exported
+}
+
 fn set_metric(value_label: &gtk::Label, ratio: Option<f64>, threshold: f64, relationship: &str) {
     remove_status_classes(value_label);
     let description = if let Some(ratio) = ratio {
@@ -2236,6 +5883,12 @@ fn diagnostic_detail(issue: &Issue) -> String {
     }
 }
 
+fn is_starship_toml_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("toml"))
+}
+
 fn palette_slug(name: &str) -> String {
     let mut slug = String::new();
     let mut separator_pending = false;
@@ -2260,6 +5913,315 @@ fn palette_slug(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a graphical GTK/VTE session; run with --ignored --test-threads=1"]
+    fn point_to_edit_real_vte_navigation() {
+        adw::init().unwrap();
+        gio::resources_register_include!("termimochi.gresource").unwrap();
+        gtk::IconTheme::for_display(&gdk::Display::default().unwrap())
+            .add_resource_path(&format!("{}/icons", crate::RESOURCE_BASE));
+        let app = adw::Application::builder()
+            .application_id("io.github.miiikuuu.termimochi.InspectTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        present(&app, None);
+        let window = app.active_window().unwrap();
+        // present stores exactly this Rc under this private key.
+        let this = unsafe {
+            window
+                .data::<Rc<Workbench>>("termimochi-workbench")
+                .unwrap()
+                .as_ref()
+                .clone()
+        };
+        let settle = || {
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_millis(350) {
+                while glib::MainContext::default().pending() {
+                    glib::MainContext::default().iteration(false);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        settle();
+        // Wait for the bounded context worker before installing each specimen.
+        while this.preview_loading.get() {
+            settle();
+        }
+        let terminal = &this.preview_terminal;
+        let snapshot = || {
+            terminal
+                .text_range_format(
+                    vte::Format::Text,
+                    0,
+                    0,
+                    terminal.cursor_position().1,
+                    terminal.column_count(),
+                )
+                .0
+                .unwrap_or_default()
+        };
+        let at = |col: i64, row: i64| {
+            let (top, fraction) =
+                preview_visible_origin(terminal).expect("unique visible VTE range");
+            let native = terminal.native().unwrap();
+            let (dx, dy) = native.surface_transform();
+            let native = native.dynamic_cast::<gtk::Widget>().unwrap();
+            let p = terminal
+                .compute_point(
+                    &native,
+                    &gtk::graphene::Point::new(
+                        (col as f32 + 0.5) * terminal.char_width() as f32,
+                        ((row as f64 - top as f64 - fraction) as f32 + 0.5)
+                            * terminal.char_height() as f32,
+                    ),
+                )
+                .unwrap();
+            this.preview_target_at(f64::from(p.x()) + dx, f64::from(p.y()) + dy)
+        };
+        this.preview_selector.set_selected(0);
+        settle();
+        let first_row = terminal.cursor_position().1 - 7;
+        terminal.vadjustment().unwrap().set_value(first_row as f64);
+        settle();
+        let cell = terminal
+            .text_range_format(vte::Format::Text, first_row, 0, first_row, 1)
+            .0
+            .unwrap_or_default();
+        assert_eq!(cell, "m", "VTE range endpoints are exclusive");
+        assert!(matches!(
+            at(0, first_row),
+            Some(PreviewTarget::Ansi(2 | 10))
+        ));
+        assert_eq!(at(0, first_row + 7), Some(PreviewTarget::Typography));
+        let before = snapshot();
+        let dirty = this.model.borrow().dirty;
+        assert!(
+            !this.inspect_button.is_active(),
+            "point-to-edit must be opt-in"
+        );
+        if std::env::var_os("TERMIMOCHI_POINTER_TEST").is_some() {
+            window.set_title(Some("TermiMochi point-to-edit test"));
+            let pointer = |mode: &str| {
+                let native = terminal.native().unwrap();
+                let (dx, dy) = native.surface_transform();
+                let native = native.dynamic_cast::<gtk::Widget>().unwrap();
+                let p = terminal
+                    .compute_point(
+                        &native,
+                        &gtk::graphene::Point::new(
+                            if mode == "blank" {
+                                terminal.width() as f32 - 5.0
+                            } else {
+                                terminal.char_width() as f32 * 0.5
+                            },
+                            terminal.char_height() as f32 * 0.5,
+                        ),
+                    )
+                    .unwrap();
+                let mut child = std::process::Command::new("python3")
+                    .arg(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/../../scripts/preview-pointer-driver.py"
+                    ))
+                    .arg(if mode == "blank" { "click" } else { mode })
+                    .arg(
+                        (((f64::from(p.x()) + dx) * f64::from(terminal.scale_factor())) as i32)
+                            .to_string(),
+                    )
+                    .arg(
+                        (((f64::from(p.y()) + dy) * f64::from(terminal.scale_factor())) as i32)
+                            .to_string(),
+                    )
+                    .spawn()
+                    .unwrap();
+                while child.try_wait().unwrap().is_none() {
+                    settle();
+                }
+                assert!(child.wait().unwrap().success());
+                settle();
+                settle();
+            };
+            this.inspect_preview_target(PreviewTarget::Typography);
+            settle();
+            pointer("hover");
+            assert!(
+                !this.inspect_label.is_visible(),
+                "disabled mode has no hover layer"
+            );
+            pointer("click");
+            assert!(
+                !this.palette_module_button.is_active(),
+                "disabled mode cannot navigate"
+            );
+            this.inspect_button.set_active(true);
+            pointer("hover");
+            assert_eq!(
+                this.inspect_hit.borrow().as_ref().map(|hit| hit.target),
+                Some(PreviewTarget::Ansi(2))
+            );
+            assert!(this.inspect_label.is_visible());
+            assert!(
+                this.inspect_label.width() > 100,
+                "the hover label must be readable, not just an ellipsis"
+            );
+            assert_eq!(this.inspect_label.text(), "Palette · Green / Color2");
+            assert!(
+                !this.palette_module_button.is_active(),
+                "hover alone never navigates"
+            );
+            pointer("blank");
+            assert!(this.inspect_hit.borrow().is_none());
+            assert_eq!(this.inspect_label.text(), "No editable detail");
+            assert!(
+                !this.palette_module_button.is_active(),
+                "blank space must not select Background"
+            );
+            pointer("click");
+            assert!(
+                this.palette_module_button.is_active(),
+                "actual click must switch the editor"
+            );
+            this.inspect_preview_target(PreviewTarget::Typography);
+            settle();
+            pointer("double");
+            assert!(
+                !this.palette_module_button.is_active(),
+                "double-click must not switch the editor"
+            );
+            assert!(
+                terminal.has_selection(),
+                "double-click must retain native word selection"
+            );
+            terminal.unselect_all();
+            pointer("drag");
+            assert!(
+                !this.palette_module_button.is_active(),
+                "drag must not switch the editor"
+            );
+            assert!(
+                terminal.has_selection(),
+                "drag must retain native selection"
+            );
+            terminal.unselect_all();
+            assert_eq!(snapshot(), before);
+            this.inspect_button.set_active(false);
+            assert!(!this.inspect_label.is_visible());
+            assert!(this.inspect_hit.borrow().is_none());
+            pointer("click");
+            assert!(
+                !this.palette_module_button.is_active(),
+                "turning Inspect off restores normal clicks"
+            );
+            this.inspect_button.set_active(true);
+            pointer("click_escape");
+            assert!(!this.inspect_button.is_active(), "Escape exits Inspect");
+            assert!(!this.inspect_label.is_visible());
+            assert!(
+                !this.palette_module_button.is_active(),
+                "Escape cancels a delayed click instead of navigating later"
+            );
+            assert_eq!(
+                snapshot(),
+                before,
+                "exiting Inspect must not reset the specimen"
+            );
+        }
+        this.inspect_preview_target(PreviewTarget::Ansi(2));
+        settle();
+        assert_eq!(*this.selected_color_key.borrow(), "Color2");
+        assert_eq!(snapshot(), before, "navigation must preserve the specimen");
+        assert_eq!(this.model.borrow().dirty, dirty);
+
+        this.prompt_module_button.set_active(true);
+        this.prompt_source_selector.set_selected(1);
+        this.prompt_preview_selector.set_selected(
+            PromptPreviewScenario::ALL
+                .iter()
+                .position(|s| *s == PromptPreviewScenario::Projects)
+                .unwrap() as u32,
+        );
+        settle();
+        let before = snapshot();
+        let mut found_segment = None;
+        let top = preview_visible_origin(terminal).unwrap().0;
+        for row in top..top + terminal.row_count() {
+            for col in 0..terminal.column_count() {
+                if let Some(PreviewTarget::PromptSegment(kind)) = at(col, row) {
+                    found_segment = Some(kind);
+                    break;
+                }
+            }
+            if found_segment.is_some() {
+                break;
+            }
+        }
+        let kind = found_segment.expect("designer prompt must expose a semantic module");
+        this.inspect_preview_target(PreviewTarget::Typography);
+        settle();
+        assert_eq!(
+            snapshot(),
+            before,
+            "leaving Prompt through inspection preserves its scene"
+        );
+        this.inspect_preview_target(PreviewTarget::PromptSegment(kind));
+        settle();
+        assert_eq!(this.selected_prompt_kind.get(), Some(kind));
+        assert_eq!(snapshot(), before);
+
+        this.preview_selector
+            .set_selected((PreviewScenario::ALL.len() - 1) as u32);
+        this.preview_input.borrow_mut().commit("local input");
+        this.redraw_preview_contents();
+        settle();
+        let before = snapshot();
+        let (col, row) = terminal.cursor_position();
+        assert_eq!(at(col, row), Some(PreviewTarget::Cursor));
+        this.inspect_preview_target(PreviewTarget::Prompt);
+        settle();
+        assert_eq!(this.prompt_source_selector.selected(), 0);
+        assert!(!this.prompt_export_button.is_visible());
+        assert_eq!(this.preview_input.borrow().text(), "local input");
+        assert_eq!(
+            snapshot(),
+            before,
+            "opening the read-only panel preserves input"
+        );
+        assert_eq!(
+            at(terminal.column_count() - 1, row),
+            None,
+            "empty canvas has no implicit color target"
+        );
+        this.inspect_preview_target(PreviewTarget::Cursor);
+        settle();
+        assert_eq!(snapshot(), before);
+
+        // Real VTE wrapping and scrollback, not a guessed character-width map.
+        terminal.reset(true, true);
+        *this.preview_map.borrow_mut() = PreviewMap::default();
+        this.feed_preview(PREVIEW_HOME_AND_CLEAR);
+        for line in 0..40 {
+            this.feed_scoped_preview(
+                &format!("你好 e\u{301} 🌸 (≧◡≦) {line} {}\r\n", "中文".repeat(50)),
+                Some(PreviewTarget::Prompt),
+            );
+        }
+        this.feed_preview(b"\r\n");
+        settle();
+        let adjustment = terminal.vadjustment().unwrap();
+        adjustment.set_value((adjustment.upper() - adjustment.page_size()).max(0.0));
+        settle();
+        let row = preview_visible_origin(terminal).unwrap().0;
+        assert_eq!(at(0, row), Some(PreviewTarget::Prompt));
+        assert_eq!(
+            at(1, row),
+            Some(PreviewTarget::Prompt),
+            "both halves of a wide character must resolve"
+        );
+        window.destroy();
+    }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct ContextualState {
@@ -2329,6 +6291,43 @@ mod tests {
     }
 
     #[test]
+    fn editor_modules_have_stable_navigation_metadata() {
+        assert_eq!(EditorModule::ALL.len(), 4);
+        assert_eq!(EditorModule::Palette.stack_name(), "palette");
+        assert_eq!(EditorModule::Typography.stack_name(), "typography");
+        assert_eq!(EditorModule::Layout.stack_name(), "layout");
+        assert_eq!(EditorModule::Prompt.stack_name(), "prompt");
+        assert_ne!(
+            EditorModule::Palette.stack_name(),
+            EditorModule::Typography.stack_name()
+        );
+        assert_ne!(
+            EditorModule::Palette.action_name(),
+            EditorModule::Typography.action_name()
+        );
+        assert_eq!(
+            EditorModule::Palette.icon_name(),
+            "preferences-color-symbolic"
+        );
+        assert_eq!(
+            EditorModule::Typography.icon_name(),
+            "font-x-generic-symbolic"
+        );
+        assert_eq!(
+            EditorModule::Layout.icon_name(),
+            "termimochi-layout-symbolic"
+        );
+        assert_eq!(
+            EditorModule::Prompt.icon_name(),
+            "termimochi-prompt-symbolic"
+        );
+        assert_eq!(EditorModule::Palette.shortcut(), "Control+1");
+        assert_eq!(EditorModule::Typography.shortcut(), "Control+2");
+        assert_eq!(EditorModule::Layout.shortcut(), "Control+3");
+        assert_eq!(EditorModule::Prompt.shortcut(), "Control+4");
+    }
+
+    #[test]
     fn edit_history_undoes_and_redoes_a_complete_transaction() {
         let mut history = EditHistory::new(100);
         history.begin(10);
@@ -2337,6 +6336,94 @@ mod tests {
 
         assert_eq!(history.undo(40), Some(10));
         assert_eq!(history.redo(10), Some(40));
+    }
+
+    #[test]
+    fn prompt_presets_have_an_independent_undo_history() {
+        let developer = PromptSettings::default();
+        let essential = PromptSettings::from_preset(PromptPreset::Essential);
+        let mut history = EditHistory::new(100);
+        history.begin(developer.clone());
+        history.mark_changed();
+        assert!(history.commit(essential.clone()));
+
+        assert_eq!(history.undo(essential), Some(developer.clone()));
+        assert_eq!(
+            history.redo(developer),
+            Some(PromptSettings::from_preset(PromptPreset::Essential))
+        );
+    }
+
+    #[test]
+    fn prompt_export_savepoint_tracks_edits_reexport_and_undo() {
+        let initial_export = PromptSettings::default();
+        let mut current = initial_export.clone();
+        assert!(!has_unexported_prompt_changes(&current, &initial_export));
+
+        assert!(current.set_character(PromptCharacter::Arrow));
+        assert!(has_unexported_prompt_changes(&current, &initial_export));
+
+        let reexported = current.clone();
+        assert!(!has_unexported_prompt_changes(&current, &reexported));
+        assert!(current.set_tone(PromptSegmentKind::Directory, PreviewTone::Green));
+        assert!(has_unexported_prompt_changes(&current, &reexported));
+
+        current = reexported.clone();
+        assert!(!has_unexported_prompt_changes(&current, &reexported));
+    }
+
+    #[test]
+    fn live_prompt_contexts_cover_every_conditional_module() {
+        let contexts = prompt_preview_contexts();
+        for kind in [
+            PromptSegmentKind::GitBranch,
+            PromptSegmentKind::GitStatus,
+            PromptSegmentKind::Rust,
+            PromptSegmentKind::NodeJs,
+            PromptSegmentKind::Python,
+            PromptSegmentKind::Go,
+            PromptSegmentKind::CommandDuration,
+            PromptSegmentKind::ExitStatus,
+            PromptSegmentKind::Jobs,
+            PromptSegmentKind::Time,
+        ] {
+            let mut settings = PromptSettings::from_preset(PromptPreset::Blank);
+            assert!(settings.add_module(kind));
+            assert!(
+                contexts.iter().any(|context| settings
+                    .preview_parts(context)
+                    .iter()
+                    .any(|part| part.kind == kind)),
+                "{kind:?} is absent from every live preview context"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_structure_and_appearance_edits_remain_atomic_history_steps() {
+        let developer = PromptSettings::default();
+        let mut with_jobs = developer.clone();
+        assert!(with_jobs.add_module(PromptSegmentKind::Jobs));
+        let mut reordered = with_jobs.clone();
+        assert!(reordered.move_module_up(PromptSegmentKind::Jobs));
+        let mut recolored = reordered.clone();
+        assert!(recolored.set_tone(PromptSegmentKind::Jobs, PreviewTone::Magenta));
+
+        let mut history = EditHistory::new(100);
+        for (before, after) in [
+            (developer.clone(), with_jobs.clone()),
+            (with_jobs.clone(), reordered.clone()),
+            (reordered.clone(), recolored.clone()),
+        ] {
+            history.begin(before);
+            history.mark_changed();
+            assert!(history.commit(after));
+        }
+
+        assert_eq!(history.undo(recolored), Some(reordered.clone()));
+        assert_eq!(history.undo(reordered), Some(with_jobs.clone()));
+        assert_eq!(history.undo(with_jobs.clone()), Some(developer.clone()));
+        assert_eq!(history.redo(developer), Some(with_jobs));
     }
 
     #[test]
@@ -2623,5 +6710,125 @@ mod tests {
         assert_eq!(save_button_state(true, false, true), (true, true));
         assert_eq!(save_button_state(true, true, false), (false, false));
         assert_eq!(save_button_state(false, false, false), (false, false));
+    }
+
+    #[test]
+    fn preview_scrollback_routes_to_outer_pane_only_at_boundaries() {
+        let wheel = gdk::ScrollUnit::Wheel;
+        let surface = gdk::ScrollUnit::Surface;
+        assert_eq!(
+            preview_scrollback_destination(80.0, 0.0, 100.0, 20.0, -1.0, 20.0, wheel),
+            Some(77.0)
+        );
+        assert_eq!(
+            preview_scrollback_destination(80.0, 0.0, 100.0, 20.0, 1.0, 20.0, wheel),
+            None
+        );
+        assert_eq!(
+            preview_scrollback_destination(0.0, 0.0, 100.0, 20.0, -1.0, 20.0, wheel),
+            None
+        );
+        assert_eq!(
+            preview_scrollback_destination(0.0, 0.0, 20.0, 20.0, 1.0, 20.0, wheel),
+            None
+        );
+        assert_eq!(
+            preview_scrollback_destination(40.0, 0.0, 100.0, 20.0, 10.0, 20.0, surface),
+            Some(40.5)
+        );
+        assert_eq!(
+            preview_scrollback_destination(40.0, 0.0, 100.0, 20.0, f64::NAN, 20.0, wheel),
+            None
+        );
+    }
+
+    #[test]
+    fn fitting_preview_width_preserves_configured_grid_and_handles_missing_metrics() {
+        assert_eq!(fitted_preview_columns(109, 600, 10, 6, true), 58);
+        assert_eq!(fitted_preview_columns(109, 2000, 10, 6, true), 109);
+        assert_eq!(fitted_preview_columns(109, 600, 10, 6, false), 109);
+        assert_eq!(fitted_preview_columns(109, 0, 10, 6, true), 109);
+        assert_eq!(fitted_preview_columns(109, 600, 0, 6, true), 109);
+        assert_eq!(fitted_preview_columns(109, 4, 10, 6, true), 12);
+    }
+
+    #[test]
+    fn terminal_grid_extent_preserves_cells_without_overflowing_gtk_sizes() {
+        assert_eq!(terminal_grid_extent(8, 58, 2, 1), 466);
+        assert_eq!(terminal_grid_extent(0, 58, 2, 195), 195);
+        assert_eq!(terminal_grid_extent(-8, 58, -2, 195), 195);
+        assert_eq!(
+            terminal_grid_extent(std::os::raw::c_long::MAX, usize::MAX, i64::MAX, 1),
+            i32::MAX
+        );
+        assert_eq!(add_widget_padding(466, 5), 476);
+        assert_eq!(add_widget_padding(0, -5), 1);
+        assert_eq!(add_widget_padding(i32::MAX, i32::MAX), i32::MAX);
+    }
+
+    #[test]
+    fn editor_modules_have_unique_navigation_metadata() {
+        use std::collections::HashSet;
+
+        assert_eq!(EditorModule::ALL.len(), 4);
+        for values in [
+            EditorModule::ALL.map(EditorModule::stack_name),
+            EditorModule::ALL.map(EditorModule::action_name),
+            EditorModule::ALL.map(EditorModule::shortcut),
+        ] {
+            assert_eq!(values.into_iter().collect::<HashSet<_>>().len(), 4);
+        }
+        assert_eq!(EditorModule::Prompt.label(), "Prompt");
+        assert_eq!(
+            EditorModule::Prompt.icon_name(),
+            "termimochi-prompt-symbolic"
+        );
+        assert_eq!(EditorModule::Prompt.shortcut_hint(), "Ctrl+4");
+    }
+
+    #[test]
+    fn starship_export_accepts_only_toml_destinations() {
+        assert!(is_starship_toml_path(Path::new("starship.toml")));
+        assert!(is_starship_toml_path(Path::new("Starship.TOML")));
+        assert!(is_starship_toml_path(Path::new("profiles/cute.toml")));
+        assert!(!is_starship_toml_path(Path::new(".bashrc")));
+        assert!(!is_starship_toml_path(Path::new(".zshrc")));
+        assert!(!is_starship_toml_path(Path::new("config.fish")));
+        assert!(!is_starship_toml_path(Path::new("starship")));
+    }
+
+    #[test]
+    fn font_choice_prefers_exact_then_resolved_then_system_family() {
+        let names = vec![
+            "DejaVu Sans Mono".to_owned(),
+            "JetBrains Mono".to_owned(),
+            "Ubuntu Sans Mono".to_owned(),
+        ];
+        assert_eq!(
+            preferred_font_index(
+                &names,
+                "JetBrains Mono",
+                Some("DejaVu Sans Mono"),
+                Some("Ubuntu Sans Mono")
+            ),
+            1
+        );
+        assert_eq!(
+            preferred_font_index(
+                &names,
+                "Missing Mono",
+                Some("DejaVu Sans Mono"),
+                Some("Ubuntu Sans Mono")
+            ),
+            0
+        );
+        assert_eq!(
+            preferred_font_index(&names, "Missing Mono", None, Some("Ubuntu Sans Mono")),
+            2
+        );
+        assert_eq!(
+            preferred_font_index(&names, "Missing Mono", None, Some("Missing System")),
+            0
+        );
     }
 }

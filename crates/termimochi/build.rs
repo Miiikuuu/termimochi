@@ -12,6 +12,10 @@ const ICON_FILES: &[&str] = &[
     "resources/icons/512x512/apps/io.github.miiikuuu.termimochi.png",
     "resources/icons/scalable/apps/io.github.miiikuuu.termimochi.svg",
     "resources/icons/scalable/apps/termimochi-header-logo.svg",
+    "resources/icons/symbolic/actions/termimochi-open-symbolic.svg",
+    "resources/icons/symbolic/actions/termimochi-save-symbolic.svg",
+    "resources/icons/symbolic/actions/termimochi-layout-symbolic.svg",
+    "resources/icons/symbolic/actions/termimochi-prompt-symbolic.svg",
     "resources/icons/symbolic/apps/io.github.miiikuuu.termimochi-symbolic.svg",
 ];
 

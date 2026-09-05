@@ -11,6 +11,10 @@
     <file alias="icons/512x512/apps/io.github.miiikuuu.termimochi.png">resources/icons/512x512/apps/io.github.miiikuuu.termimochi.png</file>
     <file alias="icons/scalable/apps/io.github.miiikuuu.termimochi.svg">resources/icons/scalable/apps/io.github.miiikuuu.termimochi.svg</file>
     <file alias="icons/scalable/apps/termimochi-header-logo.svg">resources/icons/scalable/apps/termimochi-header-logo.svg</file>
+    <file alias="icons/scalable/actions/termimochi-open-symbolic.svg">resources/icons/symbolic/actions/termimochi-open-symbolic.svg</file>
+    <file alias="icons/scalable/actions/termimochi-save-symbolic.svg">resources/icons/symbolic/actions/termimochi-save-symbolic.svg</file>
+    <file alias="icons/scalable/actions/termimochi-layout-symbolic.svg">resources/icons/symbolic/actions/termimochi-layout-symbolic.svg</file>
+    <file alias="icons/scalable/actions/termimochi-prompt-symbolic.svg">resources/icons/symbolic/actions/termimochi-prompt-symbolic.svg</file>
     <file alias="icons/symbolic/apps/io.github.miiikuuu.termimochi-symbolic.svg">resources/icons/symbolic/apps/io.github.miiikuuu.termimochi-symbolic.svg</file>
   </gresource>
 </gresources>

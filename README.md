@@ -2,7 +2,8 @@
 
 > Make terminal themes cute **and** usable.
 
-TermiMochi is a native Rust + GTK4/libadwaita workbench for terminal palettes.
+TermiMochi is a native Rust + GTK4/libadwaita workbench for terminal palettes
+and Starship prompts.
 It treats colors as semantic relationships and checks how real terminal apps
 combine them, instead of judging a theme only by its swatches.
 
@@ -16,11 +17,39 @@ that looks balanced elsewhere can therefore become almost unreadable.
 - Strict Ptyxis `.palette` parsing with unknown-property preservation.
 - WCAG relative luminance and contrast ratios.
 - General terminal and Codex-specific diagnostics.
-- Read-only startup import from the current or default Ptyxis profile.
+- Read-only Ptyxis appearance snapshots: palette, font, cell spacing, cursor,
+  configured grid, scrollbar policy and character-width behavior, with an
+  explicit launching/default-profile source and fallback details.
 - Light/dark variant editor with an embedded HSV picker and exact HEX/RGB input.
 - Document-wide undo/redo with coalesced drag and text-edit transactions.
-- VTE-rendered Shell, Codex, Git status/diff, test-output, syntax, htop and
-  font-coverage previews.
+- VS Code-style Activity Rail for switching the left-side Palette (`Ctrl+1`),
+  Typography (`Ctrl+2`), Layout (`Ctrl+3`) and Prompt (`Ctrl+4`) modules while
+  the right-side Live Preview and diagnostics remain mounted.
+- Live VTE typography controls for installed monospace families, point size,
+  weight, line height and cell width, with fallback-safe Nerd icon checks.
+- Live layout controls for content padding, rows and columns, cursor behavior,
+  tab and scrollbar chrome, and preview-window spacing.
+- Optional point-to-edit in Live Preview: enable **Inspect** (off by default)
+  for a hover highlight and a named destination before clicking. Colored output selects its ANSI slot,
+  ordinary text for Typography, a prompt for Prompt, or the cursor/padding/tab
+  title for Layout. Designer prompt parts select their own accent controls.
+  Inspection preserves the scene and local input; dragging and double-clicking
+  still select text normally. Blank/unrecognized areas do not navigate or
+  implicitly select Background. Turn Inspect off, or press Escape in the
+  preview, to return to ordinary interaction. Imported Starship prompts remain read-only.
+- Ordered Starship prompt builder with a categorized module library for
+  context, Git, Rust, Node.js, Python, Go and runtime state. Essential,
+  Developer, Remote and Blank are starting points rather than locked
+  modes; modules can be added, removed, reordered and recolored. One/two-line
+  layout, prompt spacing, ASCII symbols and SSH-only hostnames export to an
+  independent `starship.toml` without editing shell startup files.
+- A default Current Folder preview with asynchronously collected directory,
+  Git and installed-tool context; optional Shell, Codex, Git status/diff,
+  test-output, syntax, htop and multilingual alignment samples. VTE renders
+  both modes, with local typing and cursor motion that never execute input.
+- Read-only import of your existing Starship prompt, preserving its format,
+  custom color palette, symbols and multiline structure. Your Starship and
+  Designer are separate modes; importing never overwrites the original file.
 - Embedded multi-resolution application icon and Linux desktop metadata.
 - Atomic open, save and save-as workflows.
 - One-click Ptyxis installation with backup, change detection and rollback.
@@ -32,8 +61,9 @@ that looks balanced elsewhere can therefore become almost unreadable.
 - Rust 1.92 or newer.
 - GTK 4.10 or newer.
 - libadwaita 1.4 or newer.
-- VTE for GTK4.
+- VTE 0.76 or newer, for GTK4.
 - GLib resource compiler (`glib-compile-resources`).
+- Optional: Starship and Bubblewrap (`bwrap`) for safe existing-prompt previews.
 
 Ubuntu/Debian development packages:
 
@@ -46,6 +76,29 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgio-2.0-d
 ```bash
 cargo run -p termimochi
 ```
+
+Preview Source identifies the imported appearance and any approximations.
+Launching from Ptyxis can select its inherited profile; a desktop launch uses
+the configured default, not another window's active tab. Appearance import
+currently targets Ptyxis; other terminal profiles are not imported. Temporary
+zoom and transparency are not copied. Arbitrary shell `PS1` scripts are not imported.
+
+Current Folder uses the app's working directory and can be refreshed. Its
+context comes from bounded, read-only probes, not an attached shell session;
+previous command status and timing are unavailable. Sample scenarios provide
+repeatable success, failure, SSH and alignment checks in Designer.
+
+Your Starship reads `STARSHIP_CONFIG`, or `starship.toml` in the user's XDG
+configuration directory (normally `~/.config`). Reload Starship rereads it.
+The installed Starship renderer runs asynchronously with a read-only filesystem,
+isolated temporary cache and no network. Only reviewed built-in modules and
+declarative options are passed through; custom commands, unreviewed modules,
+command overrides and right prompts are skipped and reported. If Starship or
+Bubblewrap is unavailable, the app reports the limitation and uses a basic
+context prompt; it never runs an unsandboxed fallback. Shell startup files are
+not read or executed. Designer still exports a separate complete configuration,
+not a merge of the imported file. Nerd Font symbols need a font with those glyphs;
+importing preserves symbols but does not silently change your font.
 
 ## Install for the current user
 

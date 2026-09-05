@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>io.github.miiikuuu.termimochi</id>
   <name>TermiMochi</name>
-  <summary>Design accessible terminal color palettes</summary>
+  <summary>Design accessible terminal themes and prompts</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <developer id="io.github.miiikuuu">
@@ -10,8 +10,9 @@
   </developer>
   <description>
     <p>
-      TermiMochi is a focused GTK palette workbench for editing, previewing,
-      validating, exporting, and installing terminal color themes.
+      TermiMochi is a focused GTK workbench for editing, previewing, validating,
+      and exporting terminal palettes and Starship prompts, with live typography
+      and layout controls for refining the preview.
     </p>
   </description>
   <url type="homepage">https://github.com/Miiikuuu/termimochi</url>

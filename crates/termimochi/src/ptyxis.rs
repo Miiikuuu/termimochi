@@ -17,6 +17,11 @@ use gtk::{
 use serde::{Deserialize, Serialize};
 use termimochi_core::{PaletteError, PtyxisPalette, Variant, write_atomically};
 
+use crate::{
+    layout::{LayoutSettings, PreviewCursorBlink, PreviewCursorShape},
+    typography::{DEFAULT_CELL_SCALE, TypographySettings},
+};
+
 static NEXT_TRANSACTION: AtomicU64 = AtomicU64::new(0);
 const CURRENT_RECEIPT_VERSION: u8 = 2;
 
@@ -76,34 +81,167 @@ pub(crate) enum RollbackOutcome {
     Removed { target: PathBuf },
 }
 
+/// Read-only configuration snapshot. A desktop launch cannot identify the
+/// active tab in another application; `source_label` distinguishes a launching
+/// profile from Ptyxis' configured default and notices describe approximations.
 #[derive(Clone, Debug)]
-pub(crate) struct CurrentPtyxisPalette {
-    palette: PtyxisPalette,
-    preferred_variant: Option<Variant>,
+pub(crate) struct CurrentTerminalAppearance {
+    pub(crate) palette: Option<PtyxisPalette>,
+    pub(crate) preferred_variant: Option<Variant>,
+    pub(crate) typography: TypographySettings,
+    pub(crate) layout: LayoutSettings,
+    pub(crate) bold_is_bright: bool,
+    pub(crate) cjk_ambiguous_width: i32,
+    pub(crate) source_label: String,
+    pub(crate) notices: Vec<String>,
 }
 
-impl CurrentPtyxisPalette {
-    pub(crate) fn into_parts(self) -> (PtyxisPalette, Option<Variant>) {
-        (self.palette, self.preferred_variant)
+/// Import palette, font, spacing, cursor, and configured window grid together.
+/// All reads are limited to appearance settings: no shell startup files,
+/// command history, session contents, or arbitrary commands are evaluated.
+pub(crate) fn import_current_appearance() -> CurrentTerminalAppearance {
+    let desktop = find_settings("org.gnome.desktop.interface", None);
+    let inherited = env::var("PTYXIS_PROFILE").ok();
+    let terminal_program = env::var("TERM_PROGRAM").ok();
+    let foreign_terminal = has_foreign_terminal_hint(
+        inherited.as_deref(),
+        terminal_program.as_deref(),
+        env::var_os("GNOME_TERMINAL_SCREEN").is_some(),
+    );
+    if foreign_terminal {
+        return fallback_appearance(
+            desktop.as_ref(),
+            "The launching terminal does not provide a supported appearance profile. Using the desktop font and preview defaults.",
+        );
+    }
+    let Some(global) = find_settings("org.gnome.Ptyxis", None) else {
+        return fallback_appearance(
+            desktop.as_ref(),
+            "Ptyxis appearance settings are unavailable. Using the desktop font and preview defaults.",
+        );
+    };
+    let mut notices = Vec::new();
+    let profile_uuid = current_profile_uuid_from(&global, inherited.as_deref());
+    let launching_profile = profile_uuid
+        .as_deref()
+        .is_some_and(|uuid| inherited.as_deref() == Some(uuid));
+    if inherited.is_some() && !launching_profile {
+        notices.push(
+            "The launching Ptyxis profile is no longer available; using a configured profile."
+                .to_owned(),
+        );
+    }
+    let profile = profile_uuid.as_ref().and_then(|uuid| {
+        let path = format!("/org/gnome/Ptyxis/Profiles/{uuid}/");
+        find_settings("org.gnome.Ptyxis.Profile", Some(&path))
+    });
+    let palette = match profile.as_ref() {
+        Some(profile) => match read_profile_palette(profile) {
+            Ok(palette) => Some(palette),
+            Err(error) => {
+                notices.push(format!("Could not read the Ptyxis palette: {error}"));
+                None
+            }
+        },
+        None => {
+            notices.push(
+                "Ptyxis has no readable configured profile; using preview colors and cell spacing."
+                    .to_owned(),
+            );
+            None
+        }
+    };
+    let default_profile = setting_string(&global, "default-profile-uuid");
+    let source_label = if launching_profile {
+        "Ptyxis · Launching profile"
+    } else if profile_uuid.is_none() {
+        "Ptyxis · No profile"
+    } else if profile_uuid != default_profile {
+        "Ptyxis · Configured profile"
+    } else {
+        "Ptyxis · Default profile"
+    };
+    if !launching_profile && profile.is_some() {
+        notices.push("Imported Ptyxis' configured profile. Desktop launches cannot identify another window's active tab or temporary zoom.".to_owned());
+    }
+    let style = setting_string(&global, "interface-style");
+    let desktop_style = desktop
+        .as_ref()
+        .and_then(|settings| setting_string(settings, "color-scheme"));
+    let preferred_variant = Some(resolve_variant(style.as_deref(), desktop_style.as_deref()));
+    let typography = read_typography(Some(&global), profile.as_ref(), desktop.as_ref());
+    let layout = read_layout(&global, desktop.as_ref(), &mut notices);
+    let bold_is_bright = profile
+        .as_ref()
+        .and_then(|settings| setting_boolean(settings, "bold-is-bright"))
+        .unwrap_or(false);
+    let cjk_ambiguous_width = match profile
+        .as_ref()
+        .and_then(|settings| setting_string(settings, "cjk-ambiguous-width"))
+        .as_deref()
+    {
+        Some("wide") => 2,
+        _ => 1,
+    };
+    if profile
+        .as_ref()
+        .and_then(|settings| setting_double(settings, "opacity"))
+        .is_some_and(|opacity| opacity < 1.0)
+    {
+        notices.push(
+            "The profile uses transparency; the preview shows its opaque base colors.".to_owned(),
+        );
+    }
+    CurrentTerminalAppearance {
+        palette,
+        preferred_variant,
+        typography,
+        layout,
+        bold_is_bright,
+        cjk_ambiguous_width,
+        source_label: source_label.to_owned(),
+        notices,
     }
 }
 
-/// Read the palette selected by the Ptyxis profile that launched us. When the
-/// app is opened from the desktop, use Ptyxis' default profile instead.
-pub(crate) fn import_current_palette() -> Result<CurrentPtyxisPalette, PaletteImportError> {
-    let global = open_settings(
-        "org.gnome.Ptyxis",
-        None,
-        &["default-profile-uuid", "profile-uuids", "interface-style"],
-    )?;
-    let profile_uuid = current_profile_uuid(&global).ok_or(PaletteImportError::NoProfile)?;
-    let profile_path = format!("/org/gnome/Ptyxis/Profiles/{profile_uuid}/");
-    let profile = open_settings(
-        "org.gnome.Ptyxis.Profile",
-        Some(&profile_path),
-        &["palette"],
-    )?;
-    let palette_id = profile.string("palette").trim().to_owned();
+fn fallback_appearance(desktop: Option<&gio::Settings>, notice: &str) -> CurrentTerminalAppearance {
+    CurrentTerminalAppearance {
+        palette: None,
+        preferred_variant: None,
+        typography: read_typography(None, None, desktop),
+        layout: LayoutSettings::default(),
+        bold_is_bright: false,
+        cjk_ambiguous_width: 1,
+        source_label: "Preview defaults".to_owned(),
+        notices: vec![notice.to_owned()],
+    }
+}
+
+fn has_foreign_terminal_hint(
+    profile: Option<&str>,
+    terminal_program: Option<&str>,
+    gnome_terminal: bool,
+) -> bool {
+    if profile.is_some_and(valid_profile_uuid) {
+        return false;
+    }
+    gnome_terminal
+        || terminal_program.is_some_and(|program| {
+            !program.trim().is_empty() && !program.eq_ignore_ascii_case("ptyxis")
+        })
+}
+
+fn read_profile_palette(profile: &gio::Settings) -> Result<PtyxisPalette, PaletteImportError> {
+    if !profile
+        .settings_schema()
+        .is_some_and(|schema| schema.has_key("palette"))
+    {
+        return Err(PaletteImportError::MissingSetting {
+            schema: "org.gnome.Ptyxis.Profile",
+            key: "palette",
+        });
+    }
+    let palette_id = setting_string(profile, "palette").unwrap_or_default();
     let file_name = palette_file_name(&palette_id)
         .ok_or_else(|| PaletteImportError::InvalidPaletteId(palette_id.clone()))?;
 
@@ -111,59 +249,193 @@ pub(crate) fn import_current_palette() -> Result<CurrentPtyxisPalette, PaletteIm
         Some(text) => text,
         None => extract_builtin_palette(&file_name, &palette_id)?,
     };
-    let palette = PtyxisPalette::from_text(&text).map_err(PaletteImportError::InvalidPalette)?;
-    let preferred_variant = match global.string("interface-style").as_str() {
-        "light" => Some(Variant::Light),
-        "dark" => Some(Variant::Dark),
-        _ => None,
-    };
-
-    Ok(CurrentPtyxisPalette {
-        palette,
-        preferred_variant,
-    })
+    PtyxisPalette::from_text(&text).map_err(PaletteImportError::InvalidPalette)
 }
 
-fn open_settings(
-    schema_id: &'static str,
-    path: Option<&str>,
-    required_keys: &[&'static str],
-) -> Result<gio::Settings, PaletteImportError> {
-    let source =
-        gio::SettingsSchemaSource::default().ok_or(PaletteImportError::MissingSchema(schema_id))?;
-    let schema = source
-        .lookup(schema_id, true)
-        .ok_or(PaletteImportError::MissingSchema(schema_id))?;
-    for key in required_keys {
-        if !schema.has_key(key) {
-            return Err(PaletteImportError::MissingSetting {
-                schema: schema_id,
-                key,
-            });
-        }
+fn read_typography(
+    global: Option<&gio::Settings>,
+    profile: Option<&gio::Settings>,
+    desktop: Option<&gio::Settings>,
+) -> TypographySettings {
+    let use_system_font = global.and_then(|settings| setting_boolean(settings, "use-system-font"));
+    let custom_font_name = global.and_then(|settings| setting_string(settings, "font-name"));
+    let system_font_name =
+        desktop.and_then(|settings| setting_string(settings, "monospace-font-name"));
+    let font_name = select_font_name(
+        use_system_font,
+        custom_font_name.as_deref(),
+        system_font_name.as_deref(),
+    )
+    .unwrap_or_default();
+
+    let line_height = profile
+        .and_then(|settings| setting_double(settings, "cell-height-scale"))
+        .unwrap_or(DEFAULT_CELL_SCALE);
+    let cell_width = profile
+        .and_then(|settings| setting_double(settings, "cell-width-scale"))
+        .unwrap_or(DEFAULT_CELL_SCALE);
+
+    TypographySettings::from_font_name(font_name, line_height, cell_width)
+}
+
+fn resolve_variant(style: Option<&str>, desktop_style: Option<&str>) -> Variant {
+    match style {
+        Some("light") => Variant::Light,
+        Some("dark") => Variant::Dark,
+        _ if desktop_style == Some("prefer-dark") => Variant::Dark,
+        _ => Variant::Light,
     }
-    Ok(gio::Settings::new_full(
+}
+
+fn read_layout(
+    global: &gio::Settings,
+    desktop: Option<&gio::Settings>,
+    notices: &mut Vec<String>,
+) -> LayoutSettings {
+    let defaults = LayoutSettings::default();
+    let configured = (
+        setting_uint(global, "default-columns").unwrap_or(80),
+        setting_uint(global, "default-rows").unwrap_or(24),
+    );
+    let restored = setting_value(global, "window-size").and_then(|value| value.get::<(u32, u32)>());
+    let (columns, rows) = select_window_grid(
+        setting_boolean(global, "restore-window-size").unwrap_or(false),
+        restored,
+        configured,
+    );
+    let disable_padding = setting_boolean(global, "disable-padding").unwrap_or(false);
+    let shape = setting_string(global, "cursor-shape");
+    let blink = setting_string(global, "cursor-blink-mode");
+    let scrollbar = setting_string(global, "scrollbar-policy");
+    let overlay = desktop.and_then(|settings| setting_boolean(settings, "overlay-scrolling"));
+    let layout = LayoutSettings::new(
+        if disable_padding { 0 } else { 6 },
+        columns as usize,
+        rows as usize,
+        match shape.as_deref() {
+            Some("ibeam") => PreviewCursorShape::IBeam,
+            Some("underline") => PreviewCursorShape::Underline,
+            _ => PreviewCursorShape::Block,
+        },
+        match blink.as_deref() {
+            Some("on") => PreviewCursorBlink::On,
+            Some("off") => PreviewCursorBlink::Off,
+            _ => PreviewCursorBlink::System,
+        },
+        // Ptyxis reveals its tab bar only with more than one tab. This is a
+        // single-tab preview, not a reconstruction of another window's tabs.
+        false,
+        match scrollbar.as_deref() {
+            Some("always") => true,
+            Some("never") => false,
+            _ => !overlay.unwrap_or(true),
+        },
+        defaults.window_spacing,
+    );
+    if layout.columns != columns as usize || layout.rows != rows as usize {
+        notices.push(format!(
+            "The configured {columns} × {rows} terminal grid was limited to {} × {} for the preview.",
+            layout.columns, layout.rows
+        ));
+    }
+    if !disable_padding {
+        notices.push("Ptyxis' asymmetric terminal padding is represented by a 6 px inset. Window spacing and a single-tab view remain preview settings.".to_owned());
+    }
+    layout
+}
+
+fn select_window_grid(
+    restore: bool,
+    restored: Option<(u32, u32)>,
+    configured: (u32, u32),
+) -> (u32, u32) {
+    if restore
+        && let Some((columns, rows)) = restored
+        && columns > 0
+        && rows > 0
+    {
+        (columns, rows)
+    } else {
+        configured
+    }
+}
+
+fn find_settings(schema_id: &str, path: Option<&str>) -> Option<gio::Settings> {
+    let source = gio::SettingsSchemaSource::default()?;
+    let schema = source.lookup(schema_id, true)?;
+    Some(gio::Settings::new_full(
         &schema,
         gio::SettingsBackend::NONE,
         path,
     ))
 }
 
-fn current_profile_uuid(settings: &gio::Settings) -> Option<String> {
-    env::var("PTYXIS_PROFILE")
-        .ok()
+fn setting_boolean(settings: &gio::Settings, key: &str) -> Option<bool> {
+    setting_value(settings, key).and_then(|value| value.get())
+}
+
+fn setting_double(settings: &gio::Settings, key: &str) -> Option<f64> {
+    setting_value(settings, key).and_then(|value| value.get())
+}
+
+fn setting_string(settings: &gio::Settings, key: &str) -> Option<String> {
+    setting_value(settings, key)
+        .and_then(|value| value.get::<String>())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn setting_uint(settings: &gio::Settings, key: &str) -> Option<u32> {
+    setting_value(settings, key).and_then(|value| value.get())
+}
+
+fn setting_value(settings: &gio::Settings, key: &str) -> Option<glib::Variant> {
+    settings
+        .settings_schema()
+        .filter(|schema| schema.has_key(key))
+        .map(|_| settings.value(key))
+}
+
+fn select_font_name<'a>(
+    use_system_font: Option<bool>,
+    custom_font_name: Option<&'a str>,
+    system_font_name: Option<&'a str>,
+) -> Option<&'a str> {
+    let selected = if use_system_font.unwrap_or(true) {
+        system_font_name
+    } else {
+        custom_font_name
+    };
+    selected.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn current_profile_uuid_from(settings: &gio::Settings, inherited: Option<&str>) -> Option<String> {
+    let default = setting_string(settings, "default-profile-uuid");
+    let profiles = setting_value(settings, "profile-uuids")
+        .and_then(|value| value.get::<Vec<String>>())
+        .unwrap_or_default();
+    select_profile_uuid(
+        inherited,
+        default.as_deref(),
+        profiles.iter().map(|value| value.as_str()),
+    )
+}
+
+fn select_profile_uuid<'a>(
+    inherited: Option<&'a str>,
+    default: Option<&'a str>,
+    profiles: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    let profiles: Vec<_> = profiles
+        .into_iter()
         .filter(|value| valid_profile_uuid(value))
-        .or_else(|| {
-            let value = settings.string("default-profile-uuid").to_string();
-            valid_profile_uuid(&value).then_some(value)
-        })
-        .or_else(|| {
-            settings
-                .strv("profile-uuids")
-                .first()
-                .map(ToString::to_string)
-                .filter(|value| valid_profile_uuid(value))
-        })
+        .collect();
+    let available = |value: &&str| valid_profile_uuid(value) && profiles.contains(value);
+    inherited
+        .filter(available)
+        .or_else(|| default.filter(available))
+        .or_else(|| profiles.first().copied())
+        .map(ToOwned::to_owned)
 }
 
 fn valid_profile_uuid(value: &str) -> bool {
@@ -263,12 +535,10 @@ fn extract_builtin_palette(
 
 #[derive(Debug)]
 pub(crate) enum PaletteImportError {
-    MissingSchema(&'static str),
     MissingSetting {
         schema: &'static str,
         key: &'static str,
     },
-    NoProfile,
     InvalidPaletteId(String),
     PaletteNotFound(String),
     Io {
@@ -295,11 +565,9 @@ impl PaletteImportError {
 impl fmt::Display for PaletteImportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingSchema(schema) => write!(formatter, "missing GSettings schema {schema}"),
             Self::MissingSetting { schema, key } => {
                 write!(formatter, "{schema} does not provide setting {key}")
             }
-            Self::NoProfile => formatter.write_str("Ptyxis has no configured profile"),
             Self::InvalidPaletteId(id) => write!(formatter, "invalid Ptyxis palette id {id:?}"),
             Self::PaletteNotFound(id) => write!(formatter, "Ptyxis palette {id:?} was not found"),
             Self::Io { path, source } => {
@@ -796,6 +1064,136 @@ Color15=#ffffff\n";
         for id in ["", "../profile", "profile/child", "profile one"] {
             assert!(!valid_profile_uuid(id));
         }
+    }
+
+    #[test]
+    fn profile_selection_prefers_the_launching_terminal_then_configured_profiles() {
+        let profiles = ["first", "second"];
+        assert_eq!(
+            select_profile_uuid(Some("second"), Some("first"), profiles),
+            Some("second".to_owned())
+        );
+        assert_eq!(
+            select_profile_uuid(None, Some("second"), profiles),
+            Some("second".to_owned())
+        );
+        assert_eq!(
+            select_profile_uuid(None, None, profiles),
+            Some("first".to_owned())
+        );
+        assert_eq!(
+            select_profile_uuid(Some("../bad"), Some("also bad"), profiles),
+            Some("first".to_owned())
+        );
+        assert_eq!(select_profile_uuid(None, None, ["../bad"]), None);
+    }
+
+    #[test]
+    fn deleted_profiles_do_not_silently_read_a_new_profiles_schema_defaults() {
+        assert_eq!(
+            select_profile_uuid(Some("deleted"), Some("default"), ["default", "other"]),
+            Some("default".to_owned())
+        );
+        assert_eq!(
+            select_profile_uuid(None, Some("deleted"), ["first", "other"]),
+            Some("first".to_owned())
+        );
+        assert_eq!(
+            select_profile_uuid(Some("deleted"), Some("deleted"), []),
+            None
+        );
+    }
+
+    #[test]
+    fn unsupported_terminal_hints_do_not_import_an_unrelated_ptyxis_profile() {
+        assert!(has_foreign_terminal_hint(None, Some("WezTerm"), false));
+        assert!(has_foreign_terminal_hint(None, None, true));
+        assert!(!has_foreign_terminal_hint(None, Some("Ptyxis"), false));
+        assert!(!has_foreign_terminal_hint(None, None, false));
+        assert!(!has_foreign_terminal_hint(
+            Some("valid-profile"),
+            Some("tmux"),
+            false
+        ));
+        assert!(has_foreign_terminal_hint(
+            Some("../bad"),
+            Some("tmux"),
+            false
+        ));
+    }
+
+    #[test]
+    fn restored_terminal_grid_is_used_only_when_valid_and_enabled() {
+        assert_eq!(
+            select_window_grid(true, Some((109, 23)), (80, 24)),
+            (109, 23)
+        );
+        assert_eq!(
+            select_window_grid(false, Some((109, 23)), (80, 24)),
+            (80, 24)
+        );
+        assert_eq!(select_window_grid(true, Some((0, 23)), (80, 24)), (80, 24));
+        assert_eq!(select_window_grid(true, Some((109, 0)), (80, 24)), (80, 24));
+        assert_eq!(select_window_grid(true, None, (80, 24)), (80, 24));
+    }
+
+    #[test]
+    fn terminal_system_variant_uses_desktop_preference_not_workbench_chrome() {
+        assert_eq!(
+            resolve_variant(Some("system"), Some("prefer-dark")),
+            Variant::Dark
+        );
+        assert_eq!(
+            resolve_variant(Some("system"), Some("default")),
+            Variant::Light
+        );
+        assert_eq!(
+            resolve_variant(Some("dark"), Some("prefer-light")),
+            Variant::Dark
+        );
+        assert_eq!(
+            resolve_variant(Some("light"), Some("prefer-dark")),
+            Variant::Light
+        );
+        assert_eq!(resolve_variant(None, None), Variant::Light);
+    }
+
+    #[test]
+    fn typography_font_source_obeys_ptyxis_system_font_precedence() {
+        assert_eq!(
+            select_font_name(Some(true), Some("Custom Mono 12"), Some("System Mono 11")),
+            Some("System Mono 11")
+        );
+        assert_eq!(
+            select_font_name(Some(false), Some("Custom Mono 12"), Some("System Mono 11")),
+            Some("Custom Mono 12")
+        );
+    }
+
+    #[test]
+    fn typography_font_source_defaults_to_system_without_global_settings() {
+        assert_eq!(
+            select_font_name(None, Some("Custom Mono 12"), Some("System Mono 11")),
+            Some("System Mono 11")
+        );
+        assert_eq!(
+            select_font_name(None, None, Some("  System Mono 11  ")),
+            Some("System Mono 11")
+        );
+    }
+
+    #[test]
+    fn typography_font_source_does_not_revive_an_inactive_or_blank_setting() {
+        assert_eq!(
+            select_font_name(Some(true), Some("Custom Mono 12"), None),
+            None
+        );
+        assert_eq!(
+            select_font_name(Some(false), None, Some("System Mono 11")),
+            None
+        );
+        assert_eq!(select_font_name(Some(true), None, Some("  ")), None);
+        assert_eq!(select_font_name(Some(false), Some("\t"), None), None);
     }
 
     #[test]
