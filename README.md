@@ -62,13 +62,19 @@ that looks balanced elsewhere can therefore become almost unreadable.
   External changes block writing back. Shell startup files are never changed.
 - Selecting a module or field adds a **simulated command and its complete prompt**:
   enter a language project, stage Git changes, or show a failed command.
-  Edits update that prompt in place; recent command lines remain visible.
+  The existing preview is retained above the examples. Edits update that prompt
+  in place; recent command lines remain visible. **Original / Edited** compares
+  the loaded and edited prompt in the same context, without changing commands,
+  paths or example versions. Switching editor pages preserves the transcript,
+  scroll position and local input. Preview Source offers **Reset Preview Session**.
   Context uses example values, and omitted modules are included for preview only.
   Displayed commands are never executed and the simulation never enters the export.
 - Prompt glyph checks in the diagnostics report: missing characters and
   private-use icons relying on font fallback are distinguished, with direct
   **Fonts** and module-aware **Edit** actions. Ordinary supported CJK/emoji fallback is
   not flagged as an incompatibility.
+- Nerd Font symbol shortcuts include the module's glyph beside the label,
+  with primary-font, fallback and missing-glyph details on hover.
 - Embedded multi-resolution application icon and Linux desktop metadata.
 - Atomic open, save and save-as workflows.
 - One-click Ptyxis installation with backup, change detection and rollback.

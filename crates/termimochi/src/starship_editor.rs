@@ -1,8 +1,8 @@
 //! Shared controls for reviewed modules in a lossless imported configuration copy.
 use crate::starship_draft::{ModuleEdit, StarshipDraft};
-use crate::starship_modules::{MODULES, module_index};
+use crate::starship_modules::{MODULES, ModuleSpec, module_index};
 use crate::starship_scene::{Focus, SceneRequest};
-use gtk::{gdk, prelude::*};
+use gtk::{gdk, pango, prelude::*};
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -28,6 +28,10 @@ pub(crate) struct StarshipEditor {
     pub(crate) enabled: gtk::Switch,
     pub(crate) reset: gtk::Button,
     pub(crate) symbols: Vec<gtk::Button>,
+    nerd_preview: gtk::Label,
+    nerd_preview_stack: gtk::Stack,
+    nerd_font: RefCell<pango::FontDescription>,
+    nerd_preview_key: RefCell<Option<(&'static str, String, u32)>>,
     pub(crate) draft: RefCell<Option<StarshipDraft>>,
     pub(crate) file: RefCell<Result<crate::starship_file::FileSnapshot, String>>,
     warning: gtk::Label,
@@ -68,7 +72,7 @@ impl StarshipEditor {
         symbol_group.append(&symbol_field);
         symbol_group.append(&symbol);
         let choices = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let symbols = [
+        let symbols: Vec<_> = [
             ("rs", "Plain text — works with basic terminal fonts"),
             ("🦀", "Emoji — appearance depends on your emoji font"),
             (
@@ -85,6 +89,20 @@ impl StarshipEditor {
             button
         })
         .collect();
+        let nerd_preview = gtk::Label::new(None);
+        nerd_preview.set_single_line_mode(true);
+        let nerd_preview_stack = gtk::Stack::new();
+        nerd_preview_stack.set_size_request(22, 22);
+        nerd_preview_stack.set_valign(gtk::Align::Center);
+        nerd_preview_stack.add_named(&nerd_preview, Some("glyph"));
+        let missing = gtk::Image::from_icon_name("dialog-warning-symbolic");
+        missing.set_pixel_size(16);
+        missing.add_css_class("status-warning");
+        nerd_preview_stack.add_named(&missing, Some("missing"));
+        let nerd_choice = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        nerd_choice.append(&nerd_preview_stack);
+        nerd_choice.append(&gtk::Label::new(Some("Nerd Font")));
+        symbols[2].set_child(Some(&nerd_choice));
         symbol_group.append(&choices);
         root.append(&symbol_group);
 
@@ -188,6 +206,12 @@ impl StarshipEditor {
             enabled,
             reset,
             symbols,
+            nerd_preview,
+            nerd_preview_stack,
+            nerd_font: RefCell::new(
+                crate::typography::TypographySettings::default().font_description(),
+            ),
+            nerd_preview_key: RefCell::new(None),
             warning,
             draft: RefCell::new(None),
             file: RefCell::new(Err("No configuration is loaded.".into())),
@@ -202,6 +226,70 @@ impl StarshipEditor {
 
     pub(crate) fn connect_changed(&self, changed: impl Fn() + 'static) {
         *self.changed.borrow_mut() = Some(Box::new(changed));
+    }
+    pub(crate) fn set_preview_font(&self, font: &pango::FontDescription) {
+        self.nerd_font.replace(font.clone());
+        if let Some(draft) = self.draft.borrow().as_ref() {
+            self.refresh_nerd_preview(draft.spec());
+        }
+    }
+    fn refresh_nerd_preview(&self, spec: &ModuleSpec) {
+        let Some(presets) = spec.presets else {
+            self.nerd_preview.set_text("");
+            self.nerd_preview_key.borrow_mut().take();
+            return;
+        };
+        let font = self.nerd_font.borrow();
+        let context = self.nerd_preview.pango_context();
+        let key = (
+            spec.id,
+            font.to_string().to_string(),
+            context.font_map().map_or(0, |map| map.serial()),
+        );
+        if self.nerd_preview_key.borrow().as_ref() == Some(&key) {
+            return;
+        }
+        // The preview and click handler share the exact same preset. Only trim
+        // padding for the small specimen; applying it retains the original spaces.
+        let glyph = presets[2].trim();
+        let mut specimen_font = font.clone();
+        specimen_font.set_absolute_size(18.0 * f64::from(pango::SCALE));
+        let attributes = pango::AttrList::new();
+        attributes.insert(pango::AttrFontDesc::new(&specimen_font));
+        self.nerd_preview.set_attributes(Some(&attributes));
+        self.nerd_preview.set_text(glyph);
+        let layout = pango::Layout::new(&context);
+        layout.set_font_description(Some(&specimen_font));
+        layout.set_text(glyph);
+        let missing = layout.unknown_glyphs_count() > 0;
+        let primary = context
+            .load_font(&specimen_font)
+            .is_some_and(|face| glyph.chars().all(|ch| face.has_char(ch)));
+        self.nerd_preview_stack
+            .set_visible_child_name(if missing { "missing" } else { "glyph" });
+        let coverage = if missing {
+            "No available font can display this icon. Choose a Nerd Font in Typography."
+        } else if primary {
+            "Available in the selected preview font."
+        } else {
+            "Shown using font fallback. The selected terminal font does not contain this icon."
+        };
+        let codepoints = glyph
+            .chars()
+            .map(|ch| format!("U+{:04X}", u32::from(ch)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let family = font.family().unwrap_or_else(|| "Monospace".into());
+        let detail = format!(
+            "{} icon · {}\nPreview font: {} (enlarged specimen).\n{}",
+            spec.label, codepoints, family, coverage
+        );
+        self.symbols[2].set_tooltip_text(Some(&detail));
+        self.symbols[2].update_property(&[
+            gtk::accessible::Property::Label(&format!("Use {} Nerd Font icon", spec.label)),
+            gtk::accessible::Property::Description(&detail),
+        ]);
+        self.nerd_preview_key.replace(Some(key));
     }
     pub(crate) fn scene(&self) -> Option<SceneRequest> {
         self.draft
@@ -441,17 +529,17 @@ impl StarshipEditor {
         } else { "Literal text; special characters are escaped automatically." }));
         for (index, button) in self.symbols.iter().enumerate() {
             button.set_visible(spec.presets.is_some());
-            if let Some(presets) = spec.presets {
-                if index < 2 {
-                    button.set_label(presets[index].trim());
-                }
+            if let Some(presets) = spec.presets
+                && index < 2
+            {
+                button.set_label(presets[index].trim());
                 button.set_tooltip_text(Some(match index {
                     0 => "Plain text — works with basic terminal fonts",
-                    1 => "Unicode symbol — appearance depends on available fonts",
-                    _ => "Module icon — requires a Nerd Font in the terminal",
+                    _ => "Unicode symbol — appearance depends on available fonts",
                 }));
             }
         }
+        self.refresh_nerd_preview(spec);
         if editing != Some(&self.symbol) {
             self.symbol.set_text(&draft.literal_symbol());
         }
@@ -668,4 +756,118 @@ fn row(label: &str, widget: &impl IsA<gtk::Widget>) -> gtk::Box {
         .as_ref()
         .update_property(&[gtk::accessible::Property::Label(label)]);
     row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a graphical GTK session; run with --ignored --test-threads=1"]
+    fn nerd_font_preset_preview_tracks_module_and_font() {
+        adw::init().unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("starship.toml");
+        let source = "# Keep my settings\n[rust]\nsymbol = ' rs '\n";
+        std::fs::write(&path, source).unwrap();
+        let editor = StarshipEditor::new();
+        editor.begin(path.clone(), source.into()).unwrap();
+        editor.root.set_visible(true);
+        let contents = || {
+            editor
+                .draft
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .contents()
+                .to_owned()
+        };
+        for spec in MODULES.iter().filter(|spec| spec.presets.is_some()) {
+            editor.select_module(spec.id);
+            let preset = spec.presets.unwrap()[2];
+            assert!(editor.symbols[2].is_visible());
+            assert_eq!(editor.nerd_preview.text(), preset.trim());
+            assert!(
+                editor.symbols[2]
+                    .tooltip_text()
+                    .unwrap()
+                    .contains(spec.label)
+            );
+            assert_eq!(contents(), source, "previewing must not edit the draft");
+            editor.symbols[2].emit_clicked();
+            assert_eq!(
+                editor.draft.borrow().as_ref().unwrap().literal_symbol(),
+                preset,
+                "click must apply exactly the pictured preset, including spaces"
+            );
+            editor.undo();
+            assert_eq!(contents(), source);
+        }
+        editor.select_module("cmd_duration");
+        assert!(!editor.symbols[2].is_visible());
+        assert!(editor.nerd_preview.text().is_empty());
+        editor.select_module("rust");
+        let font = pango::FontDescription::from_string("DejaVu Sans Mono 24");
+        editor.set_preview_font(&font);
+        assert!(
+            editor.symbols[2]
+                .tooltip_text()
+                .unwrap()
+                .contains("DejaVu Sans Mono")
+        );
+        assert_eq!(contents(), source, "font changes must not edit the draft");
+        let cached = editor.nerd_preview_key.borrow().clone();
+        let detail = editor.symbols[2].tooltip_text();
+        editor.refresh();
+        assert_eq!(*editor.nerd_preview_key.borrow(), cached);
+        assert_eq!(editor.symbols[2].tooltip_text(), detail);
+
+        // Exercise loaded-face support and genuine missing glyphs without
+        // requiring a particular Nerd Font to be installed on the test host.
+        let specimen = |id, glyph| ModuleSpec {
+            id,
+            label: "Specimen",
+            symbols: &[],
+            styles: &[],
+            version: false,
+            disabled: false,
+            presets: Some(["text", "emoji", glyph]),
+        };
+        editor.refresh_nerd_preview(&specimen("ascii-test", "A"));
+        assert_eq!(
+            editor.nerd_preview_stack.visible_child_name().as_deref(),
+            Some("glyph")
+        );
+        assert!(
+            editor.symbols[2]
+                .tooltip_text()
+                .unwrap()
+                .contains("Available in the selected")
+        );
+        editor.refresh_nerd_preview(&specimen("missing-test", "\u{10fffd}"));
+        assert_eq!(
+            editor.nerd_preview_stack.visible_child_name().as_deref(),
+            Some("missing")
+        );
+        assert!(
+            editor.symbols[2]
+                .tooltip_text()
+                .unwrap()
+                .contains("No available font")
+        );
+        editor.refresh();
+        assert_eq!(editor.nerd_preview.text(), "\u{e7a8}");
+        // With a patched fallback installed the glyph is visible, but it must
+        // not be advertised as coverage by this unpatched primary face.
+        if editor.nerd_preview_stack.visible_child_name().as_deref() == Some("glyph") {
+            assert!(
+                editor.symbols[2]
+                    .tooltip_text()
+                    .unwrap()
+                    .contains("font fallback")
+            );
+        }
+        assert!(!editor.dirty());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+    }
 }

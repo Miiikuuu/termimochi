@@ -48,7 +48,7 @@ impl PreviewTarget {
             Self::Cursor => "Layout · Cursor".into(),
             Self::Padding => "Layout · Content Padding".into(),
             Self::TabBar => "Layout · Tab Bar".into(),
-            Self::Prompt => "Prompt · Your Starship (read-only)".into(),
+            Self::Prompt => "Prompt · Your Starship".into(),
             Self::PromptCopy => "Prompt · Your Starship".into(),
             Self::PromptSegment(kind) => format!("Prompt · {} Accent", kind.label()),
             Self::PromptCharacter => "Prompt · Character".into(),

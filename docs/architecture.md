@@ -76,11 +76,13 @@ and remain mounted. Palette, Typography and Layout share the selected scenario
 and active light/dark variant. Current Folder is the default, including a
 read-only Starship import when available. Prompt separates Your Starship from
 Designer, which has a selector for the same folder snapshot and repeatable project,
-failure, SSH, root and alignment samples. Switching modules rebuilds the VTE
-contents; transcript and scroll position are presentation state, not state
-promised across the Prompt boundary when using the Activity Rail. Point-to-edit
-navigation is an exception: it switches only the editor, preserving the active
-preview scene, scroll position and scratch input until an explicit scene change.
+failure, SSH, root and alignment samples. Activity Rail and point-to-edit
+navigation switch only the editor: neither clears VTE, resets scratch input nor
+queues a prompt render. The active preview source is independent of the left
+editor source selector, including during inspection and asynchronous rendering.
+Explicit prompt edits or module/field selections retain the existing scoped ANSI
+transcript as an immutable base and append examples below it. A scenario change
+or Reset Preview Session starts a new session without discarding prompt edits.
 
 `preview_inspect.rs` records semantic targets alongside the unmodified ANSI
 feed. VTE 0.76+ supplies the actual visible range and cell text for hit testing;
@@ -164,7 +166,15 @@ history, invalid fields and unsaved changes participate in the toolbar and
 close confirmation independently of Designer.
 
 `starship_editor.rs` supplies the editing controls and basic-font/emoji/Nerd Font
-shortcuts. Modules without symbols, versions or standalone styles do not show
+shortcuts. The Nerd Font shortcut includes the selected module's actual preset
+glyph, using the preview's font family and weight at a fixed specimen size.
+The tooltip distinguishes primary-font support, fallback and missing glyphs;
+missing glyphs show a warning icon instead of an unreadable box. Glyph checks
+are cached by module, font and font-map revision. Viewing a specimen never edits
+the draft; clicking applies the original preset with its spacing intact. The
+opt-in `nerd_font_preset_preview_tracks_module_and_font` GTK test covers module
+and font changes, missing glyphs, exact preset application and undo.
+Modules without symbols, versions or standalone styles do not show
 those controls. Multiple fields (Git statuses, user/root styles, success/error
 characters) use explicit selectors. Invalid text blocks navigation, save and export
 until repaired or undone; navigation by itself never edits the draft.
@@ -196,10 +206,16 @@ that the selected module is currently active in the user's shell.
 Selection and edit changes share the 220 ms debounce/single-flight worker.
 Unchanged starting prompts are cached. GTK captures an immutable draft snapshot;
 scene generation and rendering run in the worker. Generation checks discard
-stale starting prompts and transitions. A selection adds a command frame;
+stale starting prompts and transitions. Each frame contains an original/edited
+pair built from the same module, fields, focus and deterministic context. The
+original document is the configuration loaded when editing began, not a second
+live shell probe. Original / Edited switches cached results without starting a
+renderer, editing the document or appending a frame; scratch input and scroll
+position are retained. Designer compares against its settings at session start.
+The common transcript and initial prompt are identical in both views. A selection adds a command frame;
 edits replace the active frame, with at most six retained frames. A new copy
 clears history. Undo/redo restores the edited field and focus. Only the newest
-simulated prompt participates in scene glyph diagnostics, with findings labelled
+simulated prompt in the selected comparison view participates in scene glyph diagnostics, with findings labelled
 as simulated; obsolete glyphs in older command lines are not warnings.
 No displayed command is executed, including Git, SSH or file-operation examples.
 None of the temporary formats or example values enter the draft, export or user files.

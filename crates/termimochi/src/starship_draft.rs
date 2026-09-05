@@ -113,6 +113,9 @@ impl StarshipDraft {
     pub(crate) fn contents(&self) -> &str {
         &self.contents
     }
+    pub(crate) fn original_contents(&self) -> &str {
+        &self.original
+    }
     pub(crate) fn dirty(&self) -> bool {
         self.contents != self.exported
     }

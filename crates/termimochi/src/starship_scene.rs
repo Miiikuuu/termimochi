@@ -23,6 +23,8 @@ pub(crate) struct CommandScene {
 pub(crate) struct RenderedScene {
     pub scene: CommandScene,
     pub ansi: Result<String, String>,
+    pub original_ansi: Result<String, String>,
+    pub original_source: String,
 }
 
 pub(crate) fn record(
@@ -52,8 +54,10 @@ enum Variable {
     Data(String),
 }
 
+#[derive(Clone)]
 pub(crate) struct SceneRequest {
     source: String,
+    original: String,
     module: usize,
     symbol: usize,
     style: usize,
@@ -64,11 +68,18 @@ impl SceneRequest {
     pub fn capture(draft: &StarshipDraft, document: u64) -> Self {
         Self {
             source: draft.contents().into(),
+            original: draft.original_contents().into(),
             module: draft.module,
             symbol: draft.symbol,
             style: draft.style,
             focus: draft.sample_focus,
             document,
+        }
+    }
+    pub fn original(&self) -> Self {
+        Self {
+            source: self.original.clone(),
+            ..self.clone()
         }
     }
     pub fn build(self) -> CommandScene {
@@ -903,12 +914,52 @@ mod tests {
     }
 
     #[test]
+    fn original_and_edited_requests_keep_the_same_scene_context() {
+        let source = "format='$directory$rust$nodejs$python$golang$git_status$character'\n[rust]\nsymbol=' rs '\n";
+        let mut draft = StarshipDraft::new("source.toml".into(), source.into()).unwrap();
+        for (module, spec) in crate::starship_modules::MODULES.iter().enumerate() {
+            draft.select_module(module).unwrap();
+            for symbol in 0..spec.symbols.len().max(1) {
+                draft.symbol = symbol;
+                for style in 0..spec.styles.len().max(1) {
+                    draft.style = style;
+                    for focus in [Focus::Symbol, Focus::Style, Focus::Format] {
+                        draft.sample_focus = focus;
+                        let request = SceneRequest::capture(&draft, 7);
+                        let before = request.original().build();
+                        let after = request.build();
+                        assert_eq!(before.command, after.command);
+                        assert_eq!(before.output, after.output);
+                        assert_eq!(before.key, after.key);
+                        assert_eq!(before.document, after.document);
+                    }
+                }
+            }
+        }
+        draft.select_module(module_index("rust").unwrap()).unwrap();
+        draft.edit(ModuleEdit::Symbol(" 🦀 ".into())).unwrap();
+        let request = SceneRequest::capture(&draft, 9);
+        let before = request.original().build();
+        let after = request.build();
+        assert_eq!(before.command, after.command);
+        assert_ne!(
+            before.config.as_ref().unwrap(),
+            after.config.as_ref().unwrap()
+        );
+        assert!(before.diagnostic_source.contains(" rs "));
+        assert!(after.diagnostic_source.contains(" 🦀 "));
+        assert_eq!(draft.original_contents(), source);
+    }
+
+    #[test]
     fn selection_appends_typing_replaces_and_new_copy_clears_history() {
         let mut history = std::collections::VecDeque::new();
         let mut draft = draft("git_status");
         let frame = |draft: &StarshipDraft, document, ansi: &str| RenderedScene {
             scene: SceneRequest::capture(draft, document).build(),
             ansi: Ok(ansi.into()),
+            original_ansi: Ok("original".into()),
+            original_source: draft.original_contents().into(),
         };
         draft.symbol = 2;
         record(&mut history, frame(&draft, 0, "+2"));

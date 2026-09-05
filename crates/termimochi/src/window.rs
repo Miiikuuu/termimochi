@@ -280,6 +280,14 @@ impl<T: HistorySnapshot> EditHistory<T> {
     }
 }
 
+#[derive(Clone)]
+struct PreviewChunk {
+    text: String,
+    scope: Option<PreviewTarget>,
+}
+
+type InitialPromptKey = (u64, PathBuf, usize, u32);
+
 struct Workbench {
     window: glib::WeakRef<adw::ApplicationWindow>,
     toast_overlay: adw::ToastOverlay,
@@ -314,6 +322,7 @@ struct Workbench {
     preview_terminal_scrollbar_revealer: gtk::Revealer,
     preview_selector: gtk::DropDown,
     prompt_preview_selector: gtk::DropDown,
+    prompt_compare_selector: gtk::DropDown,
     appearance_source: gtk::Label,
     appearance_details: gtk::Label,
     preview_context_source: gtk::Label,
@@ -366,6 +375,7 @@ struct Workbench {
     copy_rendered_source: RefCell<Option<String>>,
     copy_prompt_key: RefCell<Option<(String, PathBuf, usize, u32)>>,
     copy_notices: RefCell<Vec<String>>,
+    copy_initial_sample: RefCell<Option<(InitialPromptKey, Result<String, String>)>>,
     copy_scene: RefCell<Option<crate::starship_scene::RenderedScene>>,
     copy_scene_history: RefCell<VecDeque<crate::starship_scene::RenderedScene>>,
     scene_diagnostics: RefCell<PromptDiagnostics>,
@@ -391,6 +401,11 @@ struct Workbench {
     geometry_pending: Cell<bool>,
     preview_map: RefCell<PreviewMap>,
     preview_uses_prompt: Cell<bool>,
+    preview_prompt_source: Cell<u32>,
+    preview_feed: RefCell<Vec<PreviewChunk>>,
+    prompt_preview_base: RefCell<Option<Vec<PreviewChunk>>>,
+    prompt_initial_ansi: RefCell<String>,
+    designer_original: RefCell<Option<PromptSettings>>,
     navigating_preview: Cell<bool>,
     inspect_generation: Cell<u64>,
     inspect_hit: RefCell<Option<PreviewHit>>,
@@ -743,6 +758,7 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
         preview_terminal_scrollbar_revealer: preview.terminal_scrollbar_revealer,
         preview_selector: preview.selector,
         prompt_preview_selector: preview.prompt_selector,
+        prompt_compare_selector: preview.compare_selector,
         appearance_source: preview.appearance_source,
         appearance_details: preview.appearance_details,
         preview_context_source: preview.context_source,
@@ -795,6 +811,7 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
         copy_rendered_source: RefCell::new(None),
         copy_prompt_key: RefCell::new(None),
         copy_notices: RefCell::new(Vec::new()),
+        copy_initial_sample: RefCell::new(None),
         copy_scene: RefCell::new(None),
         copy_scene_history: RefCell::new(VecDeque::new()),
         scene_diagnostics: RefCell::new(PromptDiagnostics::default()),
@@ -827,6 +844,11 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
         geometry_pending: Cell::new(false),
         preview_map: RefCell::new(PreviewMap::default()),
         preview_uses_prompt: Cell::new(false),
+        preview_prompt_source: Cell::new(0),
+        preview_feed: RefCell::new(Vec::new()),
+        prompt_preview_base: RefCell::new(None),
+        prompt_initial_ansi: RefCell::new("$ ".into()),
+        designer_original: RefCell::new(None),
         navigating_preview: Cell::new(false),
         inspect_generation: Cell::new(0),
         inspect_hit: RefCell::new(None),
@@ -885,6 +907,7 @@ struct PreviewWidgets {
     terminal_scrollbar_revealer: gtk::Revealer,
     selector: gtk::DropDown,
     prompt_selector: gtk::DropDown,
+    compare_selector: gtk::DropDown,
     appearance_source: gtk::Label,
     appearance_details: gtk::Label,
     context_source: gtk::Label,
@@ -2345,6 +2368,7 @@ fn build_preview(
     for (label, action) in [
         ("Choose Preview Folder…", "win.preview-folder"),
         ("Refresh Folder", "win.refresh-preview-folder"),
+        ("Reset Preview Session", "win.reset-preview"),
     ] {
         source_content.append(
             &gtk::Button::builder()
@@ -2425,8 +2449,16 @@ fn build_preview(
     prompt_selector.set_tooltip_text(Some(
         "Check the prompt in your current folder or a controlled sample",
     ));
+    let compare_selector = gtk::DropDown::from_strings(&["Edited", "Original"]);
+    compare_selector.set_visible(false);
+    compare_selector.add_css_class("preview-scenario");
+    compare_selector.update_property(&[gtk::accessible::Property::Label("Compare Prompt")]);
+    compare_selector.set_tooltip_text(Some(
+        "Compare edited and original prompts in the same appended sample. Commands, paths and versions stay fixed. Original uses the configuration loaded when editing began.",
+    ));
     terminal_header.append(&terminal_tab);
     terminal_header.append(&terminal_header_spacer);
+    terminal_header.append(&compare_selector);
     terminal_header.append(&selector);
     terminal_header.append(&prompt_selector);
     terminal.append(&terminal_header);
@@ -2659,6 +2691,7 @@ fn build_preview(
         terminal_scrollbar_revealer,
         selector,
         prompt_selector,
+        compare_selector,
         appearance_source,
         appearance_details,
         context_source,
@@ -3142,6 +3175,7 @@ impl Workbench {
     }
 
     fn restore_prompt_settings(&self, settings: PromptSettings) {
+        self.activate_prompt_preview(1);
         *self.prompt_settings.borrow_mut() = settings;
         self.refresh_prompt_controls();
         self.redraw_preview_contents();
@@ -3165,8 +3199,8 @@ impl Workbench {
         history.mark_changed();
         history.commit(after.clone());
         drop(history);
+        self.activate_prompt_preview(1);
         *self.prompt_settings.borrow_mut() = after;
-        self.preview_uses_prompt.set(true);
         self.refresh_prompt_controls();
         self.redraw_preview_contents();
         self.refresh_history_actions();
@@ -3296,7 +3330,7 @@ impl Workbench {
                 return;
             }
             if let Some(this) = weak.upgrade() {
-                if this.preview_uses_prompt.get() && this.prompt_source_selector.selected() == 1 {
+                if this.preview_uses_prompt.get() && this.preview_prompt_source.get() == 1 {
                     if id == "character" {
                         this.inspect_preview_target(PreviewTarget::PromptCharacter);
                     } else if let Some(kind) = PromptSegmentKind::ALL
@@ -3404,10 +3438,20 @@ impl Workbench {
         let weak = Rc::downgrade(this);
         refresh_folder.connect_activate(move |_, _| {
             if let Some(this) = weak.upgrade() {
+                this.reset_prompt_preview();
                 this.refresh_current_context();
             }
         });
         window.add_action(&refresh_folder);
+        let reset_preview = gio::SimpleAction::new("reset-preview", None);
+        let weak = Rc::downgrade(this);
+        reset_preview.connect_activate(move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                this.reset_prompt_preview();
+                this.redraw_preview_contents();
+            }
+        });
+        window.add_action(&reset_preview);
 
         let weak = Rc::downgrade(this);
         this.install_action.connect_activate(move |_, _| {
@@ -3468,18 +3512,9 @@ impl Workbench {
         this.prompt_module_button.connect_toggled(move |button| {
             if let Some(this) = weak.upgrade() {
                 if button.is_active() {
+                    let navigating = this.navigating_preview.replace(true);
                     this.sync_prompt_page();
-                }
-                if !this.navigating_preview.get() {
-                    if button.is_active()
-                        && this.prompt_source_selector.selected() == 0
-                        && this.copy_preview.borrow().is_none()
-                    {
-                        this.schedule_copy_preview();
-                    }
-                    this.preview_uses_prompt.set(button.is_active());
-                    this.preview_input.borrow_mut().reset();
-                    this.redraw_preview_contents();
+                    this.navigating_preview.set(navigating);
                 }
                 this.refresh_history_actions();
             }
@@ -3491,13 +3526,12 @@ impl Workbench {
                 if let Some(this) = weak.upgrade() {
                     this.sync_prompt_page();
                     if !this.navigating_preview.get() {
-                        if this.prompt_source_selector.selected() == 0
-                            && this.copy_preview.borrow().is_none()
-                        {
+                        if this.prompt_source_selector.selected() == 0 {
+                            this.activate_prompt_preview(0);
                             this.schedule_copy_preview();
+                        } else {
+                            this.activate_prompt_preview(1);
                         }
-                        this.preview_uses_prompt.set(true);
-                        this.preview_input.borrow_mut().reset();
                         this.redraw_preview_contents();
                     }
                     this.refresh_history_actions();
@@ -3509,6 +3543,7 @@ impl Workbench {
             if let Some(this) = weak.upgrade() {
                 this.refresh_history_actions();
                 if !this.navigating_preview.get() {
+                    this.activate_prompt_preview(0);
                     this.schedule_copy_preview();
                 }
             }
@@ -3679,10 +3714,37 @@ impl Workbench {
         this.prompt_preview_selector
             .connect_selected_notify(move |_| {
                 if let Some(this) = weak.upgrade() {
-                    this.preview_uses_prompt.set(true);
+                    if this.navigating_preview.get() {
+                        return;
+                    }
+                    this.activate_prompt_preview(1);
                     this.preview_input.borrow_mut().reset();
                     this.redraw_preview_contents();
                 }
+            });
+        let weak = Rc::downgrade(this);
+        this.prompt_compare_selector
+            .connect_selected_notify(move |_| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                if this.navigating_preview.get() || !this.preview_uses_prompt.get() {
+                    return;
+                }
+                let adjustment = this.preview_terminal.vadjustment();
+                let position = adjustment.as_ref().map(|a| a.value());
+                this.redraw_preview_contents();
+                this.schedule_diagnostics();
+                let generation = this.inspect_generation.get();
+                let weak = Rc::downgrade(&this);
+                glib::timeout_add_local_once(Duration::from_millis(40), move || {
+                    if let Some(this) = weak.upgrade()
+                        && this.inspect_generation.get() == generation
+                        && let (Some(adjustment), Some(position)) = (adjustment, position)
+                    {
+                        adjustment.set_value(position);
+                    }
+                });
             });
         let weak = Rc::downgrade(this);
         this.fit_preview_switch.connect_active_notify(move |_| {
@@ -3721,8 +3783,7 @@ impl Workbench {
         let weak = Rc::downgrade(this);
         this.preview_selector.connect_selected_notify(move |_| {
             if let Some(this) = weak.upgrade() {
-                this.preview_uses_prompt.set(false);
-                this.preview_input.borrow_mut().reset();
+                this.reset_prompt_preview();
                 this.refresh_preview();
             }
         });
@@ -4120,7 +4181,51 @@ impl Workbench {
         }
     }
 
+    fn activate_prompt_preview(&self, source: u32) {
+        if self.prompt_preview_base.borrow().is_none() {
+            *self.prompt_preview_base.borrow_mut() = Some(self.preview_feed.borrow().clone());
+            *self.prompt_initial_ansi.borrow_mut() = self
+                .current_preview_context
+                .borrow()
+                .as_ref()
+                .and_then(|context| context.imported_prompt.ansi.clone())
+                .unwrap_or_else(|| "$ ".into());
+            // Existing scratch input remains visible in the retained transcript.
+            self.preview_input.borrow_mut().reset();
+        }
+        if source == 1 && self.designer_original.borrow().is_none() {
+            *self.designer_original.borrow_mut() = Some(self.prompt_settings.borrow().clone());
+        }
+        self.preview_prompt_source.set(source);
+        self.preview_uses_prompt.set(true);
+        let navigating = self.navigating_preview.replace(true);
+        self.prompt_compare_selector.set_selected(0);
+        self.navigating_preview.set(navigating);
+    }
+
+    fn reset_prompt_preview(&self) {
+        self.preview_uses_prompt.set(false);
+        self.copy_generation
+            .set(self.copy_generation.get().wrapping_add(1));
+        self.prompt_preview_base.borrow_mut().take();
+        self.designer_original.borrow_mut().take();
+        self.copy_scene_history.borrow_mut().clear();
+        self.copy_scene.borrow_mut().take();
+        self.copy_initial_sample.borrow_mut().take();
+        self.preview_input.borrow_mut().reset();
+    }
+
+    fn preview_prompt_settings(&self) -> PromptSettings {
+        if self.prompt_compare_selector.selected() == 1
+            && let Some(original) = self.designer_original.borrow().as_ref()
+        {
+            return original.clone();
+        }
+        self.prompt_settings.borrow().clone()
+    }
+
     fn redraw_preview_contents(&self) {
+        self.preview_feed.borrow_mut().clear();
         self.used_prompt_characters.borrow_mut().clear();
         *self.preview_map.borrow_mut() = PreviewMap::default();
         self.invalidate_preview_inspection();
@@ -4128,10 +4233,19 @@ impl Workbench {
         // Queue a screen clear with the feed, so pending VTE input from the
         // loading state or a previous scene cannot survive an async redraw.
         self.feed_preview(PREVIEW_HOME_AND_CLEAR);
+        self.prompt_compare_selector
+            .set_visible(self.preview_uses_prompt.get());
         if self.preview_uses_prompt.get() {
-            self.preview_selector.set_visible(false);
+            self.preview_selector
+                .set_visible(self.preview_prompt_source.get() == 0);
             self.prompt_preview_selector
-                .set_visible(self.prompt_source_selector.selected() == 1);
+                .set_visible(self.preview_prompt_source.get() == 1);
+            if let Some(base) = self.prompt_preview_base.borrow().as_ref() {
+                for chunk in base {
+                    self.feed_historical_preview(&chunk.text, chunk.scope);
+                }
+                self.feed_preview(b"\x1b[0m\r\n\r\n");
+            }
             self.terminal_title.set_text("starship · sample");
             self.redraw_prompt_preview();
             self.feed_preview(PREVIEW_SHOW_CURSOR);
@@ -4167,7 +4281,9 @@ impl Workbench {
 
     fn sync_prompt_page(&self) {
         let designer = self.prompt_source_selector.selected() == 1;
+        let navigating = self.navigating_preview.replace(true);
         let loaded = !designer && self.ensure_starship_copy();
+        self.navigating_preview.set(navigating);
         self.prompt_design_panel.set_visible(designer);
         self.prompt_import_panel.set_visible(!designer && !loaded);
         self.starship_editor.root.set_visible(loaded);
@@ -4261,6 +4377,9 @@ impl Workbench {
     }
 
     fn schedule_copy_preview(self: &Rc<Self>) {
+        if !self.preview_uses_prompt.get() || self.preview_prompt_source.get() != 0 {
+            return;
+        }
         let generation = self.copy_generation.get().wrapping_add(1);
         self.copy_generation.set(generation);
         if self.starship_editor.invalid() {
@@ -4280,7 +4399,11 @@ impl Workbench {
     }
 
     fn start_copy_preview(self: &Rc<Self>) {
-        if self.starship_editor.invalid() || self.copy_loading.get() {
+        if self.starship_editor.invalid()
+            || self.copy_loading.get()
+            || !self.preview_uses_prompt.get()
+            || self.preview_prompt_source.get() != 0
+        {
             return;
         }
         let Some(contents) = self
@@ -4298,6 +4421,25 @@ impl Workbench {
         let columns = self.preview_terminal.column_count().max(12) as usize;
         let sample = self.starship_editor.scenario.selected();
         let scene = self.starship_editor.scene();
+        let original_source = self
+            .starship_editor
+            .draft
+            .borrow()
+            .as_ref()
+            .map(|draft| draft.original_contents().to_owned())
+            .unwrap_or_default();
+        let initial_key = (
+            self.starship_editor.document(),
+            directory.clone(),
+            columns,
+            sample,
+        );
+        let cached_initial = self
+            .copy_initial_sample
+            .borrow()
+            .as_ref()
+            .filter(|(key, _)| *key == initial_key)
+            .map(|(_, ansi)| ansi.clone());
         let key = (contents.clone(), directory.clone(), columns, sample);
         let cached_notices = self.copy_notices.borrow().clone();
         let cached = (self.copy_prompt_key.borrow().as_ref() == Some(&key))
@@ -4306,29 +4448,53 @@ impl Workbench {
             .and_then(Result::ok);
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
+            // Explicit starting samples remain functional, but the initial
+            // prompt is frozen from the original document for both A/B views.
+            let initial = (sample != 0).then(|| {
+                cached_initial.unwrap_or_else(|| {
+                    crate::starship_import::render_copy(
+                        &original_source,
+                        &directory,
+                        columns,
+                        sample,
+                    )
+                    .map(|(ansi, _)| ansi)
+                })
+            });
             let result = if let Some(ansi) = cached {
                 Ok((ansi, cached_notices))
             } else {
                 crate::starship_import::render_copy(&contents, &directory, columns, sample)
             };
             let scene = scene.map(|scene| {
+                let original = scene.original().build();
                 let scene = scene.build();
+                debug_assert_eq!(original.command, scene.command);
+                debug_assert_eq!(original.output, scene.output);
+                let original_ansi =
+                    crate::starship_import::render_scene(&original, &directory, columns);
                 let ansi = crate::starship_import::render_scene(&scene, &directory, columns);
-                crate::starship_scene::RenderedScene { scene, ansi }
+                crate::starship_scene::RenderedScene {
+                    scene,
+                    ansi,
+                    original_ansi,
+                    original_source: original.diagnostic_source,
+                }
             });
-            let _ = sender.send((contents, result, scene));
+            let _ = sender.send((contents, result, scene, initial));
         });
         let weak = Rc::downgrade(self);
         glib::timeout_add_local(Duration::from_millis(40), move || {
             let Some(this) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            let (rendered_source, result, scene) = match receiver.try_recv() {
+            let (rendered_source, result, scene, initial) = match receiver.try_recv() {
                 Ok(result) => result,
                 Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
                 Err(mpsc::TryRecvError::Disconnected) => (
                     String::new(),
                     Err("Prompt preview worker stopped. Edit a field to retry.".into()),
+                    None,
                     None,
                 ),
             };
@@ -4358,6 +4524,8 @@ impl Workbench {
             }
             *this.copy_rendered_source.borrow_mut() = result.as_ref().ok().map(|_| rendered_source);
             *this.copy_prompt_key.borrow_mut() = Some(key.clone());
+            *this.copy_initial_sample.borrow_mut() =
+                initial.map(|ansi| (initial_key.clone(), ansi));
             if let Some(scene) = scene.as_ref() {
                 crate::starship_scene::record(
                     &mut this.copy_scene_history.borrow_mut(),
@@ -4366,7 +4534,7 @@ impl Workbench {
             }
             *this.copy_scene.borrow_mut() = scene;
             *this.copy_preview.borrow_mut() = Some(result);
-            if this.prompt_source_selector.selected() == 0 && this.preview_uses_prompt.get() {
+            if this.preview_prompt_source.get() == 0 && this.preview_uses_prompt.get() {
                 this.redraw_preview_contents();
             }
             glib::ControlFlow::Break
@@ -4375,21 +4543,28 @@ impl Workbench {
 
     fn redraw_copy_preview(&self) {
         self.terminal_title.set_text("starship · simulated session");
-        self.preview_selector.set_visible(false);
-        self.prompt_preview_selector.set_visible(false);
         let preview = self.copy_preview.borrow();
         if preview.is_none() {
             self.feed_preview(b"Rendering your Starship prompt...\r\n");
             return;
         }
-        self.feed_preview(
-            "\x1b[2mSimulated session · commands are not executed.\x1b[0m\r\n\r\n".as_bytes(),
-        );
-        let initial = preview
-            .as_ref()
-            .and_then(|result| result.as_ref().ok())
-            .map_or("$ ", String::as_str);
-        self.feed_scoped_preview(initial, Some(PreviewTarget::PromptCopy));
+        let initial = self.prompt_initial_ansi.borrow();
+        let sample = self.copy_initial_sample.borrow();
+        let initial = match sample.as_ref().map(|(_, ansi)| ansi) {
+            Some(Ok(ansi)) => ansi.as_str(),
+            Some(Err(error)) => {
+                self.feed_preview(
+                    format!(
+                        "Starting sample unavailable: {}\r\n",
+                        crate::preview_context::display_text(error, 180)
+                    )
+                    .as_bytes(),
+                );
+                initial.as_str()
+            }
+            None => initial.as_str(),
+        };
+        self.feed_simulated_prompt(initial);
         let history = self.copy_scene_history.borrow();
         let mut prompt = initial;
         for frame in history.iter() {
@@ -4399,7 +4574,12 @@ impl Workbench {
                 self.feed_preview(frame.scene.output.as_bytes());
                 self.feed_preview(b"\r\n");
             }
-            match &frame.ansi {
+            let ansi = if self.prompt_compare_selector.selected() == 1 {
+                &frame.original_ansi
+            } else {
+                &frame.ansi
+            };
+            match ansi {
                 Ok(ansi) => prompt = ansi,
                 Err(error) => self.feed_preview(
                     format!(
@@ -4421,25 +4601,31 @@ impl Workbench {
     }
 
     fn feed_simulated_prompt(&self, ansi: &str) {
-        // History has separate provenance. Only the newest simulated state is
-        // diagnosed; obsolete glyphs in earlier command lines are not warnings.
-        self.preview_map.borrow_mut().record(
-            ansi,
-            Some(PreviewTarget::PromptCopy),
-            self.preview_terminal.is_bold_is_bright(),
-        );
-        self.preview_terminal.feed(ansi.as_bytes());
+        self.feed_historical_preview(ansi, Some(PreviewTarget::PromptCopy));
         self.feed_preview(b"\x1b[0m");
     }
 
+    fn feed_historical_preview(&self, text: &str, scope: Option<PreviewTarget>) {
+        // History has separate provenance. Only the newest simulated state is
+        // diagnosed; obsolete glyphs in earlier command lines are not warnings.
+        self.preview_map.borrow_mut().record(
+            text,
+            scope,
+            self.preview_terminal.is_bold_is_bright(),
+        );
+        self.preview_feed.borrow_mut().push(PreviewChunk {
+            text: text.into(),
+            scope,
+        });
+        self.preview_terminal.feed(text.as_bytes());
+    }
+
     fn redraw_prompt_preview(&self) {
-        if self.prompt_source_selector.selected() == 0
-            && self.starship_editor.draft.borrow().is_some()
-        {
+        if self.preview_prompt_source.get() == 0 && self.starship_editor.draft.borrow().is_some() {
             self.redraw_copy_preview();
             return;
         }
-        if self.prompt_source_selector.selected() == 0 {
+        if self.preview_prompt_source.get() == 0 {
             self.redraw_current_folder(false);
             return;
         }
@@ -4448,7 +4634,7 @@ impl Workbench {
             self.redraw_current_folder(true);
             return;
         }
-        let settings = self.prompt_settings.borrow();
+        let settings = self.preview_prompt_settings();
         let [rust_success, node_success, go_success, failed] = prompt_preview_contexts();
 
         if scenario != PromptPreviewScenario::Projects {
@@ -4543,7 +4729,7 @@ impl Workbench {
             },
         ));
         let context = snapshot.as_prompt_context();
-        let settings = self.prompt_settings.borrow();
+        let settings = self.preview_prompt_settings();
         let prompt = if use_designed_prompt {
             settings.preview_ansi(&context)
         } else if let Some(ansi) = &snapshot.imported_prompt.ansi {
@@ -4598,6 +4784,10 @@ impl Workbench {
     }
 
     fn feed_scoped_preview(&self, text: &str, scope: Option<PreviewTarget>) {
+        self.preview_feed.borrow_mut().push(PreviewChunk {
+            text: text.into(),
+            scope,
+        });
         if matches!(
             scope,
             Some(
@@ -5261,6 +5451,7 @@ impl Workbench {
         let settings = self.typography_settings();
         let description = settings.font_description();
         self.preview_terminal.set_font(Some(&description));
+        self.starship_editor.set_preview_font(&description);
         self.preview_terminal
             .set_cell_height_scale(settings.line_height);
         self.preview_terminal
@@ -5309,10 +5500,10 @@ impl Workbench {
     fn refresh_diagnostics(&self, issues: &[Issue]) {
         let source = match (
             self.preview_uses_prompt.get(),
-            self.prompt_source_selector.selected(),
+            self.preview_prompt_source.get(),
         ) {
             (true, 0) => self.copy_rendered_source.borrow().clone(),
-            (true, 1) => Some(self.prompt_settings.borrow().to_starship_toml()),
+            (true, 1) => Some(self.preview_prompt_settings().to_starship_toml()),
             _ => self
                 .current_preview_context
                 .borrow()
@@ -5327,24 +5518,30 @@ impl Workbench {
             source.as_deref(),
         ));
         if self.preview_uses_prompt.get()
-            && self.prompt_source_selector.selected() == 0
+            && self.preview_prompt_source.get() == 0
             && let Some(sample) = self.copy_scene.borrow().as_ref()
-            && let Ok(ansi) = &sample.ansi
         {
-            let used = ansi.chars().filter(|ch| is_prompt_character(*ch)).collect();
-            for mut issue in self.scene_diagnostics.borrow_mut().check(
-                &self.preview_terminal.pango_context(),
-                &self.typography_settings().font_description(),
-                &used,
-                Some(&sample.scene.diagnostic_source),
-            ) {
-                if issues.contains(&issue) {
-                    continue;
+            let (ansi, source) = if self.prompt_compare_selector.selected() == 1 {
+                (&sample.original_ansi, &sample.original_source)
+            } else {
+                (&sample.ansi, &sample.scene.diagnostic_source)
+            };
+            if let Ok(ansi) = ansi {
+                let used = ansi.chars().filter(|ch| is_prompt_character(*ch)).collect();
+                for mut issue in self.scene_diagnostics.borrow_mut().check(
+                    &self.preview_terminal.pango_context(),
+                    &self.typography_settings().font_description(),
+                    &used,
+                    Some(source),
+                ) {
+                    if issues.contains(&issue) {
+                        continue;
+                    }
+                    if let Some((title, detail)) = issue.message.split_once('\n') {
+                        issue.message = format!("{title} · simulated\n{detail}");
+                    }
+                    issues.push(issue);
                 }
-                if let Some((title, detail)) = issue.message.split_once('\n') {
-                    issue.message = format!("{title} · simulated\n{detail}");
-                }
-                issues.push(issue);
             }
         }
         // Cursor/selection changes can emit VTE contents-changed without any
@@ -5849,8 +6046,14 @@ impl Workbench {
             self.refresh_current_context();
             return;
         };
-        let result = crate::starship_file::FileSnapshot::read(&path)
-            .and_then(|file| self.starship_editor.begin(path, file.contents));
+        let result = crate::starship_file::FileSnapshot::read(&path).and_then(|file| {
+            // Reload starts a new comparison baseline; preserve the old
+            // preview if reading or validation fails.
+            crate::starship_draft::StarshipDraft::new(path.clone(), file.contents.clone())?;
+            self.reset_prompt_preview();
+            self.redraw_preview_contents();
+            self.starship_editor.begin(path, file.contents)
+        });
         match result {
             Ok(()) => {
                 self.sync_prompt_page();
@@ -6272,10 +6475,12 @@ impl Workbench {
                         };
                         *this.preview_directory.borrow_mut() = path;
                         this.current_preview_context.borrow_mut().take();
-                        this.preview_input.borrow_mut().reset();
+                        this.reset_prompt_preview();
+                        let navigating = this.navigating_preview.replace(true);
                         this.preview_selector
                             .set_selected((PreviewScenario::ALL.len() - 1) as u32);
                         this.prompt_preview_selector.set_selected(0);
+                        this.navigating_preview.set(navigating);
                         this.refresh_current_context();
                     }
                     Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
@@ -6796,11 +7001,40 @@ mod tests {
         }
         this.starship_editor.symbol.grab_focus();
         capture("prompt");
+        if this.starship_editor.draft.borrow().is_some() {
+            this.starship_editor.symbols[1].emit_clicked();
+            settle();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while this.copy_loading.get() {
+                assert!(std::time::Instant::now() < deadline);
+                settle();
+            }
+            capture("prompt-edited");
+            this.prompt_compare_selector.set_selected(1);
+            capture("prompt-original");
+            this.prompt_compare_selector.set_selected(0);
+            this.starship_editor.undo();
+            settle();
+        }
         this.prompt_export_button.popup();
         capture("save-menu");
         this.prompt_export_button.popdown();
         this.prompt_source_selector.set_selected(1);
         capture("designer");
+        let designer_original = this.prompt_settings.borrow().clone();
+        this.update_prompt_settings(|settings| {
+            settings.set_add_newline(!settings.add_newline());
+        });
+        let designer_edited = this.prompt_settings.borrow().clone();
+        assert_ne!(designer_original, designer_edited);
+        capture("designer-edited");
+        this.prompt_compare_selector.set_selected(1);
+        assert_eq!(this.preview_prompt_settings(), designer_original);
+        assert_eq!(*this.prompt_settings.borrow(), designer_edited);
+        capture("designer-original");
+        this.prompt_compare_selector.set_selected(0);
+        assert_eq!(this.preview_prompt_settings(), designer_edited);
+        this.restore_prompt_settings(designer_original);
         this.prompt_add_button.popup();
         capture("module-menu");
         this.prompt_add_button.popdown();
@@ -6913,6 +7147,28 @@ mod tests {
         assert_eq!(at(0, first_row + 7), Some(PreviewTarget::Typography));
         let before = snapshot();
         let dirty = this.model.borrow().dirty;
+        let position = terminal.vadjustment().unwrap().value();
+        let generation = this.copy_generation.get();
+        for action in [
+            "show-prompt",
+            "show-typography",
+            "show-layout",
+            "show-palette",
+        ] {
+            gio::prelude::ActionGroupExt::activate_action(&this.window(), action, None);
+            settle();
+            assert_eq!(
+                snapshot(),
+                before,
+                "Activity Rail must not replace the preview"
+            );
+            assert_eq!(terminal.vadjustment().unwrap().value(), position);
+            assert_eq!(
+                this.copy_generation.get(),
+                generation,
+                "navigation must not queue a prompt scene"
+            );
+        }
         assert!(
             !this.inspect_button.is_active(),
             "point-to-edit must be opt-in"
@@ -7211,6 +7467,7 @@ mod tests {
 
         // Real VTE wrapping and scrollback, not a guessed character-width map.
         terminal.reset(true, true);
+        this.preview_feed.borrow_mut().clear();
         *this.preview_map.borrow_mut() = PreviewMap::default();
         this.feed_preview(PREVIEW_HOME_AND_CLEAR);
         for line in 0..40 {
@@ -7268,6 +7525,9 @@ mod tests {
                     );
                     settle();
                 }
+                // VTE consumes the queued replay after the worker publishes
+                // its result; a retained transcript can span many frames.
+                settle();
                 assert!(
                     matches!(this.copy_preview.borrow().as_ref(), Some(Ok(_))),
                     "{:?}",
@@ -7280,9 +7540,99 @@ mod tests {
             assert_eq!(editor.symbol.text(), " rs ");
             assert!(snapshot().contains(" rs "));
             assert!(!editor.dirty(), "opening a copy must not modify it");
+            let retained_base: Vec<_> = this
+                .prompt_preview_base
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|chunk| chunk.text.clone())
+                .collect();
+            let initial_sample = this.copy_initial_sample.borrow().clone();
+            assert_eq!(initial_sample.as_ref().unwrap().0.3, 1);
             editor.symbols[1].emit_clicked();
             wait_for_copy();
+            assert_eq!(
+                *this.copy_initial_sample.borrow(),
+                initial_sample,
+                "the original starting sample is shared and frozen across edits"
+            );
             assert!(snapshot().contains(" 🦀 "));
+            let edited = snapshot();
+            let generation = this.copy_generation.get();
+            let frame_count = this.copy_scene_history.borrow().len();
+            let document = editor
+                .draft
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .contents()
+                .to_owned();
+            this.preview_input.borrow_mut().commit("comparison scratch");
+            this.redraw_preview_contents();
+            settle();
+            let with_input = snapshot();
+            let position = terminal.vadjustment().unwrap().value();
+            this.prompt_compare_selector.set_selected(1);
+            settle();
+            let original_view = snapshot();
+            assert!(original_view.contains(" rs "));
+            assert!(
+                !this
+                    .copy_scene
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .original_ansi
+                    .as_ref()
+                    .unwrap()
+                    .contains(" 🦀 ")
+            );
+            assert!(original_view.contains("~/projects/rust-app"));
+            assert!(original_view.contains("v1.89.0") && edited.contains("v1.89.0"));
+            assert!(original_view.contains("comparison scratch"));
+            assert_eq!(terminal.vadjustment().unwrap().value(), position);
+            assert_eq!(
+                this.copy_generation.get(),
+                generation,
+                "comparison must not start a renderer"
+            );
+            assert_eq!(this.copy_scene_history.borrow().len(), frame_count);
+            assert_eq!(editor.draft.borrow().as_ref().unwrap().contents(), document);
+            this.prompt_compare_selector.set_selected(0);
+            settle();
+            let compared = snapshot();
+            // VTE's absolute ring origin can advance across a reset. Compare
+            // retained text, not blank rows preceding that origin.
+            assert_eq!(
+                compared.trim_start_matches('\n'),
+                with_input.trim_start_matches('\n'),
+                "A/B must replay the exact same scene"
+            );
+            for action in [
+                "show-palette",
+                "show-typography",
+                "show-layout",
+                "show-prompt",
+            ] {
+                gio::prelude::ActionGroupExt::activate_action(&this.window(), action, None);
+                settle();
+                assert_eq!(snapshot(), compared);
+                assert_eq!(this.preview_input.borrow().text(), "comparison scratch");
+                assert_eq!(this.copy_generation.get(), generation);
+            }
+            assert_eq!(
+                this.prompt_preview_base
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|chunk| chunk.text.clone())
+                    .collect::<Vec<_>>(),
+                retained_base
+            );
+            this.preview_input.borrow_mut().reset();
+            this.redraw_preview_contents();
             assert!(this.undo_action.is_enabled());
             this.prompt_source_selector.set_selected(1);
             assert!(!editor.root.is_visible());
