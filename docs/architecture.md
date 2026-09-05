@@ -46,6 +46,27 @@ it works for any palette and either light or dark variants.
 
 ## UI boundary
 
+The application chrome uses a continuous white editing and preview workspace,
+with a near-white navigation rail and soft gray control surfaces. `chrome.css`
+scopes the editor controls and neutral focus states to the left workspace;
+terminal palettes, swatches and semantic diagnostic colors are independent.
+`style.rs` supplies application-local accent overrides
+for both legacy named colors and GTK 4.16+ CSS variables without changing desktop
+preferences. Navigation icons use original 24 px filled SVG contours so GTK's
+symbolic recoloring preserves their geometry at normal and high-DPI scales.
+
+The opt-in `light_chrome_pages_and_native_controls` GTK test checks both CSS
+paths, entry contrast, neutral accents and unchanged palette data while visiting
+all four editors and their native menus. Run it separately from other graphical
+tests; set `TERMIMOCHI_CHROME_SCREENSHOT_DIR` on X11 to capture each page and
+popover through the pointer driver's named test-window bounds:
+
+```bash
+GDK_BACKEND=x11 GTK_A11Y=none \
+  cargo test -p termimochi light_chrome_pages_and_native_controls -- \
+  --ignored --test-threads=1
+```
+
 The desktop crate owns only presentation and file interaction. Every edit is
 written to the in-memory core model, after which the preview and diagnostics
 are recomputed. A narrow Activity Rail switches only the left module stack
@@ -69,12 +90,16 @@ and VTE absolute rows can have different origins after reset. Unicode and soft
 wraps are matched through actual extracted text, with ambiguous/stale matches
 rejected. ANSI slots respect SGR and bold-is-bright; literal RGB does not pretend
 to be a base-palette slot. Designer runs identify their module; imported prompts
-only open the read-only source panel. A passive capture controller waits through
+open the configuration editor without changing the displayed scene. A passive capture controller waits through
 the system double-click interval and rejects drags, modified clicks, scrolls,
 selection and intervening redraws. Inspect is explicitly opt-in and off at
-startup. A non-targetable overlay shows the hit cell or padding strip and its
-named destination; hover alone never changes the editor. Pointer updates are
-coalesced and the VTE origin is cached until content or scrolling changes.
+startup. A non-targetable overlay shows the hit cell or padding strip, with its
+named destination docked in the lower-left corner; hover alone never changes
+the editor. The hint does not follow the mouse or flip around near an edge,
+and neither overlay participates in the terminal's size request. Pointer
+updates are coalesced to the display frame; unchanged hits do not repaint the
+highlight or remeasure the hint. The VTE origin is cached until content or
+scrolling changes.
 Blank and unmatched cells have no fallback target. Turning Inspect off, Escape,
 scrolling or redrawing clears feedback and invalidates pending clicks. Press
 and release must resolve to the same target. No document state or shell config
@@ -83,8 +108,12 @@ is changed.
 The opt-in `point_to_edit_real_vte_navigation` test exercises a real GTK window,
 wrapping, scrollback and scene preservation. Set `TERMIMOCHI_POINTER_TEST=1`
 under X11 to additionally use `scripts/preview-pointer-driver.py` for real
-hover, opt-in/off behavior, blank-space safety, single-click, word selection and drag-selection events (Python 3, libX11 and
-libXtst required). Run this separately from display-independent tests:
+hover, opt-in/off behavior, blank-space safety, single-click, word selection and
+drag-selection events (Python 3, libX11 and libXtst required). Hover regression
+checks monitor actual frames during small pointer movements: the hint must not
+move, disappear or repeatedly update its text, and the grid must stay still.
+Long/short target names and a pending hover cancelled by turning Inspect off
+are also covered. Run this separately from display-independent tests:
 
 ```bash
 GDK_BACKEND=x11 GTK_A11Y=none TERMIMOCHI_POINTER_TEST=1 \
@@ -113,8 +142,109 @@ and bounded runtime/output. Git hooks and optional writes are disabled. VTE gets
 only text, line breaks and SGR styles; OSC and cursor-control sequences are stripped.
 Rendered ANSI is cached in the folder snapshot, so typing and color adjustments
 never spawn a renderer. Missing sandbox/renderer, malformed files and skipped
-features are reported. There is no unsandboxed fallback. Original configuration
-and shell startup files are untouched, and imported prompts have no export action.
+features are reported. There is no unsandboxed fallback. Importing and previewing
+never write the original configuration or shell startup files.
+
+`starship_draft.rs` backs **Your Starship**, which opens the current configuration
+directly after loading, without a separate copy mode. Edits remain in memory.
+`starship_modules.rs` declares the 15 reviewed editor
+modules and their supported symbol/style fields; this is not an unrestricted
+Starship config editor. `toml_edit` patches only the selected property in the full source
+document, retaining the remaining settings, comments and layout. The full
+document is exported, never the filtered sandbox input. Unsupported and custom
+modules remain in the export but are not executed in the preview. Literal meta
+symbols are escaped for Starship; directory/path substitution symbols remain
+raw. Character symbols and Git status fields retain their format syntax,
+including embedded styles and count variables. Controls/directional overrides,
+unbalanced edited formats and malformed styles are rejected. Color changes
+retain unrelated style attributes; version/layout choices are language-only.
+Typed edits form undo groups; undo/redo restores the affected module/field.
+Reset restores only the selected module to its loaded state, preserving other edits. Draft
+history, invalid fields and unsaved changes participate in the toolbar and
+close confirmation independently of Designer.
+
+`starship_editor.rs` supplies the editing controls and basic-font/emoji/Nerd Font
+shortcuts. Modules without symbols, versions or standalone styles do not show
+those controls. Multiple fields (Git statuses, user/root styles, success/error
+characters) use explicit selectors. Invalid text blocks navigation, save and export
+until repaired or undone; navigation by itself never edits the draft.
+Font warnings live in the shared diagnostics report. A 220 ms edit
+debounce and single-flight bounded worker render the full copied prompt through
+the existing allowlist/sandbox; obsolete results cannot overwrite newer edits.
+Optional Rust, Node.js, Python and Go samples mount a temporary project manifest
+read-only at a stable sandbox path without creating files in the user's folder.
+They use the installed toolchain, not fabricated version output. The copied
+top-level format and detection rules still decide which modules are visible.
+That prompt starts a simulated terminal session. `starship_scene.rs` generates
+a command appropriate to the selected module/field, optional command output,
+and the resulting complete prompt. Examples include entering a Python project,
+staging Git changes, and a failed command showing the edited error character.
+The original root format, palette and multiline structure are preserved; a
+selected module omitted from that format is inserted for simulation only.
+Disabled modules stay disabled. Context uses fixed example values, not live
+versions, Git status, time or shell state. Unsupported expressions report a
+simulation-only error instead of executing runtime expressions.
+
+Only palette data and reviewed string fields enter the scene generator.
+Generated configurations contain declarative `env_var` formatters with fixed
+defaults, never imported runtime/custom modules or commands. Variable expansion
+is bounded, rejects recursion/unknown names, and disallows injecting any other
+root module reference. Starship renders it in the existing read-only/offline
+sandbox and its output is ANSI-sanitized. This is an editing aid, not a claim
+that the selected module is currently active in the user's shell.
+
+Selection and edit changes share the 220 ms debounce/single-flight worker.
+Unchanged starting prompts are cached. GTK captures an immutable draft snapshot;
+scene generation and rendering run in the worker. Generation checks discard
+stale starting prompts and transitions. A selection adds a command frame;
+edits replace the active frame, with at most six retained frames. A new copy
+clears history. Undo/redo restores the edited field and focus. Only the newest
+simulated prompt participates in scene glyph diagnostics, with findings labelled
+as simulated; obsolete glyphs in older command lines are not warnings.
+No displayed command is executed, including Git, SSH or file-operation examples.
+None of the temporary formats or example values enter the draft, export or user files.
+`starship_file.rs` binds the draft to a size-limited disk snapshot (resolved path,
+device/inode and exact bytes). Save Changes confirms the target, makes a private
+unique backup beside it, then atomically replaces the file with preserved Unix
+permissions. A changed/deleted/replaced source or retargeted symlink blocks save;
+checks are repeated immediately before replacement. Existing symlinks are kept
+and their resolved .toml target is updated. Read-only files, hard-link aliases,
+non-.toml targets and shell startup aliases are refused. The full draft is saved,
+never the sandbox-filtered or simulated configuration. A successful save updates
+the disk baseline without discarding editing undo history.
+
+Save As protects the active configuration, including symlink and hardlink aliases;
+writing it requires Save Changes instead. Other existing destinations are backed
+up before replacement. Saving separately does not switch the active shell config.
+Restore Previous Version discovers the latest regular, parseable backup after
+restart, confirms restoration, verifies both snapshots and backs up the current
+file first. Restore updates the draft and can be undone in memory. Reload from
+Disk requires confirmation for unsaved/invalid input and does not write files.
+Background folder refreshes never replace an existing draft. In Prompt, toolbar
+Save/Ctrl+S and Save As/Ctrl+Shift+S target the prompt rather than the theme;
+Designer continues exporting a separate complete document. Set
+`TERMIMOCHI_COPY_TEST=1` for the graphical test above to additionally exercise
+editing controls, real rendering, undo, validation, superseded render results,
+actual confirmation/cancellation, backed-up save, restore and external conflicts
+(Starship and Bubblewrap required). Run at both `GDK_SCALE=1` and `GDK_SCALE=2`.
+
+`prompt_diagnostics.rs` checks non-ASCII characters actually fed as prompt text,
+not unused config symbols or a font-name heuristic. Unique characters are
+bounded and attributed to a module only when the source has an unambiguous
+match. Pango checks the selected face and available fallback fonts separately:
+unknown glyphs are warnings; private-use icons supported only by fallback are
+informational compatibility notes. Supported CJK/emoji fallback is normal and
+does not produce a warning. These checks do not certify emoji sequence shaping
+or alignment in a different terminal. Findings include code points, explain the
+font context, and link to Typography or the affected module/field without silently
+altering a symbol or the original configuration. Font/content changes refresh
+the report and resolved findings disappear. A successful copy render keeps its
+matching source for attribution while newer edits are pending. Coverage is
+cached by font, font-map generation and character requirements; unchanged
+reports retain their row widgets so caret/selection events do not cause churn.
+The graphical copy test also covers real missing Rust/Python glyphs, supported
+emoji, disabled modules, plain-text repair, module/field navigation, cross-module
+history, independent resets, report actions and stable unchanged rows.
 
 The Typography module uses installed monospace families and inspects the
 selected Pango face directly for the Nerd icons shown in the specimen, without

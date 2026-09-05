@@ -38,6 +38,7 @@ const MODULES: &[&str] = &[
 #[derive(Clone, Debug)]
 pub(crate) struct ImportedPrompt {
     pub(crate) path: PathBuf,
+    pub(crate) source: Option<String>,
     pub(crate) ansi: Option<String>,
     pub(crate) detail: String,
 }
@@ -53,8 +54,9 @@ impl ImportedPrompt {
     }
 
     fn from_path(path: PathBuf, directory: &Path, columns: usize) -> Self {
-        let result = read_config(&path).and_then(|source| {
-            let (safe, notices) = prepare_config(&source)?;
+        let source = read_config(&path);
+        let result = source.as_ref().map_err(Clone::clone).and_then(|source| {
+            let (safe, notices) = prepare_config(source)?;
             let ansi = render(&safe, directory, columns)?;
             let mut detail = "Read-only Starship configuration. Previous command status, duration and jobs are not available from another shell.".to_owned();
             if !notices.is_empty() {
@@ -67,11 +69,13 @@ impl ImportedPrompt {
         match result {
             Ok((ansi, detail)) => Self {
                 path,
+                source: source.ok(),
                 ansi: Some(ansi),
                 detail,
             },
             Err(detail) => Self {
                 path,
+                source: source.ok(),
                 ansi: None,
                 detail,
             },
@@ -85,6 +89,53 @@ impl ImportedPrompt {
             "Starship preview unavailable"
         }
     }
+}
+
+/// Render edits through exactly the same allowlist/sandbox as imported data.
+/// The filtered text is for preview only, never the document to export.
+pub(crate) fn render_copy(
+    source: &str,
+    directory: &Path,
+    columns: usize,
+    scenario: u32,
+) -> Result<(String, Vec<String>), String> {
+    let (safe, notices) = prepare_config(source)?;
+    let fixture = match scenario {
+        0 => None,
+        1 => Some((
+            "Cargo.toml",
+            "[package]\nname = 'rust-preview'\nversion = '0.1.0'\nedition = '2024'\n",
+        )),
+        2 => Some((
+            "package.json",
+            "{\"name\":\"node-preview\",\"version\":\"0.1.0\"}\n",
+        )),
+        3 => Some((
+            "pyproject.toml",
+            "[project]\nname = 'python-preview'\nversion = '0.1.0'\n",
+        )),
+        4 => Some(("go.mod", "module example.com/preview\n\ngo 1.18\n")),
+        _ => return Err("Unknown preview sample.".into()),
+    };
+    let sample = if let Some((name, contents)) = fixture {
+        let sample = tempfile::Builder::new()
+            .prefix("termimochi-language-sample-")
+            .tempdir()
+            .map_err(|e| e.to_string())?;
+        fs::write(sample.path().join(name), contents).map_err(|e| e.to_string())?;
+        Some(sample)
+    } else {
+        None
+    };
+    render_at(
+        &safe,
+        sample.as_ref().map_or(directory, |s| s.path()),
+        columns,
+        sample
+            .as_ref()
+            .map(|_| Path::new("/tmp/termimochi-language-preview")),
+    )
+    .map(|ansi| (ansi, notices))
 }
 
 fn config_path(explicit: Option<&Path>, config_dir: &Path, cwd: &Path) -> PathBuf {
@@ -209,6 +260,7 @@ fn safe_option(key: &str) -> bool {
             | "read_only"
             | "read_only_style"
             | "repo_root_style"
+            | "before_repo_root_style"
             | "repo_root_format"
             | "substitutions"
             | "fish_style_pwd_dir_length"
@@ -261,7 +313,7 @@ fn safe_option(key: &str) -> bool {
 
 /// Filter top-level variables, including braced names, without changing
 /// Starship's styling, conditional groups, escaped literals or line breaks.
-fn filter_format(format: &str, skipped: &mut BTreeSet<String>) -> String {
+pub(crate) fn filter_format(format: &str, skipped: &mut BTreeSet<String>) -> String {
     let mut out = String::new();
     let mut all_positions = Vec::new();
     let mut explicit = BTreeSet::new();
@@ -320,6 +372,45 @@ fn filter_format(format: &str, skipped: &mut BTreeSet<String>) -> String {
 }
 
 fn render(config: &str, directory: &Path, columns: usize) -> Result<String, String> {
+    render_at(config, directory, columns, None)
+}
+
+fn render_at(
+    config: &str,
+    directory: &Path,
+    columns: usize,
+    sample_path: Option<&Path>,
+) -> Result<String, String> {
+    render_sandbox(config, directory, columns, sample_path, false)
+}
+
+/// Only accepts internally generated declarative scenes; never the copied
+/// user's TOML. Uses the same offline/read-only process and ANSI sanitizer.
+pub(crate) fn render_scene(
+    scene: &crate::starship_scene::CommandScene,
+    directory: &Path,
+    columns: usize,
+) -> Result<String, String> {
+    let config = scene.config.as_ref().map_err(Clone::clone)?;
+    let parsed: Table = toml::from_str(config).map_err(|e| e.to_string())?;
+    if parsed
+        .get("format")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Ok(String::new());
+    }
+    render_sandbox(config, directory, columns, None, true)
+}
+
+fn render_sandbox(
+    config: &str,
+    directory: &Path,
+    columns: usize,
+    sample_path: Option<&Path>,
+    allow_empty: bool,
+) -> Result<String, String> {
+    let sandbox_directory = sample_path.unwrap_or(directory);
     let starship = trusted_program("starship", directory)
         .ok_or("Starship is not installed. Install it to preview your configuration.")?;
     let bwrap = trusted_program("bwrap", directory).ok_or(
@@ -360,20 +451,23 @@ fn render(config: &str, directory: &Path, columns: usize) -> Result<String, Stri
     // A selected /tmp project must remain readable after hiding the host's
     // temporary files. It is still mounted read-only.
     if directory.starts_with("/tmp") && directory != Path::new("/tmp") {
-        command.arg("--ro-bind").arg(directory).arg(directory);
+        command
+            .arg("--ro-bind")
+            .arg(directory)
+            .arg(sandbox_directory);
     }
     command
         .arg("--ro-bind")
         .arg(&config_path)
         .arg("/tmp/starship.toml")
         .arg("--chdir")
-        .arg(directory)
+        .arg(sandbox_directory)
         .arg("--")
         .arg(starship)
         .args(["prompt", "--terminal-width"])
         .arg(columns.clamp(12, 500).to_string())
         .arg("--path")
-        .arg(directory)
+        .arg(sandbox_directory)
         .env("HOME", glib::home_dir())
         .env("USER", glib::user_name())
         .env("LOGNAME", glib::user_name())
@@ -424,7 +518,7 @@ fn render(config: &str, directory: &Path, columns: usize) -> Result<String, Stri
     // Shell command substitution strips final newlines before assigning PS1.
     // Preserve leading/interior line breaks and the character's trailing space.
     let ansi = terminal_safe_ansi(output.trim_end_matches('\n'));
-    if ansi.trim().is_empty() {
+    if ansi.trim().is_empty() && !allow_empty {
         return Err(
             "Starship returned an empty prompt. Check its format or use Designer.".to_owned(),
         );
@@ -458,6 +552,11 @@ fn trusted_program(name: &str, directory: &Path) -> Option<PathBuf> {
                     .canonicalize()
                     .is_ok_and(|path| !path.starts_with(&project))
         })
+}
+#[cfg(test)]
+pub(crate) fn can_render_samples(directory: &Path) -> bool {
+    trusted_program("starship", directory).is_some()
+        && trusted_program("bwrap", directory).is_some()
 }
 
 /// VTE receives only text, LF and SGR color/style sequences. Imported strings
@@ -512,6 +611,34 @@ fn terminal_safe_ansi(output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edited_rust_symbols_render_literally_without_executing_custom_modules() {
+        use crate::starship_draft::{ModuleEdit, StarshipDraft};
+        let temp = tempfile::tempdir().unwrap();
+        if trusted_program("starship", temp.path()).is_none()
+            || trusted_program("bwrap", temp.path()).is_none()
+        {
+            return;
+        }
+        let marker = temp.path().join("must-not-run");
+        let source = format!(
+            "format = '$rust${{custom.danger}}'\n[rust]\nsymbol = 'rs '\nformat = '[$symbol$version]($style)'\n[custom.danger]\nwhen = true\ncommand = \"touch {}\"\n",
+            marker.display()
+        );
+        let mut draft = StarshipDraft::new(temp.path().join("source.toml"), source).unwrap();
+        for symbol in [" rs ", " 🦀 ", "[$x](red)\\' "] {
+            draft.edit(ModuleEdit::Symbol(symbol.into())).unwrap();
+            let (ansi, notices) = render_copy(draft.contents(), temp.path(), 80, 1).unwrap();
+            assert!(
+                ansi.contains(symbol),
+                "{symbol:?} was not literal: {ansi:?}"
+            );
+            assert!(!notices.is_empty());
+            assert!(!marker.exists());
+            assert!(draft.contents().contains("[custom.danger]"));
+        }
+    }
 
     const CUTE: &str = r##"
 palette = "cute"
@@ -670,4 +797,57 @@ shell = ["bash", "-c"]
         assert!(!marker.exists());
         assert_eq!(fs::read_to_string(path).unwrap(), source);
     }
+}
+#[test]
+fn all_language_samples_and_reviewed_editor_fields_cross_the_safe_preview_boundary() {
+    use crate::starship_draft::{ModuleEdit, StarshipDraft};
+    use crate::starship_modules::MODULES as EDITABLE;
+    let temp = tempfile::tempdir().unwrap();
+    for (i, spec) in EDITABLE.iter().enumerate() {
+        let mut draft =
+            StarshipDraft::new(temp.path().join("source.toml"), "format='$all'\n".into()).unwrap();
+        draft.select_module(i).unwrap();
+        for j in 0..spec.symbols.len() {
+            draft.symbol = j;
+            draft.edit(ModuleEdit::Symbol("test ".into())).unwrap();
+        }
+        for j in 0..spec.styles.len() {
+            draft.style = j;
+            draft.edit(ModuleEdit::Style("bold red".into())).unwrap();
+        }
+        draft.edit(ModuleEdit::Enabled(true)).unwrap();
+        let (safe, notices) = prepare_config(draft.contents()).unwrap();
+        let safe: toml::Table = toml::from_str(&safe).unwrap();
+        let full: toml::Table = toml::from_str(draft.contents()).unwrap();
+        for field in spec.symbols.iter().chain(spec.styles) {
+            assert_eq!(
+                safe[spec.id][field.key], full[spec.id][field.key],
+                "{}.{}",
+                spec.id, field.key
+            );
+            assert!(!notices.contains(&format!("{}.{}", spec.id, field.key)));
+        }
+    }
+    if trusted_program("starship", temp.path()).is_none()
+        || trusted_program("bwrap", temp.path()).is_none()
+    {
+        return;
+    }
+    for (scenario, module) in [(1, "rust"), (2, "nodejs"), (3, "python"), (4, "golang")] {
+        let source = format!("format='${module}'\n[{module}]\nformat='[$symbol]($style)'\n");
+        let mut draft = StarshipDraft::new(temp.path().join("source.toml"), source).unwrap();
+        draft
+            .select_module(crate::starship_modules::module_index(module).unwrap())
+            .unwrap();
+        draft
+            .edit(ModuleEdit::Symbol("[$literal] 🦀".into()))
+            .unwrap();
+        let (ansi, _) = render_copy(draft.contents(), temp.path(), 80, scenario).unwrap();
+        assert!(ansi.contains("[$literal] 🦀"), "{module}: {ansi:?}");
+    }
+    assert!(render_copy("format='$all'", temp.path(), 80, u32::MAX).is_err());
+    assert!(!temp.path().join("Cargo.toml").exists());
+    assert!(!temp.path().join("package.json").exists());
+    assert!(!temp.path().join("pyproject.toml").exists());
+    assert!(!temp.path().join("go.mod").exists());
 }

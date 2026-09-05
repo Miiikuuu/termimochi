@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     rc::Rc,
     sync::mpsc,
@@ -32,11 +32,13 @@ use crate::{
         PreviewTone, PromptCharacter, PromptHostnameMode, PromptLayout, PromptPreset,
         PromptPreviewContext, PromptSegmentKind, PromptSettings, STARSHIP_FILE_NAME,
     },
+    prompt_diagnostics::{PromptDiagnostics, is_font_issue, is_prompt_character, issue_module},
     ptyxis::{
         CurrentTerminalAppearance, InstallOutcome, PtyxisInstaller, RollbackOutcome,
         import_current_appearance,
     },
-    style::BASE_CSS,
+    starship_editor::StarshipEditor,
+    style::chrome_css,
     typography::{
         DEFAULT_FONT_FAMILY, MAX_CELL_SCALE, MAX_FONT_SIZE, MIN_CELL_SCALE, MIN_FONT_SIZE,
         PreviewFontWeight, TypographySettings, detect_nerd_font_support, is_usable_terminal_family,
@@ -302,7 +304,7 @@ struct Workbench {
     terminal_title: gtk::Label,
     preview_terminal_shell: gtk::Box,
     inspect_button: gtk::ToggleButton,
-    inspect_layer: gtk::Fixed,
+    inspect_layer: gtk::Overlay,
     inspect_label: gtk::Label,
     inspect_highlight: gtk::DrawingArea,
     preview_terminal_tab: gtk::Box,
@@ -356,7 +358,21 @@ struct Workbench {
     prompt_import_panel: gtk::Box,
     prompt_design_panel: gtk::Box,
     prompt_import_status: gtk::Label,
-    prompt_export_button: gtk::Button,
+    prompt_export_button: gtk::MenuButton,
+    starship_editor: Rc<StarshipEditor>,
+    copy_generation: Cell<u64>,
+    copy_loading: Cell<bool>,
+    copy_preview: RefCell<Option<Result<String, String>>>,
+    copy_rendered_source: RefCell<Option<String>>,
+    copy_prompt_key: RefCell<Option<(String, PathBuf, usize, u32)>>,
+    copy_notices: RefCell<Vec<String>>,
+    copy_scene: RefCell<Option<crate::starship_scene::RenderedScene>>,
+    copy_scene_history: RefCell<VecDeque<crate::starship_scene::RenderedScene>>,
+    scene_diagnostics: RefCell<PromptDiagnostics>,
+    used_prompt_characters: RefCell<BTreeSet<char>>,
+    prompt_diagnostics: RefCell<PromptDiagnostics>,
+    reported_issues: RefCell<Option<Vec<Issue>>>,
+    diagnostics_pending: Cell<bool>,
     body_ratio: gtk::Label,
     composer_ratio: gtk::Label,
     summary_icon: gtk::Box,
@@ -475,8 +491,8 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
     };
     let initial_typography = appearance.typography.clone();
 
-    // Keep the editor chrome in the warm Fog Paper family while the selected
-    // palette continues to control the VTE preview itself.
+    // White workspace with a softly separated navigation rail. Palette variants
+    // continue to control VTE only; the desktop accent is not modified.
     adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceLight);
 
     let window = adw::ApplicationWindow::builder()
@@ -675,7 +691,7 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
     main_paned.set_shrink_end_child(false);
 
     let base_css_provider = gtk::CssProvider::new();
-    base_css_provider.load_from_data(BASE_CSS);
+    base_css_provider.load_from_data(&chrome_css(gtk::check_version(4, 16, 0).is_none()));
     let terminal_css_provider = gtk::CssProvider::new();
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
@@ -772,6 +788,20 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
         prompt_design_panel: prompt.design_panel,
         prompt_import_status: prompt.import_status,
         prompt_export_button: prompt.export_button,
+        starship_editor: prompt.copy_editor,
+        copy_generation: Cell::new(0),
+        copy_loading: Cell::new(false),
+        copy_preview: RefCell::new(None),
+        copy_rendered_source: RefCell::new(None),
+        copy_prompt_key: RefCell::new(None),
+        copy_notices: RefCell::new(Vec::new()),
+        copy_scene: RefCell::new(None),
+        copy_scene_history: RefCell::new(VecDeque::new()),
+        scene_diagnostics: RefCell::new(PromptDiagnostics::default()),
+        used_prompt_characters: RefCell::new(BTreeSet::new()),
+        prompt_diagnostics: RefCell::new(PromptDiagnostics::default()),
+        reported_issues: RefCell::new(None),
+        diagnostics_pending: Cell::new(false),
         body_ratio: preview.body_ratio,
         composer_ratio: preview.composer_ratio,
         summary_icon: preview.summary_icon,
@@ -845,7 +875,7 @@ struct PreviewWidgets {
     terminal_title: gtk::Label,
     terminal_shell: gtk::Box,
     inspect_button: gtk::ToggleButton,
-    inspect_layer: gtk::Fixed,
+    inspect_layer: gtk::Overlay,
     inspect_label: gtk::Label,
     inspect_highlight: gtk::DrawingArea,
     terminal_tab: gtk::Box,
@@ -868,7 +898,7 @@ struct PreviewWidgets {
     diagnostics: gtk::ListBox,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct PreviewHit {
     target: PreviewTarget,
     bounds: gtk::graphene::Rect,
@@ -910,7 +940,8 @@ struct PromptWidgets {
     import_panel: gtk::Box,
     design_panel: gtk::Box,
     import_status: gtk::Label,
-    export_button: gtk::Button,
+    export_button: gtk::MenuButton,
+    copy_editor: Rc<StarshipEditor>,
     preset_label: gtk::Label,
     preset_popover: gtk::Popover,
     preset_buttons: Vec<gtk::Button>,
@@ -1423,24 +1454,33 @@ fn build_prompt_editor(settings: &PromptSettings) -> PromptWidgets {
     heading.set_hexpand(true);
 
     let export_icon = gtk::Image::builder()
-        .icon_name("document-save-as-symbolic")
+        .icon_name("termimochi-save-symbolic")
         .pixel_size(14)
         .accessible_role(gtk::AccessibleRole::Presentation)
         .build();
-    let export_label = gtk::Label::new(Some("Export .toml"));
+    let export_label = gtk::Label::new(Some("Save"));
     let export_content = gtk::Box::new(gtk::Orientation::Horizontal, 5);
     export_content.append(&export_icon);
     export_content.append(&export_label);
-    let export_button = gtk::Button::builder()
+    let prompt_save_menu = gio::Menu::new();
+    prompt_save_menu.append(Some("Save Changes…"), Some("win.save-starship"));
+    prompt_save_menu.append(Some("Save As…"), Some("win.export-starship"));
+    prompt_save_menu.append(
+        Some("Restore Previous Version…"),
+        Some("win.restore-starship"),
+    );
+    prompt_save_menu.append(Some("Reload from Disk…"), Some("win.reload-starship"));
+    let export_button = gtk::MenuButton::builder()
         .child(&export_content)
-        .action_name("win.export-starship")
-        .tooltip_text("Save a Starship config; shell startup files stay unchanged")
+        .menu_model(&prompt_save_menu)
+        .always_show_arrow(false)
+        .tooltip_text("Save changes, save as, or restore a backup")
         .css_classes(["prompt-export"])
         .build();
     export_button.update_property(&[
-        gtk::accessible::Property::Label("Export starship.toml"),
+        gtk::accessible::Property::Label("Save Starship configuration"),
         gtk::accessible::Property::Description(
-            "Choose where to export the Starship configuration. Shell startup files are never changed",
+            "Save with confirmation and backup, save as, or restore a previous version. Shell startup files are never changed",
         ),
     ]);
 
@@ -1458,7 +1498,7 @@ fn build_prompt_editor(settings: &PromptSettings) -> PromptWidgets {
     content.append(&layout_row("Prompt Source", &source_selector));
     let import_panel = gtk::Box::new(gtk::Orientation::Vertical, 14);
     import_panel.set_margin_top(12);
-    let import_heading = gtk::Label::new(Some("Your setup, unchanged"));
+    let import_heading = gtk::Label::new(Some("Your Starship"));
     import_heading.set_xalign(0.0);
     import_heading.add_css_class("section-heading");
     import_panel.append(&import_heading);
@@ -1472,12 +1512,12 @@ fn build_prompt_editor(settings: &PromptSettings) -> PromptWidgets {
     import_panel.append(&import_status);
     let reload = gtk::Button::builder()
         .label("Reload Starship")
-        .action_name("win.refresh-preview-folder")
+        .action_name("win.reload-starship")
         .css_classes(["prompt-menu-item"])
         .build();
     import_panel.append(&reload);
     let note = gtk::Label::new(Some(
-        "Read-only. Switch to Designer to create a separate prompt.",
+        "Your configuration opens here automatically. Use Designer to create a new prompt.",
     ));
     note.set_xalign(0.0);
     note.set_wrap(true);
@@ -1486,6 +1526,8 @@ fn build_prompt_editor(settings: &PromptSettings) -> PromptWidgets {
     import_panel.append(&note);
     content.append(&import_panel);
     let page = content;
+    let copy_editor = StarshipEditor::new();
+    page.append(&copy_editor.root);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
     content.set_visible(false);
     page.append(&content);
@@ -1793,6 +1835,7 @@ fn build_prompt_editor(settings: &PromptSettings) -> PromptWidgets {
         design_panel: content,
         import_status,
         export_button,
+        copy_editor,
         preset_label,
         preset_popover,
         preset_buttons,
@@ -2511,31 +2554,38 @@ fn build_preview(
     terminal_stage.append(&terminal_scrollbar_revealer);
     terminal.append(&terminal_stage);
 
-    let terminal_overlay = gtk::Overlay::new();
-    terminal_overlay.set_child(Some(&terminal));
+    let inspect_layer = gtk::Overlay::new();
+    inspect_layer.set_child(Some(&terminal));
     let inspect_highlight = gtk::DrawingArea::new();
     inspect_highlight.set_can_target(false);
     inspect_highlight.set_focusable(false);
-    terminal_overlay.add_overlay(&inspect_highlight);
-    let inspect_layer = gtk::Fixed::new();
-    inspect_layer.set_can_target(false);
-    inspect_layer.set_focusable(false);
+    inspect_layer.add_overlay(&inspect_highlight);
+    inspect_layer.set_measure_overlay(&inspect_highlight, false);
     let inspect_label = gtk::Label::new(None);
     inspect_label.add_css_class("preview-inspect-hint");
     inspect_label.set_can_target(false);
     inspect_label.set_max_width_chars(36);
     inspect_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    inspect_label.set_single_line_mode(true);
+    // Dock feedback instead of chasing the pointer. GTK handles natural text
+    // sizing and edge constraints without a GtkFixed measurement/move cycle.
+    inspect_label.set_halign(gtk::Align::Start);
+    inspect_label.set_valign(gtk::Align::End);
+    inspect_label.set_margin_start(10);
+    inspect_label.set_margin_end(10);
+    inspect_label.set_margin_bottom(10);
     inspect_label.set_visible(false);
-    inspect_layer.put(&inspect_label, 0.0, 0.0);
-    terminal_overlay.add_overlay(&inspect_layer);
-    content.append(&terminal_overlay);
+    inspect_layer.add_overlay(&inspect_label);
+    inspect_layer.set_measure_overlay(&inspect_label, false);
+    inspect_layer.set_clip_overlay(&inspect_label, true);
+    content.append(&inspect_layer);
 
     let quality = gtk::Box::new(gtk::Orientation::Vertical, 4);
     quality.add_css_class("quality-section");
 
     let metrics = gtk::Box::new(gtk::Orientation::Horizontal, 14);
     metrics.add_css_class("quality-row");
-    let quality_heading = gtk::Label::new(Some("Palette Contrast"));
+    let quality_heading = gtk::Label::new(Some("Preview Checks"));
     quality_heading.set_xalign(0.0);
     quality_heading.set_hexpand(true);
     quality_heading.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -2974,7 +3024,15 @@ impl Workbench {
     }
 
     fn refresh_history_actions(&self) {
+        self.refresh_prompt_save_actions();
         if self.prompt_module_button.is_active() {
+            if self.prompt_source_selector.selected() == 0 {
+                self.undo_action
+                    .set_enabled(self.starship_editor.can_undo());
+                self.redo_action
+                    .set_enabled(self.starship_editor.can_redo());
+                return;
+            }
             let history = self.prompt_history.borrow();
             let designer = self.prompt_source_selector.selected() == 1;
             self.undo_action.set_enabled(designer && history.can_undo());
@@ -2998,6 +3056,10 @@ impl Workbench {
 
     fn undo_edit(&self) {
         if self.prompt_module_button.is_active() {
+            if self.prompt_source_selector.selected() == 0 {
+                self.starship_editor.undo();
+                return;
+            }
             let current = self.prompt_settings.borrow().clone();
             let target = self.prompt_history.borrow_mut().undo(current);
             if let Some(target) = target {
@@ -3029,6 +3091,10 @@ impl Workbench {
 
     fn redo_edit(&self) {
         if self.prompt_module_button.is_active() {
+            if self.prompt_source_selector.selected() == 0 {
+                self.starship_editor.redo();
+                return;
+            }
             let current = self.prompt_settings.borrow().clone();
             let target = self.prompt_history.borrow_mut().redo(current);
             if let Some(target) = target {
@@ -3211,6 +3277,43 @@ impl Workbench {
     fn install_actions(this: &Rc<Self>) {
         let window = this.window();
 
+        let fonts = gio::SimpleAction::new("diagnostic-fonts", None);
+        let weak = Rc::downgrade(this);
+        fonts.connect_activate(move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                this.inspect_preview_target(PreviewTarget::Typography);
+            }
+        });
+        window.add_action(&fonts);
+        let module = gio::SimpleAction::new("diagnostic-module", Some(glib::VariantTy::STRING));
+        let weak = Rc::downgrade(this);
+        module.connect_activate(move |_, parameter| {
+            let Some(target) = parameter.and_then(|p| p.str()) else {
+                return;
+            };
+            let (id, message) = target.split_once('\n').unwrap_or((target, ""));
+            if crate::starship_modules::module_index(id).is_none() {
+                return;
+            }
+            if let Some(this) = weak.upgrade() {
+                if this.preview_uses_prompt.get() && this.prompt_source_selector.selected() == 1 {
+                    if id == "character" {
+                        this.inspect_preview_target(PreviewTarget::PromptCharacter);
+                    } else if let Some(kind) = PromptSegmentKind::ALL
+                        .into_iter()
+                        .find(|kind| kind.starship_module() == id)
+                    {
+                        this.inspect_preview_target(PreviewTarget::PromptSegment(kind));
+                    }
+                    return;
+                }
+                this.prompt_module_button.set_active(true);
+                this.prompt_source_selector.set_selected(0);
+                this.starship_editor.open_finding(id, message);
+            }
+        });
+        window.add_action(&module);
+
         let weak = Rc::downgrade(this);
         this.undo_action.connect_activate(move |_, _| {
             if let Some(this) = weak.upgrade() {
@@ -3261,6 +3364,25 @@ impl Workbench {
             }
         });
         window.add_action(&export_starship);
+
+        for (name, operation) in [
+            ("save-starship", 0),
+            ("restore-starship", 1),
+            ("reload-starship", 2),
+        ] {
+            let action = gio::SimpleAction::new(name, None);
+            let weak = Rc::downgrade(this);
+            action.connect_activate(move |_, _| {
+                if let Some(this) = weak.upgrade() {
+                    match operation {
+                        0 => this.request_starship_save(),
+                        1 => this.request_starship_restore(),
+                        _ => this.request_starship_reload(),
+                    }
+                }
+            });
+            window.add_action(&action);
+        }
 
         let reload_terminal = gio::SimpleAction::new("reload-terminal", None);
         let weak = Rc::downgrade(this);
@@ -3345,7 +3467,16 @@ impl Workbench {
         let weak = Rc::downgrade(this);
         this.prompt_module_button.connect_toggled(move |button| {
             if let Some(this) = weak.upgrade() {
+                if button.is_active() {
+                    this.sync_prompt_page();
+                }
                 if !this.navigating_preview.get() {
+                    if button.is_active()
+                        && this.prompt_source_selector.selected() == 0
+                        && this.copy_preview.borrow().is_none()
+                    {
+                        this.schedule_copy_preview();
+                    }
                     this.preview_uses_prompt.set(button.is_active());
                     this.preview_input.borrow_mut().reset();
                     this.redraw_preview_contents();
@@ -3356,13 +3487,15 @@ impl Workbench {
 
         let weak = Rc::downgrade(this);
         this.prompt_source_selector
-            .connect_selected_notify(move |selector| {
+            .connect_selected_notify(move |_| {
                 if let Some(this) = weak.upgrade() {
-                    let designer = selector.selected() == 1;
-                    this.prompt_design_panel.set_visible(designer);
-                    this.prompt_import_panel.set_visible(!designer);
-                    this.prompt_export_button.set_visible(designer);
+                    this.sync_prompt_page();
                     if !this.navigating_preview.get() {
+                        if this.prompt_source_selector.selected() == 0
+                            && this.copy_preview.borrow().is_none()
+                        {
+                            this.schedule_copy_preview();
+                        }
                         this.preview_uses_prompt.set(true);
                         this.preview_input.borrow_mut().reset();
                         this.redraw_preview_contents();
@@ -3370,6 +3503,16 @@ impl Workbench {
                     this.refresh_history_actions();
                 }
             });
+
+        let weak = Rc::downgrade(this);
+        this.starship_editor.connect_changed(move || {
+            if let Some(this) = weak.upgrade() {
+                this.refresh_history_actions();
+                if !this.navigating_preview.get() {
+                    this.schedule_copy_preview();
+                }
+            }
+        });
 
         for (index, button) in this.prompt_preset_buttons.iter().enumerate() {
             let weak = Rc::downgrade(this);
@@ -3929,6 +4072,7 @@ impl Workbench {
         } else {
             self.save_button.remove_css_class("save-ready");
         }
+        self.refresh_prompt_save_actions();
     }
 
     // Drive controls from VTE's committed terminal stream rather than a
@@ -3977,6 +4121,7 @@ impl Workbench {
     }
 
     fn redraw_preview_contents(&self) {
+        self.used_prompt_characters.borrow_mut().clear();
         *self.preview_map.borrow_mut() = PreviewMap::default();
         self.invalidate_preview_inspection();
         self.preview_terminal.reset(true, true);
@@ -4020,7 +4165,280 @@ impl Workbench {
         self.feed_preview(PREVIEW_SHOW_CURSOR);
     }
 
+    fn sync_prompt_page(&self) {
+        let designer = self.prompt_source_selector.selected() == 1;
+        let loaded = !designer && self.ensure_starship_copy();
+        self.prompt_design_panel.set_visible(designer);
+        self.prompt_import_panel.set_visible(!designer && !loaded);
+        self.starship_editor.root.set_visible(loaded);
+        self.prompt_export_button.set_visible(designer || loaded);
+        self.refresh_prompt_save_actions();
+    }
+
+    fn refresh_prompt_save_actions(&self) {
+        let designer = self.prompt_source_selector.selected() == 1;
+        let loaded = self.starship_editor.draft.borrow().is_some();
+        let valid = !self.starship_editor.invalid();
+        if let Some(action) = self
+            .window()
+            .lookup_action("save-starship")
+            .and_downcast::<gio::SimpleAction>()
+        {
+            action.set_enabled(designer || (loaded && valid));
+        }
+        if let Some(action) = self
+            .window()
+            .lookup_action("restore-starship")
+            .and_downcast::<gio::SimpleAction>()
+        {
+            action.set_enabled(!designer && loaded);
+        }
+        if let Some(action) = self
+            .window()
+            .lookup_action("reload-starship")
+            .and_downcast::<gio::SimpleAction>()
+        {
+            action.set_enabled(!designer);
+        }
+        if let Some(action) = self
+            .window()
+            .lookup_action("export-starship")
+            .and_downcast::<gio::SimpleAction>()
+        {
+            action.set_enabled(designer || (loaded && valid));
+        }
+        // Keep the menu available even for invalid fields: Reload and Restore
+        // are recovery actions. Individual write actions stay disabled.
+        self.prompt_export_button.set_sensitive(true);
+        if self.prompt_module_button.is_active() {
+            self.save_action.set_enabled(designer || (loaded && valid));
+            if self.prompt_has_unexported_changes() {
+                self.save_button.add_css_class("save-ready");
+            } else {
+                self.save_button.remove_css_class("save-ready");
+            }
+        } else {
+            let model = self.model.borrow();
+            let (enabled, ready) = save_button_state(
+                model.dirty,
+                model.current_path.is_some(),
+                self.name_valid.get() && !self.color_picker.has_invalid_draft(),
+            );
+            self.save_action.set_enabled(enabled);
+            if ready {
+                self.save_button.add_css_class("save-ready");
+            } else {
+                self.save_button.remove_css_class("save-ready");
+            }
+        }
+    }
+
+    fn ensure_starship_copy(&self) -> bool {
+        if self.starship_editor.draft.borrow().is_some() {
+            return true;
+        }
+        let imported = self
+            .current_preview_context
+            .borrow()
+            .as_ref()
+            .and_then(|context| {
+                context
+                    .imported_prompt
+                    .source
+                    .clone()
+                    .map(|source| (context.imported_prompt.path.clone(), source))
+            });
+        let Some((path, source)) = imported else {
+            return false;
+        };
+        match self.starship_editor.begin(path, source) {
+            Ok(()) => true,
+            Err(error) => {
+                self.toast(&error);
+                false
+            }
+        }
+    }
+
+    fn schedule_copy_preview(self: &Rc<Self>) {
+        let generation = self.copy_generation.get().wrapping_add(1);
+        self.copy_generation.set(generation);
+        if self.starship_editor.invalid() {
+            return;
+        }
+        self.starship_editor.status.set_text("Updating preview…");
+        let weak = Rc::downgrade(self);
+        // Editing text should not start a process per keystroke. Keep at most
+        // one bounded renderer alive and discard results for superseded edits.
+        glib::timeout_add_local_once(Duration::from_millis(220), move || {
+            if let Some(this) = weak.upgrade()
+                && this.copy_generation.get() == generation
+            {
+                this.start_copy_preview();
+            }
+        });
+    }
+
+    fn start_copy_preview(self: &Rc<Self>) {
+        if self.starship_editor.invalid() || self.copy_loading.get() {
+            return;
+        }
+        let Some(contents) = self
+            .starship_editor
+            .draft
+            .borrow()
+            .as_ref()
+            .map(|d| d.contents().to_owned())
+        else {
+            return;
+        };
+        let generation = self.copy_generation.get();
+        self.copy_loading.set(true);
+        let directory = self.preview_directory.borrow().clone();
+        let columns = self.preview_terminal.column_count().max(12) as usize;
+        let sample = self.starship_editor.scenario.selected();
+        let scene = self.starship_editor.scene();
+        let key = (contents.clone(), directory.clone(), columns, sample);
+        let cached_notices = self.copy_notices.borrow().clone();
+        let cached = (self.copy_prompt_key.borrow().as_ref() == Some(&key))
+            .then(|| self.copy_preview.borrow().clone())
+            .flatten()
+            .and_then(Result::ok);
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = if let Some(ansi) = cached {
+                Ok((ansi, cached_notices))
+            } else {
+                crate::starship_import::render_copy(&contents, &directory, columns, sample)
+            };
+            let scene = scene.map(|scene| {
+                let scene = scene.build();
+                let ansi = crate::starship_import::render_scene(&scene, &directory, columns);
+                crate::starship_scene::RenderedScene { scene, ansi }
+            });
+            let _ = sender.send((contents, result, scene));
+        });
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_millis(40), move || {
+            let Some(this) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let (rendered_source, result, scene) = match receiver.try_recv() {
+                Ok(result) => result,
+                Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(mpsc::TryRecvError::Disconnected) => (
+                    String::new(),
+                    Err("Prompt preview worker stopped. Edit a field to retry.".into()),
+                    None,
+                ),
+            };
+            this.copy_loading.set(false);
+            if generation != this.copy_generation.get() {
+                this.start_copy_preview();
+                return glib::ControlFlow::Break;
+            }
+            let result = result.map(|(ansi, notices)| {
+                *this.copy_notices.borrow_mut() = notices.clone();
+                let status = "Simulated preview. Save to apply edits.";
+                this.starship_editor.status.set_text(status);
+                let mut tooltip = scene.as_ref().map_or_else(String::new, |frame| {
+                    format!("Current transition: {}.", frame.scene.title)
+                });
+                if !notices.is_empty() {
+                    tooltip.push_str(&format!(
+                        "\nNot executed in preview: {}. These settings are preserved when saving.",
+                        notices.join(", ")
+                    ));
+                }
+                this.starship_editor.status.set_tooltip_text(Some(&tooltip));
+                ansi
+            });
+            if let Err(error) = &result {
+                this.starship_editor.status.set_text(error);
+            }
+            *this.copy_rendered_source.borrow_mut() = result.as_ref().ok().map(|_| rendered_source);
+            *this.copy_prompt_key.borrow_mut() = Some(key.clone());
+            if let Some(scene) = scene.as_ref() {
+                crate::starship_scene::record(
+                    &mut this.copy_scene_history.borrow_mut(),
+                    scene.clone(),
+                );
+            }
+            *this.copy_scene.borrow_mut() = scene;
+            *this.copy_preview.borrow_mut() = Some(result);
+            if this.prompt_source_selector.selected() == 0 && this.preview_uses_prompt.get() {
+                this.redraw_preview_contents();
+            }
+            glib::ControlFlow::Break
+        });
+    }
+
+    fn redraw_copy_preview(&self) {
+        self.terminal_title.set_text("starship · simulated session");
+        self.preview_selector.set_visible(false);
+        self.prompt_preview_selector.set_visible(false);
+        let preview = self.copy_preview.borrow();
+        if preview.is_none() {
+            self.feed_preview(b"Rendering your Starship prompt...\r\n");
+            return;
+        }
+        self.feed_preview(
+            "\x1b[2mSimulated session · commands are not executed.\x1b[0m\r\n\r\n".as_bytes(),
+        );
+        let initial = preview
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map_or("$ ", String::as_str);
+        self.feed_scoped_preview(initial, Some(PreviewTarget::PromptCopy));
+        let history = self.copy_scene_history.borrow();
+        let mut prompt = initial;
+        for frame in history.iter() {
+            self.feed_preview(frame.scene.command.as_bytes());
+            self.feed_preview(b"\r\n");
+            if !frame.scene.output.is_empty() {
+                self.feed_preview(frame.scene.output.as_bytes());
+                self.feed_preview(b"\r\n");
+            }
+            match &frame.ansi {
+                Ok(ansi) => prompt = ansi,
+                Err(error) => self.feed_preview(
+                    format!(
+                        "\x1b[2mPreview unavailable: {}\x1b[0m\r\n",
+                        crate::preview_context::display_text(error, 180)
+                    )
+                    .as_bytes(),
+                ),
+            }
+            self.feed_simulated_prompt(prompt);
+        }
+        let input = self.preview_input.borrow();
+        for line in input.submitted() {
+            self.feed_preview(line.as_bytes());
+            self.feed_preview(b"\r\n");
+            self.feed_simulated_prompt(prompt);
+        }
+        self.feed_preview(input.text().as_bytes());
+    }
+
+    fn feed_simulated_prompt(&self, ansi: &str) {
+        // History has separate provenance. Only the newest simulated state is
+        // diagnosed; obsolete glyphs in earlier command lines are not warnings.
+        self.preview_map.borrow_mut().record(
+            ansi,
+            Some(PreviewTarget::PromptCopy),
+            self.preview_terminal.is_bold_is_bright(),
+        );
+        self.preview_terminal.feed(ansi.as_bytes());
+        self.feed_preview(b"\x1b[0m");
+    }
+
     fn redraw_prompt_preview(&self) {
+        if self.prompt_source_selector.selected() == 0
+            && self.starship_editor.draft.borrow().is_some()
+        {
+            self.redraw_copy_preview();
+            return;
+        }
         if self.prompt_source_selector.selected() == 0 {
             self.redraw_current_folder(false);
             return;
@@ -4180,6 +4598,22 @@ impl Workbench {
     }
 
     fn feed_scoped_preview(&self, text: &str, scope: Option<PreviewTarget>) {
+        if matches!(
+            scope,
+            Some(
+                PreviewTarget::Prompt
+                    | PreviewTarget::PromptCopy
+                    | PreviewTarget::PromptSegment(_)
+                    | PreviewTarget::PromptCharacter
+            )
+        ) {
+            let mut characters = self.used_prompt_characters.borrow_mut();
+            for ch in text.chars().filter(|ch| is_prompt_character(*ch)) {
+                if characters.len() < 128 {
+                    characters.insert(ch);
+                }
+            }
+        }
         self.preview_map.borrow_mut().record(
             text,
             scope,
@@ -4239,6 +4673,7 @@ impl Workbench {
         this.preview_terminal.connect_contents_changed(move |_| {
             if let Some(this) = weak.upgrade() {
                 this.invalidate_preview_inspection();
+                this.schedule_diagnostics();
             }
         });
         for adjustment in [
@@ -4317,7 +4752,7 @@ impl Workbench {
                         pressed_generation.set(this.inspect_generation.get());
                         let hit = this.preview_hit_at(x, y);
                         pressed_target.set(hit.as_ref().map(|hit| hit.target));
-                        this.show_inspection_feedback(x, y, hit);
+                        this.show_inspection_feedback(hit);
                     } else {
                         click.borrow_mut().cancel();
                         pressed_target.set(None);
@@ -4343,7 +4778,7 @@ impl Workbench {
                     {
                         let hit = this.preview_hit_at(x, y);
                         let target = hit.as_ref().map(|hit| hit.target);
-                        this.show_inspection_feedback(x, y, hit);
+                        this.show_inspection_feedback(hit);
                         let pressed = pressed_target.take();
                         if target.is_none() || target != pressed {
                             return glib::Propagation::Proceed;
@@ -4387,10 +4822,11 @@ impl Workbench {
 
     fn clear_inspection_feedback(&self) {
         self.inspect_pointer.set(None);
-        self.inspect_hit.borrow_mut().take();
+        if self.inspect_hit.borrow_mut().take().is_some() {
+            self.inspect_highlight.queue_draw();
+            self.preview_terminal.set_cursor_from_name(None);
+        }
         self.inspect_label.set_visible(false);
-        self.inspect_highlight.queue_draw();
-        self.preview_terminal.set_cursor_from_name(None);
     }
 
     fn invalidate_preview_inspection(&self) {
@@ -4406,67 +4842,38 @@ impl Workbench {
             return;
         }
         let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(Duration::from_millis(35), move || {
+        // Resolve the latest pointer once per display frame, not on a 35 ms
+        // timer that visibly steps behind a smoothly moving mouse.
+        self.inspect_layer.add_tick_callback(move |_, _| {
             if let Some(this) = weak.upgrade() {
                 this.inspect_hover_pending.set(false);
                 if this.inspect_button.is_active()
                     && let Some((x, y)) = this.inspect_pointer.take()
                 {
                     let hit = this.preview_hit_at(x, y);
-                    this.show_inspection_feedback(x, y, hit);
+                    this.show_inspection_feedback(hit);
                 }
             }
+            glib::ControlFlow::Break
         });
     }
 
-    fn show_inspection_feedback(&self, x: f64, y: f64, hit: Option<PreviewHit>) {
-        let label = hit
-            .as_ref()
-            .map_or_else(|| "No editable detail".into(), |hit| hit.target.label());
-        self.inspect_label.set_text(&label);
-        self.preview_terminal
-            .set_cursor_from_name(hit.as_ref().map(|_| "crosshair"));
-        *self.inspect_hit.borrow_mut() = hit;
-        self.inspect_highlight.queue_draw();
-        let Some(native) = self.inspect_layer.native() else {
-            return;
-        };
-        let (dx, dy) = native.surface_transform();
-        let Ok(native) = native.dynamic_cast::<gtk::Widget>() else {
-            return;
-        };
-        let Some(p) = native.compute_point(
-            &self.inspect_layer,
-            &gtk::graphene::Point::new((x - dx) as f32, (y - dy) as f32),
-        ) else {
-            return;
-        };
+    fn show_inspection_feedback(&self, hit: Option<PreviewHit>) {
+        let previous_target = self.inspect_hit.borrow().as_ref().map(|hit| hit.target);
+        let target = hit.as_ref().map(|hit| hit.target);
+        if previous_target != target || !self.inspect_label.is_visible() {
+            let label = target.map_or_else(|| "No editable detail".into(), PreviewTarget::label);
+            self.inspect_label.set_text(&label);
+        }
+        if previous_target.is_some() != target.is_some() {
+            self.preview_terminal
+                .set_cursor_from_name(target.map(|_| "crosshair"));
+        }
+        if *self.inspect_hit.borrow() != hit {
+            *self.inspect_hit.borrow_mut() = hit;
+            self.inspect_highlight.queue_draw();
+        }
         self.inspect_label.set_visible(true);
-        // GtkFixed may allocate an ellipsized label at its minimum width.
-        // Reserve the actual text width so feedback never collapses to "…".
-        let (text_width, _) = self
-            .inspect_label
-            .create_pango_layout(Some(&label))
-            .pixel_size();
-        self.inspect_label
-            .set_width_request((text_width + 20).min((self.inspect_layer.width() - 12).max(1)));
-        let (_, width, _, _) = self.inspect_label.measure(gtk::Orientation::Horizontal, -1);
-        let (_, height, _, _) = self
-            .inspect_label
-            .measure(gtk::Orientation::Vertical, width);
-        let left = (p.x() + 14.0)
-            .min((self.inspect_layer.width() - width - 6).max(6) as f32)
-            .max(6.0);
-        let top = if p.y() + height as f32 + 20.0 < self.inspect_layer.height() as f32 {
-            p.y() + 18.0
-        } else {
-            p.y() - height as f32 - 12.0
-        };
-        self.inspect_layer.move_(
-            &self.inspect_label,
-            f64::from(left),
-            f64::from(top.max(6.0)),
-        );
     }
 
     #[cfg(test)]
@@ -4624,12 +5031,14 @@ impl Workbench {
                 EditorModule::Layout
             }
             PreviewTarget::Prompt
+            | PreviewTarget::PromptCopy
             | PreviewTarget::PromptSegment(_)
             | PreviewTarget::PromptCharacter => EditorModule::Prompt,
         };
         self.navigating_preview.set(true);
         match target {
             PreviewTarget::Prompt => self.prompt_source_selector.set_selected(0),
+            PreviewTarget::PromptCopy => self.prompt_source_selector.set_selected(0),
             PreviewTarget::PromptSegment(_) | PreviewTarget::PromptCharacter => {
                 self.prompt_source_selector.set_selected(1)
             }
@@ -4647,6 +5056,7 @@ impl Workbench {
             PreviewTarget::Padding => Some(self.content_padding_input.clone().upcast()),
             PreviewTarget::TabBar => Some(self.tab_bar_switch.clone().upcast()),
             PreviewTarget::Prompt => Some(self.prompt_source_selector.clone().upcast()),
+            PreviewTarget::PromptCopy => Some(self.starship_editor.symbol.clone().upcast()),
             PreviewTarget::PromptCharacter => Some(self.prompt_character_selector.clone().upcast()),
             PreviewTarget::PromptSegment(kind) => {
                 self.selected_prompt_kind.set(Some(kind));
@@ -4763,7 +5173,13 @@ impl Workbench {
             // Adjustment notifications occur during GTK allocation. Apply
             // the new grid afterwards and replay content at that width;
             // buffered VTE input can otherwise retain the initial wide grid.
+            let old_columns = this.preview_terminal.column_count();
             this.refresh_terminal_geometry(&this.layout_settings());
+            if this.preview_terminal.column_count() != old_columns
+                && this.starship_editor.draft.borrow().is_some()
+            {
+                this.schedule_copy_preview();
+            }
             this.redraw_preview_contents();
         });
     }
@@ -4864,9 +5280,79 @@ impl Workbench {
             gtk::accessible::Property::Label(&label),
             gtk::accessible::Property::Description(&detail),
         ]);
+        self.refresh_all_diagnostics();
+    }
+
+    fn schedule_diagnostics(self: &Rc<Self>) {
+        if self.diagnostics_pending.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_millis(80), move || {
+            if let Some(this) = weak.upgrade() {
+                this.diagnostics_pending.set(false);
+                this.refresh_all_diagnostics();
+            }
+        });
+    }
+
+    fn refresh_all_diagnostics(&self) {
+        let model = self.model.borrow();
+        let issues: Vec<_> = lint_palette(&model.palette, Target::Codex)
+            .issues_for(model.active_variant)
+            .cloned()
+            .collect();
+        drop(model);
+        self.refresh_diagnostics(&issues);
     }
 
     fn refresh_diagnostics(&self, issues: &[Issue]) {
+        let source = match (
+            self.preview_uses_prompt.get(),
+            self.prompt_source_selector.selected(),
+        ) {
+            (true, 0) => self.copy_rendered_source.borrow().clone(),
+            (true, 1) => Some(self.prompt_settings.borrow().to_starship_toml()),
+            _ => self
+                .current_preview_context
+                .borrow()
+                .as_ref()
+                .and_then(|context| context.imported_prompt.source.clone()),
+        };
+        let mut issues = issues.to_vec();
+        issues.extend(self.prompt_diagnostics.borrow_mut().check(
+            &self.preview_terminal.pango_context(),
+            &self.typography_settings().font_description(),
+            &self.used_prompt_characters.borrow(),
+            source.as_deref(),
+        ));
+        if self.preview_uses_prompt.get()
+            && self.prompt_source_selector.selected() == 0
+            && let Some(sample) = self.copy_scene.borrow().as_ref()
+            && let Ok(ansi) = &sample.ansi
+        {
+            let used = ansi.chars().filter(|ch| is_prompt_character(*ch)).collect();
+            for mut issue in self.scene_diagnostics.borrow_mut().check(
+                &self.preview_terminal.pango_context(),
+                &self.typography_settings().font_description(),
+                &used,
+                Some(&sample.scene.diagnostic_source),
+            ) {
+                if issues.contains(&issue) {
+                    continue;
+                }
+                if let Some((title, detail)) = issue.message.split_once('\n') {
+                    issue.message = format!("{title} · simulated\n{detail}");
+                }
+                issues.push(issue);
+            }
+        }
+        // Cursor/selection changes can emit VTE contents-changed without any
+        // new finding. Keep row widgets and their focus/scroll positions then.
+        if self.reported_issues.borrow().as_ref() == Some(&issues) {
+            return;
+        }
+        *self.reported_issues.borrow_mut() = Some(issues.clone());
         while let Some(child) = self.diagnostics.first_child() {
             self.diagnostics.remove(&child);
         }
@@ -4885,6 +5371,7 @@ impl Workbench {
             .iter()
             .filter(|issue| issue.severity == Severity::Warning)
             .count();
+        let notes = issue_count - errors - warnings;
 
         remove_status_classes(&self.summary_icon);
         self.diagnostic_header.set_visible(issue_count != 1);
@@ -4915,6 +5402,12 @@ impl Workbench {
                 format!("{warnings} warnings")
             };
             self.summary_title.set_text(&warnings);
+        } else if notes > 0 {
+            self.summary_icon.add_css_class("status-note");
+            self.summary_title.set_text(&format!(
+                "{notes} compatibility {}",
+                if notes == 1 { "note" } else { "notes" }
+            ));
         } else {
             self.summary_icon.add_css_class("status-good");
             self.summary_title.set_text("All checks passed");
@@ -4926,7 +5419,7 @@ impl Workbench {
             let (icon_name, class, severity_name) = match issue.severity {
                 Severity::Error => ("dialog-error-symbolic", "status-error", "Error"),
                 Severity::Warning => ("dialog-warning-symbolic", "status-warning", "Warning"),
-                Severity::Note => ("emblem-ok-symbolic", "status-good", "Note"),
+                Severity::Note => ("dialog-information-symbolic", "status-note", "Note"),
             };
             let icon = gtk::Image::builder()
                 .icon_name(icon_name)
@@ -4950,6 +5443,26 @@ impl Workbench {
             title.add_css_class("diagnostic-row-title");
             row_content.append(&icon);
             row_content.append(&title);
+            if is_font_issue(issue) {
+                let fonts = gtk::Button::with_label("Fonts");
+                fonts.set_action_name(Some("win.diagnostic-fonts"));
+                fonts.add_css_class("diagnostic-action");
+                fonts.set_tooltip_text(Some("Choose a preview font without changing the prompt"));
+                row_content.append(&fonts);
+                if let Some(module) = issue_module(issue) {
+                    let edit = gtk::Button::with_label("Edit");
+                    edit.set_action_name(Some("win.diagnostic-module"));
+                    edit.set_action_target_value(Some(
+                        &format!("{}\n{}", module.id, issue.message).to_variant(),
+                    ));
+                    edit.add_css_class("diagnostic-action");
+                    edit.set_tooltip_text(Some(&format!(
+                        "Edit {}; changes stay in preview until saved",
+                        module.label
+                    )));
+                    row_content.append(&edit);
+                }
+            }
             if let Some(ratio) = issue.ratio {
                 let ratio = gtk::Label::new(Some(&format!("{ratio:.2}:1")));
                 ratio.set_xalign(1.0);
@@ -5154,22 +5667,234 @@ impl Workbench {
         self.refresh_deployment();
     }
 
-    fn choose_starship_export(self: &Rc<Self>) {
-        if self.prompt_source_selector.selected() == 0 {
-            self.toast("Your Starship configuration is read-only. Switch to Designer to export a new design.");
+    fn starship_file_error(&self, detail: &str) {
+        gtk::AlertDialog::builder()
+            .message("Starship configuration was not changed")
+            .detail(detail)
+            .buttons(["Close"])
+            .cancel_button(0)
+            .default_button(0)
+            .modal(true)
+            .build()
+            .choose(Some(&self.window()), gio::Cancellable::NONE, |_| {});
+    }
+
+    fn request_starship_save(self: &Rc<Self>) {
+        if self.prompt_source_selector.selected() == 1 {
+            self.choose_starship_export();
             return;
         }
-        let exported_settings = self.prompt_settings.borrow().clone();
-        let contents = exported_settings.to_starship_toml();
+        if self.starship_editor.invalid() {
+            self.toast("Fix the highlighted field before saving.");
+            return;
+        }
+        let binding = self.starship_editor.file.borrow().clone();
+        let file = match binding.and_then(|file| {
+            file.verify()?;
+            Ok(file)
+        }) {
+            Ok(file) => file,
+            Err(error) => {
+                self.starship_file_error(&error);
+                return;
+            }
+        };
+        let Some(contents) = self
+            .starship_editor
+            .draft
+            .borrow()
+            .as_ref()
+            .map(|draft| draft.contents().to_owned())
+        else {
+            return;
+        };
+        let document = self.starship_editor.document();
+        if contents == file.contents {
+            self.starship_editor.accept_saved(document, file);
+            self.toast("No changes to save.");
+            return;
+        }
+        let dialog = gtk::AlertDialog::builder()
+            .message("Save changes to your Starship configuration?")
+            .detail(format!("{}\n\nA private backup of the current file will be kept beside it before replacement. New prompts in your terminal may use these changes. Shell startup files will not be changed.", file.path.display()))
+            .buttons(["Cancel", "Back Up and Save"])
+            .cancel_button(0)
+            .default_button(0)
+            .modal(true)
+            .build();
+        let weak = Rc::downgrade(self);
+        dialog.choose(
+            Some(&self.window()),
+            gio::Cancellable::NONE,
+            move |response| {
+                if response == Ok(1)
+                    && let Some(this) = weak.upgrade()
+                {
+                    this.commit_starship_save(document, &file, &contents);
+                }
+            },
+        );
+    }
+
+    fn commit_starship_save(
+        self: &Rc<Self>,
+        document: u64,
+        file: &crate::starship_file::FileSnapshot,
+        contents: &str,
+    ) {
+        if document != self.starship_editor.document()
+            || self.starship_editor.invalid()
+            || self
+                .starship_editor
+                .draft
+                .borrow()
+                .as_ref()
+                .is_none_or(|draft| draft.contents() != contents)
+        {
+            self.toast("The draft changed while confirming. Review it and save again.");
+            return;
+        }
+        match file.save(contents) {
+            Ok(saved) => {
+                let backup = saved.backup;
+                self.starship_editor.accept_saved(document, saved.snapshot);
+                self.toast(&format!("Starship saved. Backup: {}", backup.display()));
+                self.refresh_current_context();
+            }
+            Err(error) => self.starship_file_error(&error),
+        }
+    }
+
+    fn request_starship_restore(self: &Rc<Self>) {
+        let binding = self.starship_editor.file.borrow().clone();
+        let (file, backup) = match binding.and_then(|file| {
+            let backup = file.latest_backup()?;
+            Ok((file, backup))
+        }) {
+            Ok(pair) => pair,
+            Err(error) => {
+                self.starship_file_error(&error);
+                return;
+            }
+        };
+        let document = self.starship_editor.document();
+        let dialog = gtk::AlertDialog::builder()
+            .message("Restore the previous Starship version?")
+            .detail(format!("From: {}\nTo: {}\n\nThis replaces your current configuration and draft. The current file will be backed up first. Editing history stays available through Undo; shell startup files are unchanged.", backup.path.display(), file.path.display()))
+            .buttons(["Cancel", "Back Up and Restore"])
+            .cancel_button(0)
+            .default_button(0)
+            .modal(true)
+            .build();
+        let weak = Rc::downgrade(self);
+        dialog.choose(Some(&self.window()), gio::Cancellable::NONE, move |response| {
+            if response != Ok(1) { return; }
+            let Some(this) = weak.upgrade() else { return; };
+            if document != this.starship_editor.document() {
+                this.toast("The loaded document changed. Review it and restore again.");
+                return;
+            }
+            match backup.verify().and_then(|()| file.save(&backup.contents)) {
+                Ok(saved) => {
+                    this.starship_editor.accept_restored(document, saved.snapshot);
+                    this.toast("Previous Starship version restored. The replaced version was backed up.");
+                    this.refresh_current_context();
+                }
+                Err(error) => this.starship_file_error(&error),
+            }
+        });
+    }
+
+    fn request_starship_reload(self: &Rc<Self>) {
+        if !self.starship_editor.dirty() {
+            self.reload_starship_from_disk();
+            return;
+        }
+        let dialog = gtk::AlertDialog::builder()
+            .message("Discard prompt edits and reload from disk?")
+            .detail("Unsaved prompt edits will be discarded. The configuration on disk will not be changed.")
+            .buttons(["Cancel", "Reload"])
+            .cancel_button(0)
+            .default_button(0)
+            .modal(true)
+            .build();
+        let weak = Rc::downgrade(self);
+        dialog.choose(
+            Some(&self.window()),
+            gio::Cancellable::NONE,
+            move |response| {
+                if response == Ok(1)
+                    && let Some(this) = weak.upgrade()
+                {
+                    this.reload_starship_from_disk();
+                }
+            },
+        );
+    }
+
+    fn reload_starship_from_disk(self: &Rc<Self>) {
+        let path = self
+            .starship_editor
+            .draft
+            .borrow()
+            .as_ref()
+            .map(|draft| draft.source_path.clone())
+            .or_else(|| {
+                self.current_preview_context
+                    .borrow()
+                    .as_ref()
+                    .map(|context| context.imported_prompt.path.clone())
+            });
+        let Some(path) = path else {
+            self.refresh_current_context();
+            return;
+        };
+        let result = crate::starship_file::FileSnapshot::read(&path)
+            .and_then(|file| self.starship_editor.begin(path, file.contents));
+        match result {
+            Ok(()) => {
+                self.sync_prompt_page();
+                self.refresh_current_context();
+            }
+            Err(error) => self.starship_file_error(&error),
+        }
+    }
+
+    fn choose_starship_export(self: &Rc<Self>) {
+        let copy = self.prompt_source_selector.selected() == 0;
+        let document = self.starship_editor.document();
+        if copy && self.starship_editor.invalid() {
+            self.toast("Fix the highlighted module field before exporting.");
+            return;
+        }
+        let exported_settings = (!copy).then(|| self.prompt_settings.borrow().clone());
+        let copy_snapshot = if copy {
+            let draft = self.starship_editor.draft.borrow();
+            let Some(draft) = draft.as_ref() else {
+                return;
+            };
+            Some((draft.source_path.clone(), draft.contents().to_owned()))
+        } else {
+            None
+        };
+        let contents = if let Some((_, contents)) = &copy_snapshot {
+            contents.clone()
+        } else {
+            exported_settings.as_ref().unwrap().to_starship_toml()
+        };
         let filter = gtk::FileFilter::new();
         filter.set_name(Some("Starship configuration"));
         filter.add_pattern("*.toml");
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
         let dialog = gtk::FileDialog::builder()
-            .title("Export starship.toml")
-            .accept_label("Export")
-            .initial_name(STARSHIP_FILE_NAME)
+            .title("Save Starship As")
+            .accept_label("Save As")
+            .initial_name(if copy {
+                "starship-copy.toml"
+            } else {
+                STARSHIP_FILE_NAME
+            })
             .modal(true)
             .filters(&filters)
             .default_filter(&filter)
@@ -5194,6 +5919,12 @@ impl Workbench {
                             );
                             return;
                         }
+                        if let Some((source, contents)) = &copy_snapshot {
+                            let guard = crate::starship_draft::StarshipDraft::new(source.clone(), contents.clone());
+                            if let Err(error) = guard.and_then(|draft| draft.validate_destination(&path)) {
+                                this.toast(&error); return;
+                            }
+                        }
                         if let Some(source) = this.model.borrow().current_path.clone() {
                             match paths_refer_to_same_file(&source, &path) {
                                 Ok(true) => {
@@ -5211,13 +5942,26 @@ impl Workbench {
                                 }
                             }
                         }
-                        match write_atomically(&path, contents.as_bytes()) {
-                            Ok(()) => {
-                                *this.last_exported_prompt.borrow_mut() =
-                                    exported_settings.clone();
-                                this.toast(
-                                    "Exported starship.toml · shell startup files were not changed",
-                                );
+                        let result = if path.exists() {
+                            crate::starship_file::FileSnapshot::read(&path).and_then(|snapshot| snapshot.save(&contents)).map(|saved| Some(saved.backup))
+                        } else if path.is_symlink() {
+                            Err("Save As cannot replace a dangling symbolic link.".into())
+                        } else {
+                            write_atomically(&path, contents.as_bytes()).map(|()| None).map_err(|e| e.to_string())
+                        };
+                        match result {
+                            Ok(backup) => {
+                                if let Some(settings) = &exported_settings {
+                                    *this.last_exported_prompt.borrow_mut() = settings.clone();
+                                } else if document == this.starship_editor.document()
+                                    && let Some(draft) = this.starship_editor.draft.borrow_mut().as_mut() {
+                                    draft.mark_exported(contents.clone());
+                                }
+                                this.refresh_history_actions();
+                                this.toast(&backup.map_or_else(
+                                    || "Saved separately. Your active Starship configuration is unchanged.".into(),
+                                    |path| format!("Saved separately. Previous destination backed up at {}", path.display()),
+                                ));
                             }
                             Err(error) => this.toast(&format!("Export failed: {error}")),
                         }
@@ -5379,10 +6123,11 @@ impl Workbench {
     }
 
     fn prompt_has_unexported_changes(&self) -> bool {
-        has_unexported_prompt_changes(
-            &self.prompt_settings.borrow(),
-            &self.last_exported_prompt.borrow(),
-        )
+        self.starship_editor.dirty()
+            || has_unexported_prompt_changes(
+                &self.prompt_settings.borrow(),
+                &self.last_exported_prompt.borrow(),
+            )
     }
 
     fn confirm_close_discard(self: &Rc<Self>) {
@@ -5397,15 +6142,15 @@ impl Workbench {
         let (message, detail) = match (theme_changed, prompt_changed) {
             (true, true) => (
                 "Discard theme and prompt changes?",
-                "Theme changes since the last save and prompt changes since the last successful export will be lost.",
+                "Theme and prompt changes since the last save or export will be lost.",
             ),
             (true, false) => (
                 "Discard unsaved theme changes?",
                 "Theme changes made since the last save will be lost.",
             ),
             (false, true) => (
-                "Discard unexported prompt changes?",
-                "Prompt changes made since the last successful export will be lost.",
+                "Discard unsaved prompt changes?",
+                "Prompt changes made since the last save or export will be lost.",
             ),
             (false, false) => unreachable!("clean documents close without confirmation"),
         };
@@ -5430,6 +6175,7 @@ impl Workbench {
                     this.discard_drafts();
                     let current_prompt = this.prompt_settings.borrow().clone();
                     *this.last_exported_prompt.borrow_mut() = current_prompt;
+                    this.starship_editor.discard_warning();
                     this.window().close();
                 }
             },
@@ -5599,6 +6345,12 @@ impl Workbench {
                     this.prompt_import_status
                         .set_tooltip_text(Some(&context.imported_prompt.detail));
                     *this.current_preview_context.borrow_mut() = Some(context);
+                    if this.prompt_module_button.is_active() {
+                        this.sync_prompt_page();
+                    }
+                    if this.starship_editor.draft.borrow().is_some() {
+                        this.schedule_copy_preview();
+                    }
                     this.redraw_preview_contents();
                     glib::ControlFlow::Break
                 }
@@ -5651,6 +6403,10 @@ impl Workbench {
     }
 
     fn save(self: &Rc<Self>) {
+        if self.prompt_module_button.is_active() {
+            self.request_starship_save();
+            return;
+        }
         self.settle_active_edit();
         if !self.require_valid_name() {
             return;
@@ -5664,6 +6420,10 @@ impl Workbench {
     }
 
     fn choose_save_as(self: &Rc<Self>) {
+        if self.prompt_module_button.is_active() {
+            self.choose_starship_export();
+            return;
+        }
         self.settle_active_edit();
         if !self.require_valid_name() {
             return;
@@ -5804,6 +6564,7 @@ fn set_metric(value_label: &gtk::Label, ratio: Option<f64>, threshold: f64, rela
 }
 
 fn remove_status_classes(widget: &impl IsA<gtk::Widget>) {
+    widget.remove_css_class("status-note");
     widget.remove_css_class("status-good");
     widget.remove_css_class("status-warning");
     widget.remove_css_class("status-error");
@@ -5839,6 +6600,14 @@ fn rgba_from_rgb(color: Rgb) -> gdk::RGBA {
 }
 
 fn diagnostic_title(issue: &Issue) -> String {
+    if is_font_issue(issue) {
+        return issue
+            .message
+            .lines()
+            .next()
+            .unwrap_or("Prompt compatibility")
+            .to_owned();
+    }
     match issue.code {
         "variant-passed" => "All checks passed".to_owned(),
         "missing-required-color" => issue
@@ -5863,6 +6632,12 @@ fn diagnostic_title(issue: &Issue) -> String {
 }
 
 fn diagnostic_detail(issue: &Issue) -> String {
+    if is_font_issue(issue) {
+        return issue
+            .message
+            .split_once('\n')
+            .map_or_else(|| issue.message.clone(), |(_, detail)| detail.to_owned());
+    }
     match issue.code {
         "variant-passed" => "No readability issues were found for this variant".to_owned(),
         "missing-required-color" => format!("{}. Required for previews and exports", issue.message),
@@ -5913,6 +6688,146 @@ fn palette_slug(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prompt_diagnostics::is_rust_issue;
+
+    #[test]
+    #[ignore = "requires a graphical GTK session; run with --ignored --test-threads=1"]
+    fn light_chrome_pages_and_native_controls() {
+        adw::init().unwrap();
+        for modern in [false, true] {
+            if modern && gtk::check_version(4, 16, 0).is_some() {
+                continue;
+            }
+            let errors = Rc::new(RefCell::new(Vec::new()));
+            let captured = errors.clone();
+            let provider = gtk::CssProvider::new();
+            provider.connect_parsing_error(move |_, _, error| {
+                captured.borrow_mut().push(error.to_string())
+            });
+            provider.load_from_data(&chrome_css(modern));
+            assert!(
+                errors.borrow().is_empty(),
+                "CSS parse errors: {:?}",
+                errors.borrow()
+            );
+        }
+        gio::resources_register_include!("termimochi.gresource").unwrap();
+        gtk::IconTheme::for_display(&gdk::Display::default().unwrap())
+            .add_resource_path(&format!("{}/icons", crate::RESOURCE_BASE));
+        let app = adw::Application::builder()
+            .application_id("io.github.miiikuuu.termimochi.ChromeTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        present(&app, None);
+        let window = app.active_window().unwrap();
+        let this = unsafe {
+            window
+                .data::<Rc<Workbench>>("termimochi-workbench")
+                .unwrap()
+                .as_ref()
+                .clone()
+        };
+        let settle = || {
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_millis(400) {
+                while glib::MainContext::default().pending() {
+                    glib::MainContext::default().iteration(false);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        settle();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while this.preview_loading.get() {
+            assert!(std::time::Instant::now() < deadline);
+            settle();
+        }
+        let palette = this.model.borrow().palette.clone();
+        let screenshots = std::env::var_os("TERMIMOCHI_CHROME_SCREENSHOT_DIR").map(PathBuf::from);
+        let capture = |name: &str| {
+            let Some(directory) = &screenshots else {
+                return;
+            };
+            std::fs::create_dir_all(directory).unwrap();
+            window.set_title(Some("TermiMochi point-to-edit test"));
+            settle();
+            let mut child = std::process::Command::new("python3")
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../scripts/preview-pointer-driver.py"
+                ))
+                .args(["capture", "0", "0"])
+                .env(
+                    "TERMIMOCHI_INSPECT_SCREENSHOT",
+                    directory.join(format!("{name}.png")),
+                )
+                .spawn()
+                .unwrap();
+            while child.try_wait().unwrap().is_none() {
+                settle();
+            }
+            assert!(child.wait().unwrap().success());
+        };
+        this.palette_module_button.set_active(true);
+        this.name_entry.grab_focus();
+        capture("palette");
+        gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-typography", None);
+        settle();
+        capture("typography");
+        let font_button = this
+            .font_family_selector
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::ToggleButton>()
+            .expect("native font dropdown toggle");
+        font_button.set_active(true);
+        capture("font-menu");
+        font_button.set_active(false);
+        gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-layout", None);
+        this.row_count_input.grab_focus();
+        capture("layout");
+        this.prompt_module_button.set_active(true);
+        settle();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while this.copy_loading.get() {
+            assert!(std::time::Instant::now() < deadline);
+            settle();
+        }
+        this.starship_editor.symbol.grab_focus();
+        capture("prompt");
+        this.prompt_export_button.popup();
+        capture("save-menu");
+        this.prompt_export_button.popdown();
+        this.prompt_source_selector.set_selected(1);
+        capture("designer");
+        this.prompt_add_button.popup();
+        capture("module-menu");
+        this.prompt_add_button.popdown();
+        #[allow(deprecated)] // Verify the GTK 4.10 named-color fallback too.
+        let accent = this
+            .starship_editor
+            .symbol
+            .style_context()
+            .lookup_color("accent_bg_color")
+            .unwrap();
+        assert!(
+            (accent.red() - accent.blue()).abs() < 0.08
+                && (accent.green() - accent.blue()).abs() < 0.08,
+            "accent is not neutral: {accent}"
+        );
+        let color = this.starship_editor.symbol.color();
+        assert!(
+            color.red() < 0.25 && color.green() < 0.25 && color.blue() < 0.25,
+            "entry text must remain legible on white: {color}"
+        );
+        assert_eq!(
+            this.model.borrow().palette,
+            palette,
+            "chrome must never modify the terminal palette"
+        );
+        window.destroy();
+    }
 
     #[test]
     #[ignore = "requires a graphical GTK/VTE session; run with --ignored --test-threads=1"]
@@ -5946,7 +6861,7 @@ mod tests {
             }
         };
         settle();
-        // Wait for the bounded context worker before installing each specimen.
+        // Wait for the bounded context worker before installing each scene.
         while this.preview_loading.get() {
             settle();
         }
@@ -6068,6 +6983,92 @@ mod tests {
                 "the hover label must be readable, not just an ellipsis"
             );
             assert_eq!(this.inspect_label.text(), "Palette · Green / Color2");
+            let hint_position = this
+                .inspect_label
+                .compute_bounds(&this.inspect_layer)
+                .unwrap();
+            let hint_moves = Rc::new(Cell::new(0));
+            let hint_hidden = Rc::new(Cell::new(0));
+            let hint_updates = Rc::new(Cell::new(0));
+            let updates = hint_updates.clone();
+            let hint_notify =
+                this.inspect_label
+                    .connect_notify_local(Some("label"), move |_, _| {
+                        updates.set(updates.get() + 1);
+                    });
+            let terminal_bounds = terminal.compute_bounds(&this.inspect_layer).unwrap();
+            let terminal_moves = Rc::new(Cell::new(0));
+            let grid_moves = terminal_moves.clone();
+            let grid = terminal.clone();
+            let moves = hint_moves.clone();
+            let hidden = hint_hidden.clone();
+            let layer = this.inspect_layer.clone();
+            let hint = this.inspect_label.clone();
+            let monitor = this.inspect_layer.add_tick_callback(move |_, _| {
+                if !hint.is_visible() {
+                    hidden.set(hidden.get() + 1);
+                }
+                if hint.compute_bounds(&layer).unwrap() != hint_position {
+                    moves.set(moves.get() + 1);
+                }
+                if grid.compute_bounds(&layer).unwrap() != terminal_bounds {
+                    grid_moves.set(grid_moves.get() + 1);
+                }
+                glib::ControlFlow::Continue
+            });
+            pointer("jitter");
+            monitor.remove();
+            this.inspect_label.disconnect(hint_notify);
+            assert_eq!(hint_hidden.get(), 0, "steady hover must never flicker off");
+            assert_eq!(hint_moves.get(), 0, "hint must not chase pointer jitter");
+            assert_eq!(
+                hint_updates.get(),
+                0,
+                "same target must not relayout hint text"
+            );
+            assert_eq!(
+                terminal_moves.get(),
+                0,
+                "hover must not move the terminal grid"
+            );
+            assert_eq!(
+                snapshot(),
+                before,
+                "hover must not redraw terminal contents"
+            );
+
+            // Long/short target names and a miss all share one stable anchor;
+            // none of them participates in the terminal's size request.
+            let hovered = this.inspect_hit.borrow().clone().unwrap();
+            let minimum = this.inspect_layer.measure(gtk::Orientation::Horizontal, -1);
+            for target in [
+                Some(PreviewTarget::Prompt),
+                Some(PreviewTarget::Cursor),
+                None,
+            ] {
+                this.show_inspection_feedback(target.map(|target| PreviewHit {
+                    target,
+                    bounds: hovered.bounds,
+                }));
+                settle();
+                let bounds = this
+                    .inspect_label
+                    .compute_bounds(&this.inspect_layer)
+                    .unwrap();
+                assert_eq!(bounds.x(), hint_position.x());
+                assert_eq!(bounds.y(), hint_position.y());
+                assert!(bounds.x() >= 0.0 && bounds.y() >= 0.0);
+                assert!(bounds.x() + bounds.width() <= this.inspect_layer.width() as f32);
+                assert!(bounds.y() + bounds.height() <= this.inspect_layer.height() as f32);
+                assert_eq!(
+                    this.inspect_layer.measure(gtk::Orientation::Horizontal, -1),
+                    minimum
+                );
+                assert_eq!(
+                    terminal.compute_bounds(&this.inspect_layer).unwrap(),
+                    terminal_bounds
+                );
+            }
             assert!(
                 !this.palette_module_button.is_active(),
                 "hover alone never navigates"
@@ -6110,6 +7111,13 @@ mod tests {
             this.inspect_button.set_active(false);
             assert!(!this.inspect_label.is_visible());
             assert!(this.inspect_hit.borrow().is_none());
+            // Turning off before the next frame must discard a queued hover.
+            this.inspect_button.set_active(true);
+            this.schedule_inspection_hover(0.0, 0.0);
+            this.inspect_button.set_active(false);
+            settle();
+            assert!(!this.inspect_label.is_visible());
+            assert!(!this.inspect_hover_pending.get());
             pointer("click");
             assert!(
                 !this.palette_module_button.is_active(),
@@ -6126,13 +7134,13 @@ mod tests {
             assert_eq!(
                 snapshot(),
                 before,
-                "exiting Inspect must not reset the specimen"
+                "exiting Inspect must not reset the scene"
             );
         }
         this.inspect_preview_target(PreviewTarget::Ansi(2));
         settle();
         assert_eq!(*this.selected_color_key.borrow(), "Color2");
-        assert_eq!(snapshot(), before, "navigation must preserve the specimen");
+        assert_eq!(snapshot(), before, "navigation must preserve the scene");
         assert_eq!(this.model.borrow().dirty, dirty);
 
         this.prompt_module_button.set_active(true);
@@ -6182,12 +7190,15 @@ mod tests {
         this.inspect_preview_target(PreviewTarget::Prompt);
         settle();
         assert_eq!(this.prompt_source_selector.selected(), 0);
-        assert!(!this.prompt_export_button.is_visible());
+        assert_eq!(
+            this.prompt_export_button.is_visible(),
+            this.starship_editor.draft.borrow().is_some()
+        );
         assert_eq!(this.preview_input.borrow().text(), "local input");
         assert_eq!(
             snapshot(),
             before,
-            "opening the read-only panel preserves input"
+            "opening prompt controls through Inspect preserves input"
         );
         assert_eq!(
             at(terminal.column_count() - 1, row),
@@ -6220,6 +7231,633 @@ mod tests {
             Some(PreviewTarget::Prompt),
             "both halves of a wide character must resolve"
         );
+        if std::env::var_os("TERMIMOCHI_COPY_TEST").is_some() {
+            let fixture = tempfile::tempdir().unwrap();
+            let original = fixture.path().join("original.toml");
+            let marker = fixture.path().join("must-not-run");
+            let source = format!(
+                "# Keep my layout\npalette = 'cute'\nformat = '''\n[╭─](bold pink)$directory$rust\n[╰─](bold pink)$character\n'''\n[palettes.cute]\npink = '#f275a0'\nred = '#eb6f92'\n[rust]\nsymbol = ' rs ' # my symbol\nstyle = 'bold red'\nformat = '[$symbol$version]($style)'\n[custom.marker]\ncommand = \"touch {}\"\n",
+                marker.display()
+            );
+            std::fs::write(&original, &source).unwrap();
+            {
+                let mut context = this.current_preview_context.borrow_mut();
+                let imported = &mut context.as_mut().unwrap().imported_prompt;
+                imported.path = original.clone();
+                imported.source = Some(source.clone());
+            }
+            // Emulate the first successful configuration load in this window.
+            this.starship_editor.draft.borrow_mut().take();
+            this.prompt_module_button.set_active(true);
+            this.prompt_source_selector.set_selected(0);
+            this.sync_prompt_page();
+            assert_eq!(
+                this.prompt_source_selector.selected(),
+                0,
+                "Your Starship opens directly, without creating a copy"
+            );
+            this.starship_editor.scenario.set_selected(1);
+            let wait_for_copy = || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(8);
+                // Let the edit debounce expire before waiting on its worker.
+                settle();
+                while this.copy_loading.get() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "copy worker must finish"
+                    );
+                    settle();
+                }
+                assert!(
+                    matches!(this.copy_preview.borrow().as_ref(), Some(Ok(_))),
+                    "{:?}",
+                    this.copy_preview.borrow()
+                );
+            };
+            wait_for_copy();
+            let editor = &this.starship_editor;
+            assert!(editor.root.is_visible());
+            assert_eq!(editor.symbol.text(), " rs ");
+            assert!(snapshot().contains(" rs "));
+            assert!(!editor.dirty(), "opening a copy must not modify it");
+            editor.symbols[1].emit_clicked();
+            wait_for_copy();
+            assert!(snapshot().contains(" 🦀 "));
+            assert!(this.undo_action.is_enabled());
+            this.prompt_source_selector.set_selected(1);
+            assert!(!editor.root.is_visible());
+            this.prompt_source_selector.set_selected(0);
+            assert_eq!(
+                editor.symbol.text(),
+                " 🦀 ",
+                "returning to Your Starship keeps edits"
+            );
+            this.undo_edit();
+            assert_eq!(
+                editor.symbol.text(),
+                " rs ",
+                "one undo restores the whole preset edit"
+            );
+            this.redo_edit();
+            assert_eq!(editor.symbol.text(), " 🦀 ");
+            editor.symbol.grab_focus();
+            editor.symbol.set_text(" crab ");
+            editor.symbol.set_text(" crabby ");
+            this.undo_edit();
+            assert_eq!(editor.symbol.text(), " 🦀 ", "typing is one undo group");
+            editor.style.set_text("not-a-color");
+            assert!(editor.invalid());
+            assert!(!this.save_action.is_enabled());
+            assert!(
+                !this
+                    .window()
+                    .lookup_action("export-starship")
+                    .unwrap()
+                    .is_enabled()
+            );
+            assert!(
+                this.prompt_export_button.is_sensitive(),
+                "recovery menu remains accessible"
+            );
+            this.undo_edit();
+            assert!(!editor.invalid());
+            assert!(this.prompt_export_button.is_sensitive());
+            editor.color.set_rgba(&gdk::RGBA::parse("#123456").unwrap());
+            editor.bold.set_active(false);
+            editor.version.set_selected(2);
+            editor.layout.set_selected(1);
+            wait_for_copy();
+            let contents = editor
+                .draft
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .contents()
+                .to_owned();
+            let mut expected: toml::Table = toml::from_str(&source).unwrap();
+            let mut edited: toml::Table = toml::from_str(&contents).unwrap();
+            assert_eq!(edited["rust"]["style"].as_str(), Some("fg:#123456"));
+            assert_eq!(
+                edited["rust"]["version_format"].as_str(),
+                Some("v${major}.${minor}")
+            );
+            expected.remove("rust");
+            edited.remove("rust");
+            assert_eq!(expected, edited);
+            assert!(snapshot().contains('╭') && snapshot().contains('╰'));
+            assert!(
+                !marker.exists(),
+                "custom commands must not run in the copy renderer"
+            );
+            assert_eq!(std::fs::read_to_string(&original).unwrap(), source);
+            this.inspect_preview_target(PreviewTarget::PromptCopy);
+            assert_eq!(this.prompt_source_selector.selected(), 0);
+            // A stale renderer must not replace the most recent edit.
+            editor.symbols[0].emit_clicked();
+            this.start_copy_preview();
+            editor.symbols[1].emit_clicked();
+            wait_for_copy();
+            assert!(snapshot().contains(" 🦀 "));
+            if let Some(path) = std::env::var_os("TERMIMOCHI_COPY_SCREENSHOT") {
+                window.set_title(Some("TermiMochi point-to-edit test"));
+                let mut child = std::process::Command::new("python3")
+                    .arg(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/../../scripts/preview-pointer-driver.py"
+                    ))
+                    .args(["capture", "0", "0"])
+                    .env("TERMIMOCHI_INSPECT_SCREENSHOT", path)
+                    .spawn()
+                    .unwrap();
+                while child.try_wait().unwrap().is_none() {
+                    settle();
+                }
+                assert!(child.wait().unwrap().success());
+            }
+            // Test compatibility with an actual missing glyph, not the font's
+            // name or the generic five-glyph Nerd Font scene score.
+            editor.symbol.set_text(" \u{10fffd} ");
+            wait_for_copy();
+            settle();
+            let findings = this.reported_issues.borrow().clone().unwrap();
+            assert!(
+                findings
+                    .iter()
+                    .any(|issue| issue.code == "rust-symbol-missing"
+                        && issue.message.contains("U+10FFFD"))
+            );
+            let row = this.diagnostics.first_child();
+            this.refresh_all_diagnostics();
+            assert_eq!(
+                this.diagnostics.first_child(),
+                row,
+                "unchanged findings must not rebuild or jiggle the report"
+            );
+            let before_font_navigation = snapshot();
+            gio::prelude::ActionGroupExt::activate_action(&this.window(), "diagnostic-fonts", None);
+            settle();
+            assert_eq!(
+                snapshot(),
+                before_font_navigation,
+                "Fonts action preserves the current prompt"
+            );
+            assert_eq!(this.prompt_source_selector.selected(), 0);
+            gio::prelude::ActionGroupExt::activate_action(
+                &this.window(),
+                "diagnostic-module",
+                Some(&"rust".to_variant()),
+            );
+            assert!(editor.root.is_visible());
+            assert_eq!(
+                editor.symbol.text(),
+                " \u{10fffd} ",
+                "diagnostic action must not silently replace the symbol"
+            );
+            if let Some(path) = std::env::var_os("TERMIMOCHI_DIAGNOSTICS_SCREENSHOT") {
+                window.set_title(Some("TermiMochi point-to-edit test"));
+                let mut child = std::process::Command::new("python3")
+                    .arg(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/../../scripts/preview-pointer-driver.py"
+                    ))
+                    .args(["capture", "0", "0"])
+                    .env("TERMIMOCHI_INSPECT_SCREENSHOT", path)
+                    .spawn()
+                    .unwrap();
+                while child.try_wait().unwrap().is_none() {
+                    settle();
+                }
+                assert!(child.wait().unwrap().success());
+            }
+            editor.symbols[0].emit_clicked();
+            wait_for_copy();
+            settle();
+            assert!(
+                !this
+                    .reported_issues
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .any(is_rust_issue),
+                "plain rs clears the obsolete glyph warning"
+            );
+            editor.symbols[1].emit_clicked();
+            wait_for_copy();
+            settle();
+            assert!(
+                !this
+                    .reported_issues
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .any(is_rust_issue),
+                "available emoji fallback is not an incompatibility"
+            );
+            editor.symbols[2].emit_clicked();
+            wait_for_copy();
+            settle();
+            let description = this.typography_settings().font_description();
+            let primary = terminal.pango_context().load_font(&description).unwrap();
+            assert_eq!(
+                this.reported_issues
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .any(is_rust_issue),
+                !primary.has_char('\u{e7a8}')
+            );
+            editor.enabled.set_active(false);
+            wait_for_copy();
+            settle();
+            assert!(
+                !this
+                    .reported_issues
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .any(is_rust_issue),
+                "a disabled module must not be reported, including old simulated frames"
+            );
+            assert!(
+                this.copy_scene
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .scene
+                    .title
+                    .contains("disabled in draft")
+            );
+            editor.reset.emit_clicked();
+            assert_eq!(editor.draft.borrow().as_ref().unwrap().contents(), source);
+            assert!(!editor.dirty());
+
+            // A common editor, not a collection of Rust-only special cases.
+            let multi_source = format!(
+                "{}\n[python]\nsymbol = 'py '\nformat = '[$symbol$version]($style)'\n",
+                source.replace("$directory$rust", "$directory$rust$python")
+            );
+            editor
+                .begin(original.clone(), multi_source.clone())
+                .unwrap();
+            wait_for_copy();
+            let generation = this.copy_generation.get();
+            let original_prompt = this.copy_preview.borrow().clone();
+            for (index, spec) in crate::starship_modules::MODULES.iter().enumerate() {
+                editor.module.set_selected(index as u32);
+                assert_eq!(editor.draft.borrow().as_ref().unwrap().spec().id, spec.id);
+                assert_eq!(
+                    editor.symbol.parent().unwrap().is_visible(),
+                    !spec.symbols.is_empty()
+                );
+                assert_eq!(editor.version.parent().unwrap().is_visible(), spec.version);
+            }
+            assert!(!editor.dirty(), "module navigation must not edit the copy");
+            assert!(
+                this.copy_generation.get() > generation,
+                "navigation must refresh the selected scene"
+            );
+            wait_for_copy();
+            assert_eq!(
+                *this.copy_preview.borrow(),
+                original_prompt,
+                "module navigation preserves the full prompt"
+            );
+            assert!(snapshot().contains("date +%T"));
+            assert!(snapshot().contains("14:32:08"));
+            editor.select_module("rust");
+            editor.symbols[1].emit_clicked();
+            editor.select_module("python");
+            editor.scenario.set_selected(3);
+            editor.symbol.set_text("python ");
+            wait_for_copy();
+            assert!(snapshot().contains("python "));
+            editor.select_module("rust");
+            this.undo_edit();
+            assert_eq!(editor.draft.borrow().as_ref().unwrap().spec().id, "python");
+            assert_eq!(editor.symbol.text(), "py ");
+            this.redo_edit();
+            assert_eq!(editor.symbol.text(), "python ");
+            editor.style.set_text("invalid-color");
+            editor.select_module("git_branch");
+            assert_eq!(
+                editor.draft.borrow().as_ref().unwrap().spec().id,
+                "python",
+                "don't lose invalid input on navigation"
+            );
+            assert!(editor.invalid());
+            assert!(!this.save_action.is_enabled());
+            this.undo_edit();
+            editor.symbol.set_text(" \u{10fffd} ");
+            wait_for_copy();
+            settle();
+            let finding = this
+                .reported_issues
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|issue| issue_module(issue).is_some_and(|m| m.id == "python"))
+                .cloned()
+                .expect("Python missing-glyph finding");
+            editor.select_module("rust");
+            let target = format!("python\n{}", finding.message).to_variant();
+            gio::prelude::ActionGroupExt::activate_action(
+                &this.window(),
+                "diagnostic-module",
+                Some(&target),
+            );
+            assert_eq!(editor.draft.borrow().as_ref().unwrap().spec().id, "python");
+            assert_eq!(editor.symbol.text(), " \u{10fffd} ");
+            editor.symbols[0].emit_clicked();
+            wait_for_copy();
+            settle();
+            assert!(
+                !this
+                    .reported_issues
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue_module(issue).is_some_and(|m| m.id == "python"))
+            );
+            editor.reset.emit_clicked();
+            let doc: toml::Table =
+                toml::from_str(editor.draft.borrow().as_ref().unwrap().contents()).unwrap();
+            assert_eq!(
+                doc["rust"]["symbol"].as_str(),
+                Some(" 🦀 "),
+                "reset Python keeps Rust edits"
+            );
+            editor.select_module("git_status");
+            editor.symbol_field.set_selected(2);
+            editor.symbol.set_text("+${count}");
+            assert_eq!(
+                editor
+                    .draft
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .field("staged")
+                    .as_deref(),
+                Some("+${count}")
+            );
+            wait_for_copy();
+            assert!(snapshot().contains("git add README.md src/"));
+            assert!(
+                snapshot().contains("+2"),
+                "an omitted module appears in the prompt after the simulated command"
+            );
+            assert!(!snapshot().contains("Git Status · Staged"));
+            let latest_prompt = this
+                .copy_scene
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .ansi
+                .clone()
+                .unwrap();
+            assert!(latest_prompt.contains("+2"));
+            assert!(latest_prompt.contains("TermiMochi"));
+            let unchanged_prompt = this.copy_preview.borrow().clone();
+            editor.symbol_field.set_selected(1);
+            editor.symbol.set_text("U${count}");
+            wait_for_copy();
+            assert!(snapshot().contains("touch notes.txt todo.txt"));
+            assert!(snapshot().contains("U2"));
+            let history = this.copy_scene_history.borrow();
+            let last = history.len() - 1;
+            assert_eq!(history[last - 1].scene.command, "git add README.md src/");
+            assert_eq!(history[last].scene.command, "touch notes.txt todo.txt");
+            assert!(history[last].ansi.as_ref().unwrap().contains("U2"));
+            let frames_before = history.len();
+            drop(history);
+            // Selection appends a command; typing updates that command's prompt.
+            editor.symbol.set_text("new${count}");
+            wait_for_copy();
+            assert_eq!(
+                this.copy_scene_history.borrow().len(),
+                frames_before,
+                "typing must not flood the terminal with one command per character"
+            );
+            assert!(
+                this.copy_scene
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .ansi
+                    .as_ref()
+                    .unwrap()
+                    .contains("new2")
+            );
+            assert_eq!(*this.copy_preview.borrow(), unchanged_prompt);
+            editor.symbol_field.set_selected(2);
+            if let Some(path) = std::env::var_os("TERMIMOCHI_MODULES_SCREENSHOT") {
+                wait_for_copy();
+                window.set_title(Some("TermiMochi point-to-edit test"));
+                let mut child = std::process::Command::new("python3")
+                    .arg(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/../../scripts/preview-pointer-driver.py"
+                    ))
+                    .args(["capture", "0", "0"])
+                    .env("TERMIMOCHI_INSPECT_SCREENSHOT", path)
+                    .spawn()
+                    .unwrap();
+                while child.try_wait().unwrap().is_none() {
+                    settle();
+                }
+                assert!(child.wait().unwrap().success());
+            }
+            editor.select_module("username");
+            editor.style_field.set_selected(1);
+            editor.color.set_rgba(&gdk::RGBA::parse("#334455").unwrap());
+            assert_eq!(
+                editor
+                    .draft
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .field("style_root")
+                    .as_deref(),
+                Some("bold fg:#334455")
+            );
+            assert!(
+                editor
+                    .draft
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .field("style")
+                    .is_none()
+            );
+            editor.select_module("character");
+            editor.symbol_field.set_selected(1);
+            editor.symbol.set_text("[\u{10fffd}](red)");
+            editor.select_module("git_status");
+            editor.open_finding("character", "Prompt Symbol · Missing glyph (U+10FFFD)");
+            assert_eq!(
+                editor.symbol_field.selected(),
+                1,
+                "repair opens the affected field, not always the first symbol"
+            );
+            assert_eq!(editor.symbol.text(), "[\u{10fffd}](red)");
+            wait_for_copy();
+            assert_eq!(
+                this.copy_scene.borrow().as_ref().unwrap().scene.command,
+                "false"
+            );
+            editor.symbol.set_text("[FAIL](pink)");
+            wait_for_copy();
+            assert!(
+                snapshot().contains("FAIL"),
+                "the error symbol must be visible even when the real prompt is successful"
+            );
+            editor.select_module("git_status");
+            this.start_copy_preview();
+            editor.select_module("python");
+            editor.select_module("username");
+            wait_for_copy();
+            assert!(
+                this.copy_scene
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .scene
+                    .title
+                    .starts_with("User ·"),
+                "a stale worker cannot bring back a previously selected module"
+            );
+            assert_eq!(std::fs::read_to_string(&original).unwrap(), source);
+            for id in ["rust", "python", "git_status", "username", "character"] {
+                editor.select_module(id);
+                editor.reset.emit_clicked();
+            }
+            assert_eq!(
+                editor.draft.borrow().as_ref().unwrap().contents(),
+                multi_source
+            );
+            assert!(!editor.dirty());
+            // Exercise actual GTK confirmation buttons and on-disk writes in
+            // a disposable directory only, never the user's configuration.
+            fn find_button(widget: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+                if let Some(button) = widget.downcast_ref::<gtk::Button>()
+                    && button.label().is_some_and(|text| text == label)
+                {
+                    return Some(button.clone());
+                }
+                let mut child = widget.first_child();
+                while let Some(widget) = child {
+                    if let Some(button) = find_button(&widget, label) {
+                        return Some(button);
+                    }
+                    child = widget.next_sibling();
+                }
+                None
+            }
+            let respond = |label: &str| {
+                settle();
+                let button = gtk::Window::list_toplevels()
+                    .into_iter()
+                    .find_map(|widget| find_button(&widget, label))
+                    .unwrap_or_else(|| panic!("dialog button missing: {label}"));
+                button.emit_clicked();
+                settle();
+            };
+            editor.begin(original.clone(), source.clone()).unwrap();
+            editor.symbol.set_text("saved-rust ");
+            let saved_contents = editor
+                .draft
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .contents()
+                .to_owned();
+            let theme_before = this.model.borrow().palette.clone();
+            this.save_action.activate(None); // Ctrl+S routes to Prompt, not Theme.
+            respond("Cancel");
+            assert_eq!(std::fs::read_to_string(&original).unwrap(), source);
+            assert!(editor.dirty());
+            assert!(
+                editor
+                    .file
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .latest_backup()
+                    .is_err()
+            );
+            this.save_action.activate(None);
+            respond("Back Up and Save");
+            assert_eq!(std::fs::read_to_string(&original).unwrap(), saved_contents);
+            assert!(!editor.dirty());
+            assert_eq!(
+                editor
+                    .file
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .latest_backup()
+                    .unwrap()
+                    .contents,
+                source
+            );
+            assert_eq!(this.model.borrow().palette, theme_before);
+            this.undo_edit();
+            assert_eq!(editor.symbol.text(), " rs ");
+            assert!(editor.dirty());
+            assert_eq!(
+                std::fs::read_to_string(&original).unwrap(),
+                saved_contents,
+                "Undo edits the draft, not disk"
+            );
+            this.redo_edit();
+            assert!(!editor.dirty());
+            this.request_starship_restore();
+            respond("Cancel");
+            assert_eq!(std::fs::read_to_string(&original).unwrap(), saved_contents);
+            this.request_starship_restore();
+            respond("Back Up and Restore");
+            assert_eq!(std::fs::read_to_string(&original).unwrap(), source);
+            assert_eq!(editor.symbol.text(), " rs ");
+            assert!(!editor.dirty());
+            assert_eq!(
+                editor
+                    .file
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .latest_backup()
+                    .unwrap()
+                    .contents,
+                saved_contents
+            );
+            this.undo_edit();
+            assert_eq!(editor.symbol.text(), "saved-rust ");
+            this.request_starship_reload();
+            respond("Cancel");
+            assert_eq!(editor.symbol.text(), "saved-rust ");
+            this.request_starship_reload();
+            respond("Reload");
+            assert_eq!(editor.symbol.text(), " rs ");
+            assert!(!editor.dirty());
+            editor.symbol.set_text("pending ");
+            this.request_starship_save();
+            let external = format!("{source}\n# edited outside TermiMochi\n");
+            std::fs::write(&original, &external).unwrap();
+            respond("Back Up and Save");
+            respond("Close");
+            assert_eq!(std::fs::read_to_string(&original).unwrap(), external);
+            assert!(editor.dirty());
+            assert_eq!(editor.symbol.text(), "pending ");
+            this.request_starship_reload();
+            respond("Reload");
+            assert_eq!(editor.draft.borrow().as_ref().unwrap().contents(), external);
+            assert!(!editor.dirty());
+        }
         window.destroy();
     }
 

@@ -1,0 +1,219 @@
+/* Application chrome only. Never recolor palette swatches or terminal output. */
+@define-color accent_bg_color #343b41;
+@define-color accent_fg_color #ffffff;
+@define-color accent_color #343b41;
+@define-color theme_selected_bg_color #343b41;
+@define-color theme_selected_fg_color #ffffff;
+
+@define-color editor_bg #ffffff;
+@define-color editor_rail #f6f7f8;
+@define-color editor_field #f4f5f6;
+@define-color editor_hover #e8ecef;
+@define-color editor_fg #252b31;
+@define-color editor_muted #505960;
+@define-color editor_dim #606a73;
+@define-color editor_focus #6b747c;
+
+.editor-workspace,
+.editor-module-stack,
+.editor-scroll,
+.typography-scroll,
+.layout-scroll,
+.prompt-scroll,
+.termimochi-editor,
+.termimochi-typography-pane,
+.termimochi-layout-pane,
+.termimochi-prompt-pane {
+  color: @editor_fg;
+  background: @editor_bg;
+}
+
+.editor-workspace .activity-rail { background: @editor_rail; }
+.editor-workspace button.activity-button { color: @editor_dim; }
+.editor-workspace button.activity-button:hover {
+  color: @editor_fg;
+  background: #eef0f2;
+}
+.editor-workspace button.activity-button:checked {
+  color: @editor_fg;
+  background: #e6eaed;
+}
+.editor-workspace button.activity-button:checked:hover { background: #dde3e7; }
+.editor-workspace .activity-indicator { background: @editor_fg; }
+
+.editor-workspace .preview-heading,
+.editor-workspace .section-heading { color: @editor_fg; }
+
+.editor-workspace .identity-label,
+.editor-workspace .palette-label,
+.editor-workspace .layout-row-label,
+.editor-workspace .prompt-starter-title,
+.editor-workspace .prompt-empty-label { color: @editor_muted; }
+
+.editor-workspace .preview-source-detail,
+.editor-workspace .palette-row-label,
+.editor-workspace .picker-field-label,
+.editor-workspace .typography-field-label,
+.editor-workspace .layout-group-title,
+.editor-workspace .nerd-status-label,
+.editor-workspace .prompt-catalog-category,
+.editor-workspace .prompt-catalog-sample,
+.editor-workspace .prompt-module-sample,
+.editor-workspace .prompt-empty-mark { color: @editor_dim; }
+
+.editor-workspace entry,
+.editor-workspace dropdown > button,
+.editor-workspace spinbutton {
+  color: @editor_fg;
+  background: @editor_field;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  box-shadow: none;
+  caret-color: @editor_fg;
+}
+.editor-workspace entry { min-height: 30px; }
+.editor-workspace entry:hover,
+.editor-workspace dropdown > button:hover,
+.editor-workspace spinbutton:hover { background: @editor_hover; }
+.editor-workspace entry:focus-within,
+.editor-workspace spinbutton:focus-within {
+  border-color: @editor_focus;
+  outline: none;
+  box-shadow: none;
+}
+.editor-workspace button:focus-visible,
+.editor-workspace dropdown > button:focus-visible,
+.editor-workspace switch:focus-visible,
+.editor-workspace .picker-square:focus,
+.editor-workspace scale.picker-hue-scale:focus {
+  outline: 2px solid @editor_focus;
+  outline-offset: 1px;
+}
+.editor-workspace entry selection,
+.editor-workspace text selection {
+  color: @editor_fg;
+  background: #dce2e6;
+}
+.editor-workspace entry.error,
+.editor-workspace entry.error:focus-within {
+  border-color: #a33c47;
+  box-shadow: none;
+}
+.editor-workspace spinbutton text { color: inherit; background: transparent; }
+.editor-workspace spinbutton button {
+  color: @editor_muted;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+.editor-workspace spinbutton button:hover {
+  color: @editor_fg;
+  background: alpha(black, 0.05);
+}
+
+.editor-workspace switch {
+  color: @editor_muted;
+  background: #dce2e6;
+  border: none;
+  border-radius: 999px;
+  box-shadow: none;
+}
+.editor-workspace switch:hover { background: #cbd3d9; }
+.editor-workspace switch slider {
+  background: #ffffff;
+  border: none;
+  box-shadow: 0 1px 3px alpha(black, 0.16);
+}
+.editor-workspace switch:checked { color: #ffffff; background: #343b41; }
+.editor-workspace switch:checked:hover { background: #252b31; }
+.editor-workspace switch:checked slider { background: #ffffff; }
+.editor-workspace checkbutton check:checked {
+  color: #ffffff;
+  background: #343b41;
+  border-color: transparent;
+}
+
+.editor-workspace .layout-card,
+.editor-workspace .prompt-properties { background: transparent; }
+.editor-workspace .prompt-starter-row,
+.editor-workspace .prompt-module-list,
+.editor-workspace .prompt-empty-state { background: transparent; }
+.editor-workspace button.prompt-starter-button,
+.editor-workspace menubutton.prompt-starter-button > button {
+  color: @editor_muted;
+  background: @editor_field;
+  border: none;
+  box-shadow: none;
+}
+.editor-workspace button.prompt-starter-button:hover,
+.editor-workspace menubutton.prompt-starter-button > button:hover,
+.editor-workspace menubutton.prompt-starter-button > button:checked {
+  color: @editor_fg;
+  background: @editor_hover;
+}
+.editor-workspace button.prompt-menu-item,
+.editor-workspace button.prompt-catalog-item,
+.editor-workspace button.prompt-module-select,
+.editor-workspace menubutton.prompt-module-more > button {
+  color: @editor_muted;
+  background: transparent;
+}
+.editor-workspace button.prompt-menu-item:hover,
+.editor-workspace button.prompt-catalog-item:hover,
+.editor-workspace menubutton.prompt-module-more > button:hover,
+.editor-workspace menubutton.prompt-module-more > button:checked,
+.editor-workspace .prompt-module-row:hover {
+  color: @editor_fg;
+  background: @editor_field;
+}
+.editor-workspace .prompt-module-row.selected { background: @editor_hover; }
+.editor-workspace .prompt-module-count { color: @editor_muted; background: @editor_field; }
+.editor-workspace menubutton.prompt-export > button,
+.editor-workspace menubutton.prompt-add-button > button {
+  color: @editor_fg;
+  background: #eef0f2;
+  box-shadow: none;
+}
+.editor-workspace menubutton.prompt-export > button:hover,
+.editor-workspace menubutton.prompt-export > button:checked,
+.editor-workspace menubutton.prompt-add-button > button:hover,
+.editor-workspace menubutton.prompt-add-button > button:checked { color: @editor_fg; background: @editor_hover; }
+
+.editor-workspace colorbutton > button,
+.editor-workspace colordialogbutton > button { background: @editor_field; border: none; box-shadow: none; }
+.editor-workspace popover > contents {
+  color: @editor_fg;
+  background: @editor_bg;
+  border: 1px solid alpha(#252b31, 0.08);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px alpha(#252b31, 0.14);
+}
+/* Honor GTK's opaque-surface fallback on X11 without a compositor. */
+.solid-csd .editor-workspace popover > contents {
+  box-shadow: none;
+  border-radius: 0;
+  border: none;
+}
+.editor-workspace popover listview,
+.editor-workspace popover list { color: @editor_fg; background: transparent; }
+.editor-workspace popover row:hover,
+.editor-workspace popover modelbutton:hover { background: @editor_hover; }
+.editor-workspace popover row:selected { color: @editor_fg; background: @editor_hover; }
+.editor-workspace popover separator { background: alpha(#252b31, 0.08); }
+.editor-workspace scrollbar slider { background-color: alpha(#606a73, 0.30); }
+.editor-workspace scrollbar slider:hover { background: alpha(#606a73, 0.50); }
+
+/* Prompt samples keep the semantic colors from the base light stylesheet. */
+.editor-workspace .prompt-token-cyan { color: #276c78; }
+.editor-workspace .prompt-token-blue { color: #315f89; }
+.editor-workspace .prompt-token-magenta { color: #744383; }
+.editor-workspace .prompt-token-yellow { color: #76560a; }
+.editor-workspace .prompt-token-green { color: #2b6b4f; }
+.editor-workspace .prompt-token-red { color: #9b3943; }
+.editor-workspace .status-error,
+.editor-workspace button.destructive-action { color: #a33c47; }
+.editor-workspace .status-warning { color: #805700; }
+.editor-workspace .status-good { color: #296647; }
+.editor-workspace button:disabled,
+.editor-workspace entry:disabled,
+.editor-workspace spinbutton:disabled { opacity: 0.45; }

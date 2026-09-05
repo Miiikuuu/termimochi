@@ -26,6 +26,7 @@ x11.XFlush.argtypes = [c.c_void_p]
 x11.XRaiseWindow.argtypes = [c.c_void_p, window_t]
 x11.XSetInputFocus.argtypes = [c.c_void_p, window_t, c.c_int, c.c_ulong]
 x11.XTranslateCoordinates.argtypes = [c.c_void_p, window_t, window_t, c.c_int, c.c_int, c.POINTER(c.c_int), c.POINTER(c.c_int), c.POINTER(window_t)]
+x11.XGetGeometry.argtypes = [c.c_void_p, window_t, c.POINTER(window_t), c.POINTER(c.c_int), c.POINTER(c.c_int), c.POINTER(c.c_uint), c.POINTER(c.c_uint), c.POINTER(c.c_uint), c.POINTER(c.c_uint)]
 xtst.XTestFakeMotionEvent.argtypes = [c.c_void_p, c.c_int, c.c_int, c.c_int, c.c_ulong]
 xtst.XTestFakeButtonEvent.argtypes = [c.c_void_p, c.c_uint, c.c_int, c.c_ulong]
 xtst.XTestFakeKeyEvent.argtypes = [c.c_void_p, c.c_uint, c.c_int, c.c_ulong]
@@ -75,10 +76,20 @@ def button(down):
 
 
 move(px, py)
-if mode == "hover":
+if mode == "jitter":
+    # Stay inside the same glyph while exercising real motion/crossing events.
+    for offset in (1, -1, 2, -2, 1, 0) * 4:
+        move(px + offset, py + offset)
+    sys.exit(0)
+if mode in ("hover", "capture"):
     time.sleep(0.15)
     if path := os.environ.get("TERMIMOCHI_INSPECT_SCREENSHOT"):
-        subprocess.run(["gst-launch-1.0", "-q", "ximagesrc", f"xid={w}", "num-buffers=1", "!", "videoconvert", "!", "pngenc", "!", "filesink", f"location={path}"], check=True, timeout=5)
+        # Capture the named test window's on-screen bounds, including native
+        # popover surfaces. Capturing its backing pixmap misses those menus.
+        geom_root, gx, gy = window_t(), c.c_int(), c.c_int()
+        width, height, border, depth = (c.c_uint() for _ in range(4))
+        assert x11.XGetGeometry(d, w, c.byref(geom_root), c.byref(gx), c.byref(gy), c.byref(width), c.byref(height), c.byref(border), c.byref(depth))
+        subprocess.run(["gst-launch-1.0", "-q", "ximagesrc", f"startx={ox.value}", f"starty={oy.value}", f"endx={ox.value + width.value - 1}", f"endy={oy.value + height.value - 1}", "show-pointer=false", "num-buffers=1", "!", "videoconvert", "!", "pngenc", "!", "filesink", f"location={path}"], check=True, timeout=5)
     sys.exit(0)
 button(True)
 if mode == "drag":

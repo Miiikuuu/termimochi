@@ -32,6 +32,7 @@ pub(crate) enum PreviewTarget {
     Padding,
     TabBar,
     Prompt,
+    PromptCopy,
     PromptSegment(PromptSegmentKind),
     PromptCharacter,
 }
@@ -48,6 +49,7 @@ impl PreviewTarget {
             Self::Padding => "Layout · Content Padding".into(),
             Self::TabBar => "Layout · Tab Bar".into(),
             Self::Prompt => "Prompt · Your Starship (read-only)".into(),
+            Self::PromptCopy => "Prompt · Your Starship".into(),
             Self::PromptSegment(kind) => format!("Prompt · {} Accent", kind.label()),
             Self::PromptCharacter => "Prompt · Character".into(),
         }

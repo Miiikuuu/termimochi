@@ -1,12 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Adapted from GNOME Icon Development Kit's terminal icon.
-  Original design by Jakub Steiner, released under CC0 1.0.
--->
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+<!-- TermiMochi prompt: command prefix, text baseline and insertion cursor. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
   <g fill="#2e3436">
-    <path fill-rule="evenodd" d="M4 1h8a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4H4a4 4 0 0 1-4-4V5a4 4 0 0 1 4-4Zm0 2a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H4Z"/>
-    <path d="M4 4a1 1 0 0 0-.66 1.75L5.84 8l-2.5 2.25a1 1 0 1 0 1.34 1.5l3.33-3a1 1 0 0 0 0-1.5l-3.33-3A1 1 0 0 0 4 4Z"/>
-    <rect x="9" y="10.5" width="3.5" height="2" rx="1"/>
+    <path d="M4.636 6.364 9.636 11.364a.9.9 0 0 1 0 1.272l-5 5a.9.9 0 0 1-1.272-1.272L7.727 12 3.364 7.636a.9.9 0 0 1 1.272-1.272Z"/>
+    <rect x="11.1" y="16.1" width="4.8" height="1.8" rx=".9"/>
+    <rect x="16.1" y="5.1" width="5.8" height="1.8" rx=".9"/>
+    <path d="M18.1 6h1.8v12h-1.8z"/>
+    <rect x="16.1" y="17.1" width="5.8" height="1.8" rx=".9"/>
   </g>
 </svg>

@@ -36,7 +36,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Inspection preserves the scene and local input; dragging and double-clicking
   still select text normally. Blank/unrecognized areas do not navigate or
   implicitly select Background. Turn Inspect off, or press Escape in the
-  preview, to return to ordinary interaction. Imported Starship prompts remain read-only.
+  preview, to return to ordinary interaction. Inspection never writes configuration files.
 - Ordered Starship prompt builder with a categorized module library for
   context, Git, Rust, Node.js, Python, Go and runtime state. Essential,
   Developer, Remote and Blank are starting points rather than locked
@@ -50,6 +50,25 @@ that looks balanced elsewhere can therefore become almost unreadable.
 - Read-only import of your existing Starship prompt, preserving its format,
   custom color palette, symbols and multiline structure. Your Starship and
   Designer are separate modes; importing never overwrites the original file.
+- **Your Starship** opens your existing configuration directly in a shared editor for
+  15 reviewed modules: languages, Git, directory, user/host, prompt symbols,
+  Conda and runtime state. Choose the module and, where applicable, its symbol
+  or style field; edit text, color, bold, format and visibility. Language modules
+  also offer version layouts and sandboxed Rust/Node.js/Python/Go samples.
+  Cross-module undo/redo and module-only reset are included. Edits stay in memory
+  until saved; other modules and comments are retained. **Save Changes** confirms
+  writing back and creates a private backup first. **Save As** saves separately;
+  **Restore Previous Version** backs up the current file before restoring.
+  External changes block writing back. Shell startup files are never changed.
+- Selecting a module or field adds a **simulated command and its complete prompt**:
+  enter a language project, stage Git changes, or show a failed command.
+  Edits update that prompt in place; recent command lines remain visible.
+  Context uses example values, and omitted modules are included for preview only.
+  Displayed commands are never executed and the simulation never enters the export.
+- Prompt glyph checks in the diagnostics report: missing characters and
+  private-use icons relying on font fallback are distinguished, with direct
+  **Fonts** and module-aware **Edit** actions. Ordinary supported CJK/emoji fallback is
+  not flagged as an incompatibility.
 - Embedded multi-resolution application icon and Linux desktop metadata.
 - Atomic open, save and save-as workflows.
 - One-click Ptyxis installation with backup, change detection and rollback.
@@ -89,7 +108,11 @@ previous command status and timing are unavailable. Sample scenarios provide
 repeatable success, failure, SSH and alignment checks in Designer.
 
 Your Starship reads `STARSHIP_CONFIG`, or `starship.toml` in the user's XDG
-configuration directory (normally `~/.config`). Reload Starship rereads it.
+configuration directory (normally `~/.config`). **Reload from Disk** rereads it,
+with confirmation before discarding unsaved edits. In Prompt, `Ctrl+S` opens the
+save confirmation and `Ctrl+Shift+S` opens Save As. Backups are kept beside the
+resolved configuration as `.NAME.termimochi-backup-TIMESTAMP-RANDOM.bak`, with
+owner-only permissions; Restore Previous Version also works after restarting.
 The installed Starship renderer runs asynchronously with a read-only filesystem,
 isolated temporary cache and no network. Only reviewed built-in modules and
 declarative options are passed through; custom commands, unreviewed modules,

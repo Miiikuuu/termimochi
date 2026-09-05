@@ -65,7 +65,7 @@ pub const BASE_CSS: &str = r#"
 .workbench-header button.tool-button:focus-visible,
 .workbench-header menubutton.tool-menu > button:focus-visible,
 .variant-switch button:focus-visible {
-  outline: 2px solid #42657a;
+  outline: 2px solid #505b63;
   outline-offset: 1px;
 }
 
@@ -87,20 +87,20 @@ pub const BASE_CSS: &str = r#"
 }
 
 .workbench-header menubutton.save-menu.save-ready > button {
-  color: #345c72;
+  color: #303940;
 }
 
 .workbench-header menubutton.save-menu.save-ready > button:hover {
-  background: alpha(#42657a, 0.10);
+  background: alpha(#505b63, 0.10);
 }
 
 .workbench-header menubutton.save-menu.save-ready > button:active {
-  background: alpha(#42657a, 0.17);
+  background: alpha(#505b63, 0.17);
 }
 
 .workbench-header menubutton.save-menu.save-ready > button:checked {
-  color: #345c72;
-  background: #e8f0f4;
+  color: #303940;
+  background: #e9edef;
 }
 
 popover.save-popover > contents {
@@ -226,7 +226,7 @@ button.activity-button:checked:hover {
 }
 
 button.activity-button:focus-visible {
-  outline: 2px solid #42657a;
+  outline: 2px solid #505b63;
   outline-offset: -2px;
 }
 
@@ -235,7 +235,7 @@ button.activity-button:focus-visible {
   min-height: 20px;
   margin-left: 2px;
   border-radius: 999px;
-  background: #42657a;
+  background: #505b63;
 }
 
 .preview-scroll,
@@ -331,7 +331,7 @@ button.palette-swatch:hover {
 }
 
 button.palette-swatch:focus-visible {
-  outline: 2px solid #42657a;
+  outline: 2px solid #505b63;
   outline-offset: 1px;
 }
 
@@ -378,8 +378,8 @@ button.palette-swatch:checked .swatch-pin {
 
 .professional-picker entry:focus,
 .palette-name-entry:focus {
-  border-color: #42657a;
-  box-shadow: 0 0 0 1px #42657a;
+  border-color: #505b63;
+  box-shadow: 0 0 0 1px #505b63;
 }
 
 .professional-picker entry.error,
@@ -403,12 +403,12 @@ button.palette-swatch:checked .swatch-pin {
 }
 
 .picker-square:focus {
-  outline: 2px solid #42657a;
+  outline: 2px solid #505b63;
   outline-offset: 2px;
 }
 
 scale.picker-hue-scale:focus {
-  outline: 2px solid #42657a;
+  outline: 2px solid #505b63;
   outline-offset: 1px;
   border-radius: 4px;
 }
@@ -453,7 +453,7 @@ scale.picker-hue-scale slider {
 .terminal-shell.preview-active {
   box-shadow: 0 3px 8px alpha(#0f1720, 0.18),
               0 18px 42px alpha(#0f1720, 0.15),
-              0 0 18px alpha(#42657a, 0.16);
+              0 0 18px alpha(#505b63, 0.16);
 }
 
 .vte-preview {
@@ -499,7 +499,7 @@ scale.picker-hue-scale slider {
 }
 
 .vte-preview:focus-visible {
-  outline: 2px solid #42657a;
+  outline: 2px solid #505b63;
   outline-offset: -2px;
 }
 
@@ -533,7 +533,7 @@ dropdown.preview-scenario button:hover {
 }
 
 dropdown.preview-scenario button:focus-visible {
-  outline: 2px solid #42657a;
+  outline: 2px solid #505b63;
   outline-offset: 1px;
 }
 
@@ -571,7 +571,7 @@ dropdown.preview-scenario button:focus-visible {
   padding: 3px 0 2px;
 }
 
-button.prompt-export {
+menubutton.prompt-export > button {
   min-height: 28px;
   padding: 2px 10px;
   border: none;
@@ -583,16 +583,16 @@ button.prompt-export {
   font-weight: 700;
 }
 
-button.prompt-export:hover {
+menubutton.prompt-export > button:hover {
   background: #30383e;
 }
 
-button.prompt-export:active {
+menubutton.prompt-export > button:active {
   background: #141a20;
 }
 
-button.prompt-export:focus-visible {
-  outline: 2px solid #42657a;
+menubutton.prompt-export > button:focus-visible {
+  outline: 2px solid #505b63;
   outline-offset: 2px;
 }
 
@@ -634,7 +634,7 @@ menubutton.prompt-module-more > button:focus-visible,
 button.prompt-module-select:focus-visible,
 button.prompt-menu-item:focus-visible,
 button.prompt-catalog-item:focus-visible {
-  outline: 2px solid #42657a;
+  outline: 2px solid #505b63;
   outline-offset: 1px;
 }
 
@@ -828,7 +828,7 @@ dropdown.prompt-property-control > button:hover {
 }
 
 dropdown.prompt-property-control > button:focus-visible {
-  outline: 2px solid #42657a;
+  outline: 2px solid #505b63;
   outline-offset: 1px;
 }
 
@@ -964,7 +964,7 @@ switch.layout-switch:checked:hover {
 }
 
 switch.layout-switch:focus-visible {
-  outline: 2px solid #42657a;
+  outline: 2px solid #505b63;
   outline-offset: 1px;
 }
 
@@ -990,7 +990,7 @@ spinbutton.typography-control:hover {
 
 dropdown.typography-control > button:focus-visible,
 spinbutton.typography-control:focus-within {
-  outline: 2px solid #42657a;
+  outline: 2px solid #505b63;
   outline-offset: 1px;
 }
 
@@ -1149,6 +1149,25 @@ spinbutton.typography-control button:hover {
   font-weight: 600;
 }
 
+.diagnostic-action {
+  min-height: 22px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+  background: alpha(#526b73, 0.09);
+  color: #34464e;
+  font-size: 0.78rem;
+}
+
+.diagnostic-action:hover {
+  background: alpha(#526b73, 0.17);
+}
+
+.status-note {
+  color: #526b73;
+}
+
 .diagnostic-value {
   font-size: 0.82rem;
   font-weight: 700;
@@ -1165,3 +1184,73 @@ spinbutton.typography-control button:hover {
 }
 
 "#;
+
+// GTK 4.16+ / libadwaita 1.6+ use variables for native control accents.
+// Older supported GTK versions receive named colors and explicit widget CSS.
+const MODERN_CHROME: &str = r#"
+:root {
+  --accent-bg-color: #343b41;
+  --accent-fg-color: #ffffff;
+  --accent-color: #343b41;
+}
+.editor-workspace {
+  --accent-bg-color: #343b41;
+  --accent-fg-color: #ffffff;
+  --accent-color: #343b41;
+  --window-bg-color: #ffffff;
+  --window-fg-color: #252b31;
+  --view-bg-color: #f4f5f6;
+  --view-fg-color: #252b31;
+  --popover-bg-color: #ffffff;
+  --popover-fg-color: #252b31;
+  --card-bg-color: #f4f5f6;
+  --card-fg-color: #252b31;
+  --scrollbar-outline-color: #ffffff;
+  --error-color: #a33c47;
+}
+"#;
+
+pub fn chrome_css(modern: bool) -> String {
+    [
+        BASE_CSS,
+        include_str!("chrome.css"),
+        if modern { MODERN_CHROME } else { "" },
+    ]
+    .concat()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+    use termimochi_core::{Rgb, contrast_ratio};
+
+    fn editor_color(name: &str) -> Rgb {
+        let prefix = format!("@define-color {name} ");
+        let value = include_str!("chrome.css")
+            .lines()
+            .find_map(|line| line.strip_prefix(&prefix))
+            .unwrap()
+            .trim_end_matches(';');
+        Rgb::from_str(value).unwrap()
+    }
+
+    #[test]
+    fn chrome_text_has_contrast_on_light_surfaces() {
+        for surface in ["editor_bg", "editor_rail", "editor_field", "editor_hover"] {
+            for text in ["editor_fg", "editor_muted", "editor_dim"] {
+                let ratio = contrast_ratio(editor_color(text), editor_color(surface));
+                assert!(ratio >= 4.5, "{text} on {surface}: {ratio}");
+            }
+        }
+        assert_eq!(editor_color("editor_bg"), Rgb::from_str("#ffffff").unwrap());
+    }
+
+    #[test]
+    fn modern_accents_have_an_explicit_legacy_fallback() {
+        assert!(chrome_css(true).contains("--accent-bg-color: #343b41"));
+        assert!(chrome_css(false).contains("@define-color accent_bg_color #343b41"));
+        assert!(!chrome_css(false).contains("--accent-bg-color"));
+        assert!(!include_str!("chrome.css").contains(".vte-preview"));
+    }
+}

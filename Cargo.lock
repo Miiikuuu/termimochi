@@ -738,6 +738,7 @@ dependencies = [
  "tempfile",
  "termimochi-core",
  "toml",
+ "toml_edit",
  "unicode-segmentation",
  "vte4",
 ]
@@ -787,6 +788,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

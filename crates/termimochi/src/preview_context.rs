@@ -90,6 +90,7 @@ impl CurrentPreviewContext {
             directory,
             imported_prompt: ImportedPrompt {
                 path: PathBuf::new(),
+                source: None,
                 ansi: None,
                 detail: "Folder unavailable; Starship was not run.".to_owned(),
             },
@@ -213,7 +214,7 @@ fn display_path(path: &Path, home: &Path) -> String {
     sanitized_text(&value)
 }
 
-fn display_text(value: &str, limit: usize) -> String {
+pub(crate) fn display_text(value: &str, limit: usize) -> String {
     let sanitized = sanitized_text(value);
     let mut characters = sanitized.chars();
     let mut result: String = characters.by_ref().take(limit).collect();
