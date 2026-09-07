@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub(crate) const STARSHIP_FILE_NAME: &str = "starship.toml";
@@ -8,7 +9,8 @@ const BRANCH_GRAPHEME_LIMIT: usize = 24;
 // Starship takes only the first grapheme of git_branch.truncation_symbol.
 const BRANCH_TRUNCATION_SYMBOL: &str = ".";
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum PromptSegmentKind {
     Username,
     Hostname,
@@ -187,7 +189,8 @@ impl PromptSegmentKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum PromptPreset {
     Essential,
     #[default]
@@ -311,14 +314,16 @@ impl PromptPreset {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PromptSegment {
     pub(crate) kind: PromptSegmentKind,
     pub(crate) enabled: bool,
     pub(crate) tone: PreviewTone,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PromptSettings {
     source_preset: Option<PromptPreset>,
     segments: Vec<PromptSegment>,
@@ -335,6 +340,16 @@ impl Default for PromptSettings {
 }
 
 impl PromptSettings {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        let kinds: std::collections::HashSet<_> =
+            self.segments.iter().map(|segment| segment.kind).collect();
+        if self.segments.len() != PromptSegmentKind::ALL.len()
+            || kinds.len() != PromptSegmentKind::ALL.len()
+        {
+            return Err("Prompt modules must contain each supported module exactly once.".into());
+        }
+        Ok(())
+    }
     pub(crate) fn from_preset(preset: PromptPreset) -> Self {
         let segments = preset
             .segment_order()
@@ -788,7 +803,8 @@ impl PromptSettings {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum PromptLayout {
     SingleLine,
     TwoLine,
@@ -819,7 +835,8 @@ impl PromptLayout {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum PromptHostnameMode {
     Always,
     SshOnly,
@@ -850,7 +867,8 @@ impl PromptHostnameMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum PreviewTone {
     Cyan,
     Blue,
@@ -934,7 +952,8 @@ impl PreviewTone {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum PromptCharacter {
     Chevron,
     Arrow,

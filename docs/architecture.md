@@ -300,9 +300,51 @@ and rechecks settings after confirmation. Desktop font, palette and shell startu
 files are never written. Backend tests use their own schemas and a memory backend,
 never the user's dconf database; GTK tests save only into temporary directories.
 
-Layout controls remain preview-only: they adjust the VTE
-grid, cursor and scrollback chrome plus the GTK preview spacing without marking
-the palette document as modified.
+Layout is a separate document with its own baseline and Undo/Redo. Save Preset
+and Ctrl+S on Layout persist all eight fields to
+`layout.termimochi-layout.json` beside the typography preset; startup restores
+it without marking the palette as modified. Open/export use the same suffix.
+`document_store.rs` validates versioned documents before use, bounds input to
+1 MiB, rejects symlinks/hard links and foreign destinations, detects external
+edits and writes atomically with private backups.
+
+`layout_apply.rs` only writes six global Ptyxis keys: `cursor-shape`,
+`cursor-blink-mode`, `scrollbar-policy`, `default-columns`, `default-rows` and
+`restore-window-size`. The confirmation discloses that these affect all
+profiles, and disables remembered sizing so the chosen grid controls new
+windows. Existing windows are not resized. Exact pixel padding, tab-bar
+visibility and preview-window spacing are saved but not applied; native Ptyxis
+does not expose equivalent settings for these controls. Typography, palette,
+desktop and shell settings are untouched. One delayed GSettings batch is
+verified after application; a separate layout receipt preserves unset values,
+allows rollback after restart, and refuses conflicting external changes.
+Tests use isolated schemas and an in-memory settings backend.
+
+`workspace.rs` defines portable `.termimochi.json` complete setups. The common
+save menu exposes Open Workspace, Save Workspace and Save Workspace As on
+every module. A workspace contains the entire palette and active variant,
+typography, layout, ordered Designer modules (including disabled modules),
+lossless imported Starship text, and the active prompt source. It contains no
+file destinations, profile IDs or terminal deployment actions. Whole-document
+validation precedes all UI mutations. Imported Starship data reopens detached
+from local files; Save routes to separate export and native reload/restore are
+disabled. Missing imported content stays absent instead of being replaced by
+asynchronous discovery of the host configuration. Preview rendering uses the
+existing restricted renderer: custom commands are preserved as text, not run.
+
+A complete workspace savepoint covers all four modules for close warnings,
+without pretending any module's standalone file or actual terminal settings
+were saved. Module shortcuts retain their contextual behavior. Workspace
+files are opened explicitly, while typography/layout presets restore at launch.
+The opt-in `layout_and_workspace_save_restore_and_safety` GTK/VTE test covers
+contextual actions, live cursor settings, module history isolation, restart,
+cancelled apply/discard, external conflicts, atomic validation, detached
+Starship and asynchronous startup recovery. Run separately on 1x and 2x:
+
+```bash
+GDK_SCALE=1 cargo test -p termimochi layout_and_workspace_save_restore_and_safety -- \
+  --ignored --test-threads=1
+```
 
 Prompt composition is a separate in-memory document with its own Undo/Redo
 history. The same VTE renders current-folder or sample contexts for an ordered

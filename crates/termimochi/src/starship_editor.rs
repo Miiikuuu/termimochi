@@ -45,6 +45,7 @@ pub(crate) struct StarshipEditor {
     updating: Cell<bool>,
     changed: RefCell<Option<Changed>>,
     document: Cell<u64>,
+    pub(crate) detached: Cell<bool>,
 }
 
 impl StarshipEditor {
@@ -219,6 +220,7 @@ impl StarshipEditor {
             invalid: Cell::new(false),
             changed: RefCell::new(None),
             document: Cell::new(0),
+            detached: Cell::new(false),
         });
         Self::connect(&this);
         this
@@ -350,9 +352,25 @@ impl StarshipEditor {
     }
     pub(crate) fn begin(&self, path: PathBuf, source: String) -> Result<(), String> {
         let draft = StarshipDraft::new(path.clone(), source.clone())?;
+        self.detached.set(false);
         *self.file.borrow_mut() = crate::starship_file::FileSnapshot::bind(&path, &source);
         self.document.set(self.document.get().wrapping_add(1));
         *self.draft.borrow_mut() = Some(draft);
+        self.invalid.set(false);
+        self.refresh();
+        self.notify();
+        Ok(())
+    }
+    /// Workspace data is never bound to a file on this machine.
+    pub(crate) fn begin_detached(&self, source: Option<String>) -> Result<(), String> {
+        let draft = source
+            .map(|source| StarshipDraft::new("workspace-starship.toml".into(), source))
+            .transpose()?;
+        *self.file.borrow_mut() =
+            Err("This prompt belongs to a workspace. Use Save As to export it.".into());
+        self.detached.set(true);
+        self.document.set(self.document.get().wrapping_add(1));
+        *self.draft.borrow_mut() = draft;
         self.invalid.set(false);
         self.refresh();
         self.notify();

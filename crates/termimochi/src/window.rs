@@ -15,13 +15,17 @@ use termimochi_core::{
 };
 use vte::prelude::*;
 
+mod documents;
+
 use crate::{
     color_picker::{ColorPicker, ColorSwatch, scroll_parent_vertically},
+    document_store::{self, Document, DocumentStore},
     layout::{
-        DEFAULT_CONTENT_PADDING, LayoutSettings, MAX_COLUMNS, MAX_CONTENT_PADDING, MAX_ROWS,
-        MAX_WINDOW_SPACING, MIN_COLUMNS, MIN_CONTENT_PADDING, MIN_ROWS, MIN_WINDOW_SPACING,
-        PreviewCursorBlink, PreviewCursorShape,
+        DEFAULT_CONTENT_PADDING, LayoutPreset, LayoutSettings, MAX_COLUMNS, MAX_CONTENT_PADDING,
+        MAX_ROWS, MAX_WINDOW_SPACING, MIN_COLUMNS, MIN_CONTENT_PADDING, MIN_ROWS,
+        MIN_WINDOW_SPACING, PreviewCursorBlink, PreviewCursorShape,
     },
+    layout_apply,
     preview::{
         PREVIEW_COLUMNS, PREVIEW_HOME_AND_CLEAR, PREVIEW_INPUT_PROMPT, PREVIEW_ROWS,
         PREVIEW_SHOW_CURSOR, PreviewInput, PreviewInputEvent, PreviewScenario,
@@ -45,6 +49,7 @@ use crate::{
     },
     typography_apply::{RestoreRequest, TypographyTarget},
     typography_preset::{self, PresetStore},
+    workspace::Workspace,
 };
 
 const SAMPLE_PALETTE: &str = include_str!("../resources/themes/fog-paper.palette");
@@ -154,6 +159,12 @@ impl HistorySnapshot for PromptSettings {
 }
 
 impl HistorySnapshot for TypographySettings {
+    type Context = ();
+    fn context(&self) -> Self::Context {}
+    fn set_context(&mut self, (): Self::Context) {}
+}
+
+impl HistorySnapshot for LayoutSettings {
     type Context = ();
     fn context(&self) -> Self::Context {}
     fn set_context(&mut self, (): Self::Context) {}
@@ -304,11 +315,13 @@ struct Workbench {
     open_button: gtk::Button,
     save_menu: gio::Menu,
     typography_save_menu: gio::Menu,
+    layout_save_menu: gio::Menu,
     save_action: gio::SimpleAction,
     undo_action: gio::SimpleAction,
     redo_action: gio::SimpleAction,
     palette_module_button: gtk::ToggleButton,
     typography_module_button: gtk::ToggleButton,
+    layout_module_button: gtk::ToggleButton,
     prompt_module_button: gtk::ToggleButton,
     install_action: gio::SimpleAction,
     rollback_action: gio::SimpleAction,
@@ -351,6 +364,15 @@ struct Workbench {
     last_typography: RefCell<TypographySettings>,
     typography_history: RefCell<EditHistory<TypographySettings>>,
     typography_has_saved: Cell<bool>,
+    layout_status: gtk::Label,
+    layout_store: RefCell<Option<DocumentStore<LayoutPreset>>>,
+    layout_baseline: Cell<LayoutSettings>,
+    last_layout: Cell<LayoutSettings>,
+    layout_history: RefCell<EditHistory<LayoutSettings>>,
+    layout_has_saved: Cell<bool>,
+    workspace_store: RefCell<Option<DocumentStore<Workspace>>>,
+    workspace_baseline: RefCell<Option<Workspace>>,
+    workspace_prompt_loaded: Cell<bool>,
     content_padding_input: gtk::SpinButton,
     column_count_input: gtk::SpinButton,
     row_count_input: gtk::SpinButton,
@@ -477,6 +499,15 @@ fn present_with_preset(
     initial_path: Option<PathBuf>,
     preset_path: PathBuf,
 ) {
+    let initial_workspace = initial_path
+        .as_ref()
+        .filter(|path| document_store::matches_path::<Workspace>(path))
+        .cloned();
+    let initial_path = initial_path.filter(|_| initial_workspace.is_none());
+    let layout_path = preset_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("layout.termimochi-layout.json");
     let mut appearance = import_current_appearance();
     let (palette, current_path, source_label, preferred_variant, startup_notice) =
         if let Some(path) = initial_path.as_deref() {
@@ -535,6 +566,21 @@ fn present_with_preset(
         Variant::Dark
     };
     let mut initial_typography = appearance.typography.clone();
+    let mut layout_notice = None;
+    let layout_store = match DocumentStore::<LayoutPreset>::open(layout_path) {
+        Ok(store) => Some(store),
+        Err(error) => {
+            layout_notice = Some(format!("Saved layout unavailable: {error}"));
+            None
+        }
+    };
+    let saved_layout = layout_store
+        .as_ref()
+        .and_then(|store| store.document().ok().flatten());
+    let initial_layout = saved_layout
+        .as_ref()
+        .map(|preset| preset.layout)
+        .unwrap_or(appearance.layout);
     let mut typography_notice = None;
     let typography_store = match PresetStore::open(preset_path) {
         Ok(store) => Some(store),
@@ -692,6 +738,24 @@ fn present_with_preset(
     );
     typography_save_menu.append_section(None, &typography_deploy_menu);
 
+    let layout_save_menu = gio::Menu::new();
+    for (label, action) in [
+        ("Save Layout Preset", "save-layout"),
+        ("Export Layout Preset…", "export-layout"),
+        ("Reload Saved Layout…", "reload-layout"),
+        ("Apply Layout to Ptyxis…", "apply-layout"),
+        ("Restore Previous Layout…", "restore-layout"),
+    ] {
+        layout_save_menu.append(Some(label), Some(&format!("win.{action}")));
+    }
+    let workspace_menu = gio::Menu::new();
+    workspace_menu.append(Some("Open Workspace…"), Some("win.open-workspace"));
+    workspace_menu.append(Some("Save Workspace"), Some("win.save-workspace"));
+    workspace_menu.append(Some("Save Workspace As…"), Some("win.save-workspace-as"));
+    for menu in [&save_menu, &typography_save_menu, &layout_save_menu] {
+        menu.append_section(Some("Complete Setup"), &workspace_menu);
+    }
+
     let save_button = gtk::MenuButton::builder()
         .icon_name("termimochi-save-symbolic")
         .tooltip_text("Save and export options")
@@ -705,7 +769,7 @@ fn present_with_preset(
     save_button.update_property(&[
         gtk::accessible::Property::Label("Save and Export"),
         gtk::accessible::Property::Description(
-            "Open options to save, save as, or export the current theme",
+            "Save or export the current module, or open and save a complete workspace",
         ),
     ]);
 
@@ -757,7 +821,7 @@ fn present_with_preset(
     let preview = build_preview(&variant_switch, &initial_typography);
     let editor = build_editor();
     let typography = build_typography_editor(&preview.terminal, &initial_typography);
-    let layout = build_layout_editor(&appearance.layout);
+    let layout = build_layout_editor(&initial_layout);
     let initial_prompt = PromptSettings::default();
     let prompt = build_prompt_editor(&initial_prompt);
     let editor_workspace =
@@ -795,11 +859,13 @@ fn present_with_preset(
         open_button: open_button.clone(),
         save_menu,
         typography_save_menu,
+        layout_save_menu,
         save_action,
         undo_action,
         redo_action,
         palette_module_button: editor_workspace.palette_button.clone(),
         typography_module_button: editor_workspace.typography_button.clone(),
+        layout_module_button: editor_workspace.layout_button.clone(),
         prompt_module_button: editor_workspace.prompt_button.clone(),
         install_action,
         rollback_action,
@@ -842,6 +908,15 @@ fn present_with_preset(
         last_typography: RefCell::new(initial_typography.clone()),
         typography_history: RefCell::new(EditHistory::new(EDIT_HISTORY_LIMIT)),
         typography_has_saved: Cell::new(typography_has_saved),
+        layout_status: layout.status,
+        layout_store: RefCell::new(layout_store),
+        layout_baseline: Cell::new(initial_layout),
+        last_layout: Cell::new(initial_layout),
+        layout_history: RefCell::new(EditHistory::new(EDIT_HISTORY_LIMIT)),
+        layout_has_saved: Cell::new(saved_layout.is_some()),
+        workspace_store: RefCell::new(None),
+        workspace_baseline: RefCell::new(None),
+        workspace_prompt_loaded: Cell::new(false),
         content_padding_input: layout.content_padding_input,
         column_count_input: layout.column_count_input,
         row_count_input: layout.row_count_input,
@@ -959,6 +1034,12 @@ fn present_with_preset(
     if let Some(notice) = typography_notice {
         workbench.toast(&notice);
     }
+    if let Some(notice) = layout_notice {
+        workbench.toast(&notice);
+    }
+    if let Some(path) = initial_workspace {
+        workbench.open_workspace_path(&path);
+    }
     // The window owns the controller. The controller only keeps a weak window
     // reference, so closing the window releases the complete object graph.
     unsafe {
@@ -1032,6 +1113,7 @@ struct LayoutWidgets {
     tab_bar_switch: gtk::Switch,
     scrollbar_switch: gtk::Switch,
     window_spacing_input: gtk::SpinButton,
+    status: gtk::Label,
 }
 
 struct PromptWidgets {
@@ -1539,6 +1621,31 @@ fn build_layout_editor(defaults: &LayoutSettings) -> LayoutWidgets {
         ],
     ));
 
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    for (label, action) in [
+        ("Save Preset", "win.save-layout"),
+        ("Apply to Ptyxis…", "win.apply-layout"),
+    ] {
+        let button = gtk::Button::with_label(label);
+        button.add_css_class("pill");
+        button.set_action_name(Some(action));
+        actions.append(&button);
+    }
+    content.append(&actions);
+    let status = gtk::Label::new(Some("Preview only · not saved"));
+    status.set_xalign(0.0);
+    status.set_wrap(true);
+    status.add_css_class("nerd-status-label");
+    content.append(&status);
+    content_padding_input.set_tooltip_text(Some(
+        "Exact padding is saved with the preset but is preview-only in Ptyxis",
+    ));
+    tab_bar_switch.set_tooltip_text(Some(
+        "Saved preview setting; Ptyxis manages tab bar visibility itself",
+    ));
+    window_spacing_input
+        .set_tooltip_text(Some("Saved preview setting, not a Ptyxis window setting"));
+
     // Preserve deliberate numeric values while letting wheel and touchpad
     // gestures move the module, matching the Typography editor behavior.
     let layout_scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
@@ -1567,6 +1674,7 @@ fn build_layout_editor(defaults: &LayoutSettings) -> LayoutWidgets {
         tab_bar_switch,
         scrollbar_switch,
         window_spacing_input,
+        status,
     }
 }
 
@@ -3175,6 +3283,13 @@ impl Workbench {
 
     fn refresh_history_actions(&self) {
         self.refresh_prompt_save_actions();
+        self.refresh_workspace_title();
+        if self.layout_module_button.is_active() {
+            let history = self.layout_history.borrow();
+            self.undo_action.set_enabled(history.can_undo());
+            self.redo_action.set_enabled(history.can_redo());
+            return;
+        }
         if self.typography_module_button.is_active() {
             let history = self.typography_history.borrow();
             self.undo_action.set_enabled(history.can_undo());
@@ -3196,8 +3311,7 @@ impl Workbench {
             return;
         }
         if !self.palette_module_button.is_active() {
-            // Layout remains preview-only. Avoid letting Undo/Redo
-            // silently mutate the hidden Palette or Prompt module.
+            // Avoid mutating a hidden module during activity transitions.
             self.undo_action.set_enabled(false);
             self.redo_action.set_enabled(false);
             return;
@@ -3211,6 +3325,17 @@ impl Workbench {
     }
 
     fn undo_edit(&self) {
+        if self.layout_module_button.is_active() {
+            let target = self
+                .layout_history
+                .borrow_mut()
+                .undo(self.layout_settings());
+            if let Some(settings) = target {
+                self.set_layout_settings(settings, false);
+            }
+            self.refresh_history_actions();
+            return;
+        }
         if self.typography_module_button.is_active() {
             let target = self
                 .typography_history
@@ -3257,6 +3382,17 @@ impl Workbench {
     }
 
     fn redo_edit(&self) {
+        if self.layout_module_button.is_active() {
+            let target = self
+                .layout_history
+                .borrow_mut()
+                .redo(self.layout_settings());
+            if let Some(settings) = target {
+                self.set_layout_settings(settings, false);
+            }
+            self.refresh_history_actions();
+            return;
+        }
         if self.typography_module_button.is_active() {
             let target = self
                 .typography_history
@@ -3536,6 +3672,35 @@ impl Workbench {
         window.add_action(&save_as);
 
         for (name, operation) in [
+            ("save-layout", 0),
+            ("export-layout", 1),
+            ("reload-layout", 2),
+            ("apply-layout", 3),
+            ("restore-layout", 4),
+            ("open-workspace", 5),
+            ("save-workspace", 6),
+            ("save-workspace-as", 7),
+        ] {
+            let action = gio::SimpleAction::new(name, None);
+            let weak = Rc::downgrade(this);
+            action.connect_activate(move |_, _| {
+                if let Some(this) = weak.upgrade() {
+                    match operation {
+                        0 => this.save_layout_preset(),
+                        1 => this.choose_layout_export(),
+                        2 => this.reload_layout_preset(),
+                        3 => this.request_layout_apply(),
+                        4 => this.request_layout_restore(),
+                        5 => this.choose_workspace_open(),
+                        6 => this.save_workspace(),
+                        _ => this.choose_workspace_save_as(),
+                    }
+                }
+            });
+            window.add_action(&action);
+        }
+
+        for (name, operation) in [
             ("save-typography", 0),
             ("export-typography", 1),
             ("apply-typography", 2),
@@ -3591,7 +3756,9 @@ impl Workbench {
         reload_terminal.connect_activate(move |_, _| {
             if let Some(this) = weak.upgrade() {
                 this.confirm_typography_discard(|this| {
-                    this.confirm_discard(|this| this.reload_terminal_appearance())
+                    this.confirm_layout_discard(|this| {
+                        this.confirm_discard(|this| this.reload_terminal_appearance())
+                    })
                 });
             }
         });
@@ -3658,11 +3825,7 @@ impl Workbench {
                 return glib::Propagation::Proceed;
             };
             this.settle_active_edit();
-            if !this.model.borrow().dirty
-                && !this.has_draft()
-                && !this.prompt_has_unexported_changes()
-                && !this.typography_dirty()
-            {
+            if !this.has_unsaved_setup() {
                 return glib::Propagation::Proceed;
             }
             this.confirm_close_discard();
@@ -3679,32 +3842,14 @@ impl Workbench {
             }
         });
 
-        let weak = Rc::downgrade(this);
-        this.typography_module_button
-            .connect_toggled(move |button| {
+        for button in [&this.typography_module_button, &this.layout_module_button] {
+            let weak = Rc::downgrade(this);
+            button.connect_toggled(move |_| {
                 if let Some(this) = weak.upgrade() {
-                    if button.is_active() {
-                        this.save_button
-                            .set_menu_model(Some(&this.typography_save_menu));
-                        this.open_button
-                            .set_tooltip_text(Some("Open a typography preset  Ctrl+O"));
-                        this.open_button
-                            .update_property(&[gtk::accessible::Property::Label(
-                                "Open Typography Preset",
-                            )]);
-                    } else {
-                        this.save_button.set_menu_model(Some(&this.save_menu));
-                        this.open_button
-                            .set_tooltip_text(Some("Open a Ptyxis .palette file  Ctrl+O"));
-                        this.open_button
-                            .update_property(&[gtk::accessible::Property::Label("Open Theme")]);
-                    }
-                    if let Some(popover) = this.save_button.popover() {
-                        popover.add_css_class("save-popover");
-                    }
-                    this.refresh_history_actions();
+                    this.refresh_editor_menus();
                 }
             });
+        }
 
         let weak = Rc::downgrade(this);
         this.prompt_module_button.connect_toggled(move |button| {
@@ -3722,6 +3867,9 @@ impl Workbench {
         this.prompt_source_selector
             .connect_selected_notify(move |_| {
                 if let Some(this) = weak.upgrade() {
+                    if this.updating.get() {
+                        return;
+                    }
                     this.sync_prompt_page();
                     if !this.navigating_preview.get() {
                         if this.prompt_source_selector.selected() == 0 {
@@ -3739,6 +3887,9 @@ impl Workbench {
         let weak = Rc::downgrade(this);
         this.starship_editor.connect_changed(move || {
             if let Some(this) = weak.upgrade() {
+                if this.updating.get() {
+                    return;
+                }
                 this.refresh_history_actions();
                 if !this.navigating_preview.get() {
                     this.activate_prompt_preview(0);
@@ -4505,14 +4656,14 @@ impl Workbench {
             .lookup_action("restore-starship")
             .and_downcast::<gio::SimpleAction>()
         {
-            action.set_enabled(!designer && loaded);
+            action.set_enabled(!designer && loaded && !self.starship_editor.detached.get());
         }
         if let Some(action) = self
             .window()
             .lookup_action("reload-starship")
             .and_downcast::<gio::SimpleAction>()
         {
-            action.set_enabled(!designer);
+            action.set_enabled(!designer && !self.starship_editor.detached.get());
         }
         if let Some(action) = self
             .window()
@@ -4524,7 +4675,14 @@ impl Workbench {
         // Keep the menu available even for invalid fields: Reload and Restore
         // are recovery actions. Individual write actions stay disabled.
         self.prompt_export_button.set_sensitive(true);
-        if self.typography_module_button.is_active() {
+        if self.layout_module_button.is_active() {
+            self.save_action.set_enabled(true);
+            if self.layout_dirty() {
+                self.save_button.add_css_class("save-ready");
+            } else {
+                self.save_button.remove_css_class("save-ready");
+            }
+        } else if self.typography_module_button.is_active() {
             self.save_action.set_enabled(true);
             if self.typography_dirty() {
                 self.save_button.add_css_class("save-ready");
@@ -4557,6 +4715,9 @@ impl Workbench {
     fn ensure_starship_copy(&self) -> bool {
         if self.starship_editor.draft.borrow().is_some() {
             return true;
+        }
+        if self.workspace_prompt_loaded.get() {
+            return false;
         }
         let imported = self
             .current_preview_context
@@ -4710,7 +4871,11 @@ impl Workbench {
             }
             let result = result.map(|(ansi, notices)| {
                 *this.copy_notices.borrow_mut() = notices.clone();
-                let status = "Simulated preview. Save to apply edits.";
+                let status = if this.starship_editor.detached.get() {
+                    "Workspace prompt · Save As to export"
+                } else {
+                    "Simulated preview. Save to apply edits."
+                };
                 this.starship_editor.status.set_text(status);
                 let mut tooltip = scene.as_ref().map_or_else(String::new, |frame| {
                     format!("Current transition: {}.", frame.scene.title)
@@ -5699,7 +5864,7 @@ impl Workbench {
     }
 
     fn confirm_typography_discard(self: &Rc<Self>, action: impl FnOnce(Rc<Self>) + 'static) {
-        if !self.typography_dirty() {
+        if !self.typography_dirty() || self.workspace_is_clean() {
             action(self.clone());
             return;
         }
@@ -5894,6 +6059,13 @@ impl Workbench {
             return;
         }
         let layout = self.layout_settings();
+        if self.last_layout.get() != layout {
+            let mut history = self.layout_history.borrow_mut();
+            history.begin(self.last_layout.get());
+            history.mark_changed();
+            history.commit(layout);
+            self.last_layout.set(layout);
+        }
         self.preview_terminal
             .set_cursor_shape(layout.cursor_shape.vte_shape());
         self.preview_terminal
@@ -5907,6 +6079,23 @@ impl Workbench {
         self.preview_content.set_margin_start(layout.window_spacing);
         self.preview_content.set_margin_end(layout.window_spacing);
         self.refresh_terminal_geometry(&layout);
+        self.layout_status.set_text(
+            if self
+                .workspace_baseline
+                .borrow()
+                .as_ref()
+                .is_some_and(|saved| saved.layout == layout)
+            {
+                "Saved in workspace"
+            } else if self.layout_dirty() {
+                "Unsaved layout changes"
+            } else if self.layout_has_saved.get() {
+                "Preset saved · restored on next launch"
+            } else {
+                "Preview only · not saved"
+            },
+        );
+        self.refresh_history_actions();
     }
 
     fn refresh_typography(&self) {
@@ -5945,13 +6134,22 @@ impl Workbench {
             gtk::accessible::Property::Description(&detail),
         ]);
         self.refresh_all_diagnostics();
-        self.typography_status.set_text(if self.typography_dirty() {
-            "Unsaved typography changes"
-        } else if self.typography_has_saved.get() {
-            "Preset saved · restored on next launch"
-        } else {
-            "Preview only · not saved"
-        });
+        self.typography_status.set_text(
+            if self
+                .workspace_baseline
+                .borrow()
+                .as_ref()
+                .is_some_and(|saved| saved.typography == settings)
+            {
+                "Saved in workspace"
+            } else if self.typography_dirty() {
+                "Unsaved typography changes"
+            } else if self.typography_has_saved.get() {
+                "Preset saved · restored on next launch"
+            } else {
+                "Preview only · not saved"
+            },
+        );
         self.refresh_history_actions();
     }
 
@@ -6358,7 +6556,7 @@ impl Workbench {
     }
 
     fn request_starship_save(self: &Rc<Self>) {
-        if self.prompt_source_selector.selected() == 1 {
+        if self.prompt_source_selector.selected() == 1 || self.starship_editor.detached.get() {
             self.choose_starship_export();
             return;
         }
@@ -6511,6 +6709,10 @@ impl Workbench {
     }
 
     fn reload_starship_from_disk(self: &Rc<Self>) {
+        if self.starship_editor.detached.get() {
+            self.toast("This prompt is stored in a workspace. Reopen that workspace to reload it.");
+            return;
+        }
         let path = self
             .starship_editor
             .draft
@@ -6733,6 +6935,10 @@ impl Workbench {
     }
 
     fn choose_open(self: &Rc<Self>) {
+        if self.layout_module_button.is_active() {
+            self.choose_layout_open();
+            return;
+        }
         if self.typography_module_button.is_active() {
             self.choose_typography_open();
             return;
@@ -6782,7 +6988,7 @@ impl Workbench {
         F: FnOnce(Rc<Self>) + 'static,
     {
         self.settle_active_edit();
-        if !self.model.borrow().dirty && !self.has_draft() {
+        if (!self.model.borrow().dirty && !self.has_draft()) || self.workspace_is_clean() {
             action(Rc::clone(self));
             return;
         }
@@ -6820,39 +7026,13 @@ impl Workbench {
 
     fn confirm_close_discard(self: &Rc<Self>) {
         self.settle_active_edit();
-        let theme_changed = self.model.borrow().dirty || self.has_draft();
-        let prompt_changed = self.prompt_has_unexported_changes();
-        let typography_changed = self.typography_dirty();
-        if !theme_changed && !prompt_changed && !typography_changed {
+        if !self.has_unsaved_setup() {
             self.window().close();
             return;
         }
-
-        let (message, detail) = if typography_changed {
-            (
-                "Discard unsaved changes?",
-                "Unsaved typography changes will be lost, together with any unsaved theme or prompt edits. Saved presets and applied terminal settings are kept.",
-            )
-        } else {
-            match (theme_changed, prompt_changed) {
-                (true, true) => (
-                    "Discard theme and prompt changes?",
-                    "Theme and prompt changes since the last save or export will be lost.",
-                ),
-                (true, false) => (
-                    "Discard unsaved theme changes?",
-                    "Theme changes made since the last save will be lost.",
-                ),
-                (false, true) => (
-                    "Discard unsaved prompt changes?",
-                    "Prompt changes made since the last save or export will be lost.",
-                ),
-                (false, false) => unreachable!("clean documents close without confirmation"),
-            }
-        };
         let dialog = gtk::AlertDialog::builder()
-            .message(message)
-            .detail(detail)
+            .message("Discard unsaved setup changes?")
+            .detail("Unsaved colors, typography, layout or prompt edits will be lost. Save Workspace to keep the complete setup. Saved files and applied terminal settings are kept.")
             .buttons(["Cancel", "Discard Changes"])
             .cancel_button(0)
             .default_button(0)
@@ -6873,6 +7053,8 @@ impl Workbench {
                     *this.last_exported_prompt.borrow_mut() = current_prompt;
                     this.starship_editor.discard_warning();
                     *this.typography_baseline.borrow_mut() = this.typography_settings();
+                    this.layout_baseline.set(this.layout_settings());
+                    this.workspace_baseline.borrow_mut().take();
                     this.window().close();
                 }
             },
@@ -7102,6 +7284,10 @@ impl Workbench {
     }
 
     fn save(self: &Rc<Self>) {
+        if self.layout_module_button.is_active() {
+            self.save_layout_preset();
+            return;
+        }
         if self.typography_module_button.is_active() {
             self.save_typography_preset();
             return;
@@ -7123,6 +7309,10 @@ impl Workbench {
     }
 
     fn choose_save_as(self: &Rc<Self>) {
+        if self.layout_module_button.is_active() {
+            self.choose_layout_export();
+            return;
+        }
         if self.typography_module_button.is_active() {
             self.choose_typography_export();
             return;

@@ -1,5 +1,7 @@
 mod color_picker;
+mod document_store;
 mod layout;
+mod layout_apply;
 mod preview;
 mod preview_context;
 mod preview_inspect;
@@ -17,6 +19,7 @@ mod typography;
 mod typography_apply;
 mod typography_preset;
 mod window;
+mod workspace;
 
 use adw::prelude::*;
 use gtk::{gdk, gio};

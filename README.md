@@ -35,6 +35,21 @@ that looks balanced elsewhere can therefore become almost unreadable.
   save menu offers **Restore Previous Typography**. Saving alone never applies.
 - Live layout controls for content padding, rows and columns, cursor behavior,
   tab and scrollbar chrome, and preview-window spacing.
+- Layout presets: **Save Preset** (`Ctrl+S` on Layout) restores all eight
+  settings next launch, with independent Undo/Redo and portable
+  `.termimochi-layout.json` import/export. **Apply to Ptyxis** backs up and
+  applies global cursor, scrollbar and new-window grid settings; exact padding,
+  tab bar and preview-window spacing remain preview-only. The save menu offers
+  **Restore Previous Layout**. Remembered window sizing is disabled only after
+  explicit Apply confirmation, so the chosen grid can take effect.
+- Complete setups: the top save menu's **Complete Setup → Save Workspace**
+  stores colors, typography, layout, Designer modules and imported Starship
+  text in one `.termimochi.json` file. Use **Open Workspace…** (or launch
+  `termimochi my-setup.termimochi.json`) to restore it. Opening never applies
+  terminal settings. Workspace prompts reopen detached; export them with
+  **Save As** instead of overwriting this machine's Starship configuration.
+  Module shortcuts still save their own files; workspace files are explicit,
+  not automatically reopened on startup.
 - Optional point-to-edit in Live Preview: enable **Inspect** (off by default)
   for a hover highlight and a named destination before clicking. Colored output selects its ANSI slot,
   ordinary text for Typography, a prompt for Prompt, or the cursor/padding/tab
@@ -209,7 +224,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-## Workspace
+## Repository structure
 
 ```text
 crates/termimochi-core  palette model, parser, contrast engine, diagnostics

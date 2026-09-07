@@ -53,13 +53,20 @@ pub(crate) fn state_directory() -> PathBuf {
 
 /// Do not follow symlinks, overwrite hard-link aliases, or read unbounded files.
 pub(crate) fn read_private(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    read_private_with_limit(path, LIMIT)
+}
+
+pub(crate) fn read_private_with_limit(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, String> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.to_string()),
     };
-    if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() > LIMIT {
-        return Err("Expected a regular, unaliased file of at most 64 KiB.".into());
+    if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() > limit {
+        return Err(format!(
+            "Expected a regular, unaliased file of at most {} KiB.",
+            limit / 1024
+        ));
     }
     let file = File::open(path).map_err(|error| error.to_string())?;
     let opened = file.metadata().map_err(|error| error.to_string())?;
@@ -67,11 +74,11 @@ pub(crate) fn read_private(path: &Path) -> Result<Option<Vec<u8>>, String> {
         return Err("The file changed while it was being read. Retry.".into());
     }
     let mut bytes = Vec::new();
-    file.take(LIMIT + 1)
+    file.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
-    if bytes.len() as u64 > LIMIT {
-        return Err("File exceeds 64 KiB.".into());
+    if bytes.len() as u64 > limit {
+        return Err(format!("File exceeds {} KiB.", limit / 1024));
     }
     Ok(Some(bytes))
 }
@@ -82,11 +89,23 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn write_checked(path: &Path, bytes: &[u8], expected: &Option<Vec<u8>>) -> Result<(), String> {
+    write_checked_with_limit(path, bytes, expected, LIMIT)
+}
+
+pub(crate) fn write_checked_with_limit(
+    path: &Path,
+    bytes: &[u8],
+    expected: &Option<Vec<u8>>,
+    limit: u64,
+) -> Result<(), String> {
+    if bytes.len() as u64 > limit {
+        return Err("The document exceeds its size limit.".into());
+    }
     let parent = path.parent().ok_or("File has no parent directory.")?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     // Recheck file type even for app-owned state: a symlink must not authorize
     // replacing another configuration or silently break a user-created alias.
-    if &read_private(path)? != expected {
+    if &read_private_with_limit(path, limit)? != expected {
         return Err("The destination changed before saving. Nothing was overwritten.".into());
     }
     if let Ok(metadata) = fs::metadata(path)
@@ -95,7 +114,7 @@ fn write_checked(path: &Path, bytes: &[u8], expected: &Option<Vec<u8>>) -> Resul
         return Err("The destination is read-only.".into());
     }
     let mut temporary = tempfile::Builder::new()
-        .prefix(".termimochi-font-")
+        .prefix(".termimochi-document-")
         .tempfile_in(parent)
         .map_err(|error| error.to_string())?;
     temporary
@@ -106,7 +125,7 @@ fn write_checked(path: &Path, bytes: &[u8], expected: &Option<Vec<u8>>) -> Resul
         .write_all(bytes)
         .and_then(|_| temporary.as_file().sync_all())
         .map_err(|error| error.to_string())?;
-    if &read_private(path)? != expected {
+    if &read_private_with_limit(path, limit)? != expected {
         return Err("The destination changed before replacement. Nothing was overwritten.".into());
     }
     temporary.persist(path).map_err(|error| error.to_string())?;
@@ -118,7 +137,7 @@ fn write_checked(path: &Path, bytes: &[u8], expected: &Option<Vec<u8>>) -> Resul
 pub(crate) fn retain_backup(directory: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
     fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     let mut backup = tempfile::Builder::new()
-        .prefix("typography-")
+        .prefix("termimochi-")
         .suffix(".json")
         .tempfile_in(directory)
         .map_err(|error| error.to_string())?;

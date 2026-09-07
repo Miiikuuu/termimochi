@@ -1,4 +1,5 @@
 use crate::preview::{PREVIEW_COLUMNS, PREVIEW_ROWS};
+use serde::{Deserialize, Serialize};
 
 pub(crate) const MIN_CONTENT_PADDING: i32 = 0;
 pub(crate) const MAX_CONTENT_PADDING: i32 = 24;
@@ -11,7 +12,8 @@ pub(crate) const MIN_WINDOW_SPACING: i32 = 0;
 pub(crate) const MAX_WINDOW_SPACING: i32 = 32;
 pub(crate) const DEFAULT_WINDOW_SPACING: i32 = 18;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum PreviewCursorShape {
     #[default]
     Block,
@@ -55,7 +57,8 @@ impl PreviewCursorShape {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum PreviewCursorBlink {
     #[default]
     System,
@@ -99,7 +102,8 @@ impl PreviewCursorBlink {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct LayoutSettings {
     pub(crate) content_padding: i32,
     pub(crate) columns: usize,
@@ -127,6 +131,18 @@ impl Default for LayoutSettings {
 }
 
 impl LayoutSettings {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if !(MIN_CONTENT_PADDING..=MAX_CONTENT_PADDING).contains(&self.content_padding)
+            || !(MIN_COLUMNS..=MAX_COLUMNS).contains(&self.columns)
+            || !(MIN_ROWS..=MAX_ROWS).contains(&self.rows)
+            || !(MIN_WINDOW_SPACING..=MAX_WINDOW_SPACING).contains(&self.window_spacing)
+        {
+            return Err(
+                "Layout dimensions or spacing are outside the supported preview range.".into(),
+            );
+        }
+        Ok(())
+    }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         content_padding: i32,
@@ -148,6 +164,34 @@ impl LayoutSettings {
             scrollbar,
             window_spacing: window_spacing.clamp(MIN_WINDOW_SPACING, MAX_WINDOW_SPACING),
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LayoutPreset {
+    kind: String,
+    version: u8,
+    pub layout: LayoutSettings,
+}
+
+impl LayoutPreset {
+    pub fn new(layout: LayoutSettings) -> Self {
+        Self {
+            kind: "termimochi-layout".into(),
+            version: 1,
+            layout,
+        }
+    }
+}
+
+impl crate::document_store::Document for LayoutPreset {
+    const SUFFIX: &'static str = ".termimochi-layout.json";
+    fn validate(&self) -> Result<(), String> {
+        if self.kind != "termimochi-layout" || self.version != 1 {
+            return Err("Unsupported TermiMochi layout preset.".into());
+        }
+        self.layout.validate()
     }
 }
 
