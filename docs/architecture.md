@@ -269,13 +269,38 @@ as the linter. Its focusable scratch prompt echoes sanitized local input for
 interaction and cursor testing. It has no shell/PTY child, so typing a command
 never executes it; sample output is explicitly separate from live context.
 
-Ptyxis `.palette` files do not contain typography settings, so those controls
-intentionally affect only the live preview and do not enter palette save or
-undo history. Their initial values come from the unified Ptyxis appearance
-snapshot: the configured font (or desktop monospace font when
-`use-system-font` is enabled) and the selected profile's cell height/width
-scales. Missing settings fall back independently.
-Layout controls follow the same preview-only boundary: they adjust the VTE
+Ptyxis `.palette` files do not contain typography settings. Typography is a
+separate document with independent dirty state and Undo/Redo. On Typography,
+Ctrl+S and Save Preset write a versioned `typography.termimochi-font.json` under
+the XDG TermiMochi state directory, restored on the next launch. Without a saved
+preset, initial values come from the read-only Ptyxis appearance snapshot.
+The Open button imports portable presets into the preview; Export Preset writes
+a copy without applying it. Reload Saved Preset recovers from external changes.
+Unsaved typography participates in close and replacement confirmations.
+Missing font families remain selected rather than being silently rewritten;
+preview fallback is allowed, but applying a missing family is refused.
+
+`typography_preset.rs` validates the document kind, version, exact fields and
+numeric bounds before loading. Private, atomic writes reject symlinks, hard-link
+aliases, read-only targets, oversized files and externally changed contents.
+Existing presets are backed up before replacement. Font changes never dirty the
+palette or Starship document, and ordinary preview/navigation never saves them.
+
+`typography_apply.rs` explicitly writes only four allow-listed Ptyxis settings:
+global `use-system-font` and `font-name`, and `cell-height-scale` and
+`cell-width-scale` on the identified launching/configured profile. The confirmation
+shows the global impact, profile label/identifier and before/after values. It
+captures both effective and user-set values, preserving unset/inherited settings
+for restoration. A durable private backup and recovery receipt precede all writes.
+Each GSettings group is batched, then verified; failure attempts conflict-aware
+recovery. External changes, removed profiles, unsupported values and locked keys
+block writing. Repeated identical Apply preserves the existing rollback record.
+Restore uses the recorded profile, not whichever profile is now the default,
+and rechecks settings after confirmation. Desktop font, palette and shell startup
+files are never written. Backend tests use their own schemas and a memory backend,
+never the user's dconf database; GTK tests save only into temporary directories.
+
+Layout controls remain preview-only: they adjust the VTE
 grid, cursor and scrollback chrome plus the GTK preview spacing without marking
 the palette document as modified.
 

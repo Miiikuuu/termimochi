@@ -360,7 +360,7 @@ fn select_window_grid(
     }
 }
 
-fn find_settings(schema_id: &str, path: Option<&str>) -> Option<gio::Settings> {
+pub(crate) fn find_settings(schema_id: &str, path: Option<&str>) -> Option<gio::Settings> {
     let source = gio::SettingsSchemaSource::default()?;
     let schema = source.lookup(schema_id, true)?;
     Some(gio::Settings::new_full(
@@ -409,7 +409,10 @@ fn select_font_name<'a>(
     selected.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn current_profile_uuid_from(settings: &gio::Settings, inherited: Option<&str>) -> Option<String> {
+pub(crate) fn current_profile_uuid_from(
+    settings: &gio::Settings,
+    inherited: Option<&str>,
+) -> Option<String> {
     let default = setting_string(settings, "default-profile-uuid");
     let profiles = setting_value(settings, "profile-uuids")
         .and_then(|value| value.get::<Vec<String>>())
@@ -438,7 +441,7 @@ fn select_profile_uuid<'a>(
         .map(ToOwned::to_owned)
 }
 
-fn valid_profile_uuid(value: &str) -> bool {
+pub(crate) fn valid_profile_uuid(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value

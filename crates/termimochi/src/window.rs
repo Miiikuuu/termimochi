@@ -43,6 +43,8 @@ use crate::{
         DEFAULT_FONT_FAMILY, MAX_CELL_SCALE, MAX_FONT_SIZE, MIN_CELL_SCALE, MIN_FONT_SIZE,
         PreviewFontWeight, TypographySettings, detect_nerd_font_support, is_usable_terminal_family,
     },
+    typography_apply::{RestoreRequest, TypographyTarget},
+    typography_preset::{self, PresetStore},
 };
 
 const SAMPLE_PALETTE: &str = include_str!("../resources/themes/fog-paper.palette");
@@ -148,6 +150,12 @@ impl HistorySnapshot for PromptSettings {
 
     fn context(&self) -> Self::Context {}
 
+    fn set_context(&mut self, (): Self::Context) {}
+}
+
+impl HistorySnapshot for TypographySettings {
+    type Context = ();
+    fn context(&self) -> Self::Context {}
     fn set_context(&mut self, (): Self::Context) {}
 }
 
@@ -293,10 +301,14 @@ struct Workbench {
     toast_overlay: adw::ToastOverlay,
     brand_title: gtk::Label,
     save_button: gtk::MenuButton,
+    open_button: gtk::Button,
+    save_menu: gio::Menu,
+    typography_save_menu: gio::Menu,
     save_action: gio::SimpleAction,
     undo_action: gio::SimpleAction,
     redo_action: gio::SimpleAction,
     palette_module_button: gtk::ToggleButton,
+    typography_module_button: gtk::ToggleButton,
     prompt_module_button: gtk::ToggleButton,
     install_action: gio::SimpleAction,
     rollback_action: gio::SimpleAction,
@@ -333,6 +345,12 @@ struct Workbench {
     line_height_input: gtk::SpinButton,
     cell_width_input: gtk::SpinButton,
     nerd_status_label: gtk::Label,
+    typography_status: gtk::Label,
+    typography_store: RefCell<Option<PresetStore>>,
+    typography_baseline: RefCell<TypographySettings>,
+    last_typography: RefCell<TypographySettings>,
+    typography_history: RefCell<EditHistory<TypographySettings>>,
+    typography_has_saved: Cell<bool>,
     content_padding_input: gtk::SpinButton,
     column_count_input: gtk::SpinButton,
     row_count_input: gtk::SpinButton,
@@ -447,6 +465,18 @@ fn set_menu_verb_icon(item: &gio::MenuItem, icon_name: &str) {
 }
 
 pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
+    present_with_preset(
+        application,
+        initial_path,
+        typography_preset::state_directory().join(typography_preset::PRESET_NAME),
+    );
+}
+
+fn present_with_preset(
+    application: &adw::Application,
+    initial_path: Option<PathBuf>,
+    preset_path: PathBuf,
+) {
     let mut appearance = import_current_appearance();
     let (palette, current_path, source_label, preferred_variant, startup_notice) =
         if let Some(path) = initial_path.as_deref() {
@@ -504,7 +534,28 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
     } else {
         Variant::Dark
     };
-    let initial_typography = appearance.typography.clone();
+    let mut initial_typography = appearance.typography.clone();
+    let mut typography_notice = None;
+    let typography_store = match PresetStore::open(preset_path) {
+        Ok(store) => Some(store),
+        Err(error) => {
+            typography_notice = Some(format!("Saved typography unavailable: {error}"));
+            None
+        }
+    };
+    let mut typography_has_saved = false;
+    if let Some(store) = &typography_store {
+        match store.settings() {
+            Ok(Some(settings)) => {
+                initial_typography = settings;
+                typography_has_saved = true;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                typography_notice = Some(format!("Saved typography could not be loaded: {error}"))
+            }
+        }
+    }
 
     // White workspace with a softly separated navigation rail. Palette variants
     // continue to control VTE only; the desktop accent is not modified.
@@ -629,6 +680,18 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
     export_section.append_item(&export_item);
     save_menu.append_section(None, &export_section);
 
+    let typography_save_menu = gio::Menu::new();
+    typography_save_menu.append(Some("Save Typography Preset"), Some("win.save-typography"));
+    typography_save_menu.append(Some("Export Preset…"), Some("win.export-typography"));
+    typography_save_menu.append(Some("Reload Saved Preset…"), Some("win.reload-typography"));
+    let typography_deploy_menu = gio::Menu::new();
+    typography_deploy_menu.append(Some("Apply to Ptyxis…"), Some("win.apply-typography"));
+    typography_deploy_menu.append(
+        Some("Restore Previous Typography…"),
+        Some("win.restore-typography"),
+    );
+    typography_save_menu.append_section(None, &typography_deploy_menu);
+
     let save_button = gtk::MenuButton::builder()
         .icon_name("termimochi-save-symbolic")
         .tooltip_text("Save and export options")
@@ -729,10 +792,14 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
         toast_overlay,
         brand_title: brand_name,
         save_button,
+        open_button: open_button.clone(),
+        save_menu,
+        typography_save_menu,
         save_action,
         undo_action,
         redo_action,
         palette_module_button: editor_workspace.palette_button.clone(),
+        typography_module_button: editor_workspace.typography_button.clone(),
         prompt_module_button: editor_workspace.prompt_button.clone(),
         install_action,
         rollback_action,
@@ -769,6 +836,12 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
         line_height_input: typography.line_height_input,
         cell_width_input: typography.cell_width_input,
         nerd_status_label: typography.nerd_status_label,
+        typography_status: typography.status,
+        typography_store: RefCell::new(typography_store),
+        typography_baseline: RefCell::new(initial_typography.clone()),
+        last_typography: RefCell::new(initial_typography.clone()),
+        typography_history: RefCell::new(EditHistory::new(EDIT_HISTORY_LIMIT)),
+        typography_has_saved: Cell::new(typography_has_saved),
         content_padding_input: layout.content_padding_input,
         column_count_input: layout.column_count_input,
         row_count_input: layout.row_count_input,
@@ -883,6 +956,9 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
     if let Some(notice) = startup_notice {
         workbench.toast(&notice);
     }
+    if let Some(notice) = typography_notice {
+        workbench.toast(&notice);
+    }
     // The window owns the controller. The controller only keeps a weak window
     // reference, so closing the window releases the complete object graph.
     unsafe {
@@ -943,6 +1019,7 @@ struct TypographyWidgets {
     line_height_input: gtk::SpinButton,
     cell_width_input: gtk::SpinButton,
     nerd_status_label: gtk::Label,
+    status: gtk::Label,
 }
 
 struct LayoutWidgets {
@@ -1236,6 +1313,14 @@ fn build_typography_editor(
     let family_names: Vec<_> = font_families.iter().map(String::as_str).collect();
     let font_family_selector = gtk::DropDown::from_strings(&family_names);
     font_family_selector.set_selected(default_font_index);
+    // Custom font specimens still need a string expression for native search.
+    // Merely enabling the search entry leaves the font list unfiltered.
+    let font_search = gtk::PropertyExpression::new(
+        gtk::StringObject::static_type(),
+        None::<&gtk::Expression>,
+        "string",
+    );
+    font_family_selector.set_expression(Some(&font_search));
     font_family_selector.set_enable_search(true);
     font_family_selector.set_hexpand(true);
     font_family_selector.add_css_class("typography-control");
@@ -1245,7 +1330,7 @@ fn build_typography_editor(
     let font_list_factory = font_family_factory("font-family-option");
     font_family_selector.set_list_factory(Some(&font_list_factory));
     font_family_selector.set_tooltip_text(Some(
-        "Installed monospace font used by this preview; palette files do not store fonts",
+        "Preview font. Save Preset remembers it; Apply to Ptyxis changes the terminal after confirmation.",
     ));
     font_family_selector.update_property(&[
         gtk::accessible::Property::Label("Font Family"),
@@ -1306,6 +1391,29 @@ fn build_typography_editor(
     }
     content.append(&typography_fields);
 
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_margin_top(12);
+    let save = gtk::Button::with_label("Save Preset");
+    save.set_action_name(Some("win.save-typography"));
+    save.add_css_class("pill");
+    save.set_tooltip_text(Some(
+        "Remember these font settings for the next launch · Ctrl+S",
+    ));
+    let apply = gtk::Button::with_label("Apply to Ptyxis…");
+    apply.set_action_name(Some("win.apply-typography"));
+    apply.add_css_class("pill");
+    apply.set_tooltip_text(Some(
+        "Review the target and changes before applying; creates a restorable backup",
+    ));
+    actions.append(&save);
+    actions.append(&apply);
+    content.append(&actions);
+    let status = gtk::Label::new(Some("Preview only · not saved"));
+    status.set_xalign(0.0);
+    status.set_wrap(true);
+    status.add_css_class("nerd-status-label");
+    content.append(&status);
+
     // Typography inputs remain keyboard/click editable, while wheel and
     // touchpad gestures move this module instead of changing values.
     let typography_scroll = gtk::EventControllerScroll::new(
@@ -1334,6 +1442,7 @@ fn build_typography_editor(
         line_height_input,
         cell_width_input,
         nerd_status_label,
+        status,
     }
 }
 
@@ -2763,6 +2872,14 @@ fn monospace_font_choices(
         .collect();
     names.sort_by_key(|name| name.to_lowercase());
     names.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    // Preserve a saved family even if it is no longer installed. Pango may
+    // preview a fallback, but saving must not silently replace the request.
+    if !names
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(&preferred.family))
+    {
+        names.push(preferred.family.clone());
+    }
 
     let resolved_family = context
         .load_font(&preferred.font_description())
@@ -3058,6 +3175,12 @@ impl Workbench {
 
     fn refresh_history_actions(&self) {
         self.refresh_prompt_save_actions();
+        if self.typography_module_button.is_active() {
+            let history = self.typography_history.borrow();
+            self.undo_action.set_enabled(history.can_undo());
+            self.redo_action.set_enabled(history.can_redo());
+            return;
+        }
         if self.prompt_module_button.is_active() {
             if self.prompt_source_selector.selected() == 0 {
                 self.undo_action
@@ -3073,7 +3196,7 @@ impl Workbench {
             return;
         }
         if !self.palette_module_button.is_active() {
-            // Typography and Layout are preview-only. Avoid letting Undo/Redo
+            // Layout remains preview-only. Avoid letting Undo/Redo
             // silently mutate the hidden Palette or Prompt module.
             self.undo_action.set_enabled(false);
             self.redo_action.set_enabled(false);
@@ -3088,6 +3211,17 @@ impl Workbench {
     }
 
     fn undo_edit(&self) {
+        if self.typography_module_button.is_active() {
+            let target = self
+                .typography_history
+                .borrow_mut()
+                .undo(self.typography_settings());
+            if let Some(settings) = target {
+                self.set_typography_settings(&settings, false);
+            }
+            self.refresh_history_actions();
+            return;
+        }
         if self.prompt_module_button.is_active() {
             if self.prompt_source_selector.selected() == 0 {
                 self.starship_editor.undo();
@@ -3123,6 +3257,17 @@ impl Workbench {
     }
 
     fn redo_edit(&self) {
+        if self.typography_module_button.is_active() {
+            let target = self
+                .typography_history
+                .borrow_mut()
+                .redo(self.typography_settings());
+            if let Some(settings) = target {
+                self.set_typography_settings(&settings, false);
+            }
+            self.refresh_history_actions();
+            return;
+        }
         if self.prompt_module_button.is_active() {
             if self.prompt_source_selector.selected() == 0 {
                 self.starship_editor.redo();
@@ -3390,6 +3535,29 @@ impl Workbench {
         });
         window.add_action(&save_as);
 
+        for (name, operation) in [
+            ("save-typography", 0),
+            ("export-typography", 1),
+            ("apply-typography", 2),
+            ("restore-typography", 3),
+            ("reload-typography", 4),
+        ] {
+            let action = gio::SimpleAction::new(name, None);
+            let weak = Rc::downgrade(this);
+            action.connect_activate(move |_, _| {
+                if let Some(this) = weak.upgrade() {
+                    match operation {
+                        0 => this.save_typography_preset(),
+                        1 => this.choose_typography_export(),
+                        2 => this.request_typography_apply(),
+                        3 => this.request_typography_restore(),
+                        _ => this.reload_typography_preset(),
+                    }
+                }
+            });
+            window.add_action(&action);
+        }
+
         let export_starship = gio::SimpleAction::new("export-starship", None);
         let weak = Rc::downgrade(this);
         export_starship.connect_activate(move |_, _| {
@@ -3422,7 +3590,9 @@ impl Workbench {
         let weak = Rc::downgrade(this);
         reload_terminal.connect_activate(move |_, _| {
             if let Some(this) = weak.upgrade() {
-                this.confirm_discard(|this| this.reload_terminal_appearance());
+                this.confirm_typography_discard(|this| {
+                    this.confirm_discard(|this| this.reload_terminal_appearance())
+                });
             }
         });
         window.add_action(&reload_terminal);
@@ -3491,6 +3661,7 @@ impl Workbench {
             if !this.model.borrow().dirty
                 && !this.has_draft()
                 && !this.prompt_has_unexported_changes()
+                && !this.typography_dirty()
             {
                 return glib::Propagation::Proceed;
             }
@@ -3507,6 +3678,33 @@ impl Workbench {
                 this.refresh_history_actions();
             }
         });
+
+        let weak = Rc::downgrade(this);
+        this.typography_module_button
+            .connect_toggled(move |button| {
+                if let Some(this) = weak.upgrade() {
+                    if button.is_active() {
+                        this.save_button
+                            .set_menu_model(Some(&this.typography_save_menu));
+                        this.open_button
+                            .set_tooltip_text(Some("Open a typography preset  Ctrl+O"));
+                        this.open_button
+                            .update_property(&[gtk::accessible::Property::Label(
+                                "Open Typography Preset",
+                            )]);
+                    } else {
+                        this.save_button.set_menu_model(Some(&this.save_menu));
+                        this.open_button
+                            .set_tooltip_text(Some("Open a Ptyxis .palette file  Ctrl+O"));
+                        this.open_button
+                            .update_property(&[gtk::accessible::Property::Label("Open Theme")]);
+                    }
+                    if let Some(popover) = this.save_button.popover() {
+                        popover.add_css_class("save-popover");
+                    }
+                    this.refresh_history_actions();
+                }
+            });
 
         let weak = Rc::downgrade(this);
         this.prompt_module_button.connect_toggled(move |button| {
@@ -4326,7 +4524,14 @@ impl Workbench {
         // Keep the menu available even for invalid fields: Reload and Restore
         // are recovery actions. Individual write actions stay disabled.
         self.prompt_export_button.set_sensitive(true);
-        if self.prompt_module_button.is_active() {
+        if self.typography_module_button.is_active() {
+            self.save_action.set_enabled(true);
+            if self.typography_dirty() {
+                self.save_button.add_css_class("save-ready");
+            } else {
+                self.save_button.remove_css_class("save-ready");
+            }
+        } else if self.prompt_module_button.is_active() {
             self.save_action.set_enabled(designer || (loaded && valid));
             if self.prompt_has_unexported_changes() {
                 self.save_button.add_css_class("save-ready");
@@ -5337,6 +5542,266 @@ impl Workbench {
         )
     }
 
+    fn typography_dirty(&self) -> bool {
+        self.typography_settings() != *self.typography_baseline.borrow()
+    }
+
+    fn set_typography_settings(&self, settings: &TypographySettings, record: bool) {
+        let was_updating = self.updating.replace(true);
+        let (names, index) = monospace_font_choices(&self.preview_terminal, settings);
+        let names: Vec<_> = names.iter().map(String::as_str).collect();
+        self.font_family_selector
+            .set_model(Some(&gtk::StringList::new(&names)));
+        self.font_family_selector.set_selected(index);
+        self.font_size_input.set_value(settings.size);
+        self.font_weight_selector
+            .set_selected(settings.weight.index());
+        self.line_height_input.set_value(settings.line_height);
+        self.cell_width_input.set_value(settings.cell_width);
+        if !record {
+            *self.last_typography.borrow_mut() = settings.clone();
+        }
+        self.updating.set(was_updating);
+        self.refresh_typography();
+    }
+
+    fn committed_typography(&self) -> Result<TypographySettings, String> {
+        for input in [
+            &self.font_size_input,
+            &self.line_height_input,
+            &self.cell_width_input,
+        ] {
+            input.update();
+        }
+        let settings = self.typography_settings();
+        settings.validate()?;
+        Ok(settings)
+    }
+
+    fn save_typography_preset(&self) {
+        let result = self.committed_typography().and_then(|settings| {
+            let mut store = self.typography_store.borrow_mut();
+            let store = store
+                .as_mut()
+                .ok_or("The preset location is unavailable. Export a preset instead.")?;
+            store.save(&settings)?;
+            *self.typography_baseline.borrow_mut() = settings;
+            self.typography_has_saved.set(true);
+            Ok(())
+        });
+        match result {
+            Ok(()) => {
+                self.refresh_typography();
+                self.toast("Typography preset saved for the next launch. Ptyxis was not changed.");
+            }
+            Err(error) => self.toast(&format!("Could not save typography: {error}")),
+        }
+    }
+
+    fn reload_typography_preset(self: &Rc<Self>) {
+        let path = self
+            .typography_store
+            .borrow()
+            .as_ref()
+            .map(|store| store.path.clone())
+            .unwrap_or_else(|| {
+                typography_preset::state_directory().join(typography_preset::PRESET_NAME)
+            });
+        let loaded = PresetStore::open(path).and_then(|store| {
+            let settings = store
+                .settings()?
+                .ok_or("No typography preset has been saved yet.")?;
+            Ok((store, settings))
+        });
+        match loaded {
+            Ok((store, settings)) => self.confirm_typography_discard(move |this| {
+                *this.typography_store.borrow_mut() = Some(store);
+                *this.typography_baseline.borrow_mut() = settings.clone();
+                this.typography_has_saved.set(true);
+                this.set_typography_settings(&settings, true);
+                this.toast("Saved typography preset reloaded.");
+            }),
+            Err(error) => self.toast(&format!("Could not reload typography: {error}")),
+        }
+    }
+
+    fn typography_file_dialog(title: &str) -> gtk::FileDialog {
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("TermiMochi typography preset"));
+        filter.add_pattern("*.termimochi-font.json");
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        gtk::FileDialog::builder()
+            .title(title)
+            .modal(true)
+            .filters(&filters)
+            .default_filter(&filter)
+            .build()
+    }
+
+    fn choose_typography_export(self: &Rc<Self>) {
+        let settings = match self.committed_typography() {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.toast(&error);
+                return;
+            }
+        };
+        let dialog = Self::typography_file_dialog("Export Typography Preset");
+        dialog.set_initial_name(Some(typography_preset::PRESET_NAME));
+        let weak = Rc::downgrade(self);
+        dialog.save(Some(&self.window()), gio::Cancellable::NONE, move |result| {
+            let Some(this) = weak.upgrade() else { return; };
+            match result {
+                Ok(file) => {
+                    let outcome = (|| {
+                        let path = file.path().ok_or("Only local files can be saved.")?;
+                        if !path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.ends_with(".termimochi-font.json")) {
+                            return Err("Use a filename ending in .termimochi-font.json; other configurations are never overwritten.".into());
+                        }
+                        let mut store = PresetStore::open(path)?;
+                        store.settings()?; // Refuse to replace a foreign or malformed document.
+                        store.save(&settings)
+                    })();
+                    match outcome {
+                        Ok(()) => this.toast("Preset exported. Save Preset also remembers it for the next launch."),
+                        Err(error) => this.toast(&format!("Could not export preset: {error}")),
+                    }
+                }
+                Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
+                Err(error) => this.toast(&format!("Could not export preset: {error}")),
+            }
+        });
+    }
+
+    fn choose_typography_open(self: &Rc<Self>) {
+        let dialog = Self::typography_file_dialog("Open Typography Preset");
+        let weak = Rc::downgrade(self);
+        dialog.open(Some(&self.window()), gio::Cancellable::NONE, move |result| {
+            let Some(this) = weak.upgrade() else { return; };
+            match result {
+                Ok(file) => {
+                    let outcome = file.path().ok_or("Only local presets can be opened.".to_owned())
+                        .and_then(PresetStore::open).and_then(|store| store.settings())
+                        .and_then(|settings| settings.ok_or("The preset file no longer exists.".to_owned()));
+                    match outcome {
+                        Ok(settings) => this.confirm_typography_discard(move |this| {
+                            this.set_typography_settings(&settings, true);
+                            this.toast("Typography preset opened. Save Preset to remember it for the next launch.");
+                        }),
+                        Err(error) => this.toast(&format!("Could not open preset: {error}")),
+                    }
+                }
+                Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
+                Err(error) => this.toast(&format!("Could not open preset: {error}")),
+            }
+        });
+    }
+
+    fn confirm_typography_discard(self: &Rc<Self>, action: impl FnOnce(Rc<Self>) + 'static) {
+        if !self.typography_dirty() {
+            action(self.clone());
+            return;
+        }
+        let dialog = gtk::AlertDialog::builder()
+            .message("Replace unsaved typography changes?")
+            .detail("Save Preset first if you want to keep these font settings.")
+            .buttons(["Cancel", "Replace Changes"])
+            .cancel_button(0)
+            .default_button(0)
+            .modal(true)
+            .build();
+        let weak = Rc::downgrade(self);
+        dialog.choose(
+            Some(&self.window()),
+            gio::Cancellable::NONE,
+            move |result| {
+                if result == Ok(1)
+                    && let Some(this) = weak.upgrade()
+                {
+                    action(this);
+                }
+            },
+        );
+    }
+
+    fn request_typography_apply(self: &Rc<Self>) {
+        let prepared = self.committed_typography().and_then(|settings| {
+            let font = self.preview_terminal.pango_context().load_font(&settings.font_description())
+                .ok_or("The selected font is unavailable. Install it or select an installed family.")?;
+            if !settings.family.eq_ignore_ascii_case(DEFAULT_FONT_FAMILY)
+                && font.face().is_none_or(|face| !face.family().name().eq_ignore_ascii_case(&settings.family)) {
+                return Err("The selected font is missing; the preview is using a fallback. Install it before applying.".into());
+            }
+            TypographyTarget::discover()?.prepare(&settings)
+        });
+        let request = match prepared {
+            Ok(request) => request,
+            Err(error) => {
+                self.toast(&error);
+                return;
+            }
+        };
+        let dialog = gtk::AlertDialog::builder()
+            .message("Apply typography to Ptyxis?")
+            .detail(request.detail())
+            .buttons(["Cancel", "Back Up and Apply"])
+            .cancel_button(0)
+            .default_button(0)
+            .modal(true)
+            .build();
+        let weak = Rc::downgrade(self);
+        dialog.choose(
+            Some(&self.window()),
+            gio::Cancellable::NONE,
+            move |result| {
+                if result != Ok(1) {
+                    return;
+                }
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                match request.apply(&typography_preset::state_directory()) {
+                    Ok(Some(backup)) => this.toast(&format!(
+                        "Typography applied to Ptyxis. Backup: {}",
+                        backup.display()
+                    )),
+                    Ok(None) => this.toast(
+                        "Ptyxis already uses these typography settings. Previous backup kept.",
+                    ),
+                    Err(error) => this.toast(&format!("Could not apply typography: {error}")),
+                }
+            },
+        );
+    }
+
+    fn request_typography_restore(self: &Rc<Self>) {
+        let request = match RestoreRequest::load(&typography_preset::state_directory()) {
+            Ok(request) => request,
+            Err(error) => {
+                self.toast(&error);
+                return;
+            }
+        };
+        let dialog = gtk::AlertDialog::builder()
+            .message("Restore previous typography?")
+            .detail(request.detail())
+            .buttons(["Cancel", "Restore Typography"])
+            .cancel_button(0)
+            .default_button(0)
+            .modal(true)
+            .build();
+        let weak = Rc::downgrade(self);
+        dialog.choose(Some(&self.window()), gio::Cancellable::NONE, move |result| {
+            if result != Ok(1) { return; }
+            let Some(this) = weak.upgrade() else { return; };
+            match request.restore() {
+                Ok(()) => this.toast("Previous Ptyxis typography restored. Your preview and saved preset are unchanged."),
+                Err(error) => this.toast(&format!("Could not restore typography: {error}")),
+            }
+        });
+    }
+
     fn layout_settings(&self) -> LayoutSettings {
         LayoutSettings::new(
             self.content_padding_input.value_as_int(),
@@ -5449,6 +5914,14 @@ impl Workbench {
             return;
         }
         let settings = self.typography_settings();
+        if *self.last_typography.borrow() != settings {
+            let before = self.last_typography.borrow().clone();
+            let mut history = self.typography_history.borrow_mut();
+            history.begin(before);
+            history.mark_changed();
+            history.commit(settings.clone());
+            *self.last_typography.borrow_mut() = settings.clone();
+        }
         let description = settings.font_description();
         self.preview_terminal.set_font(Some(&description));
         self.starship_editor.set_preview_font(&description);
@@ -5472,6 +5945,14 @@ impl Workbench {
             gtk::accessible::Property::Description(&detail),
         ]);
         self.refresh_all_diagnostics();
+        self.typography_status.set_text(if self.typography_dirty() {
+            "Unsaved typography changes"
+        } else if self.typography_has_saved.get() {
+            "Preset saved · restored on next launch"
+        } else {
+            "Preview only · not saved"
+        });
+        self.refresh_history_actions();
     }
 
     fn schedule_diagnostics(self: &Rc<Self>) {
@@ -6252,6 +6733,10 @@ impl Workbench {
     }
 
     fn choose_open(self: &Rc<Self>) {
+        if self.typography_module_button.is_active() {
+            self.choose_typography_open();
+            return;
+        }
         self.settle_active_edit();
         self.confirm_discard(|this| this.show_open_dialog());
     }
@@ -6337,25 +6822,33 @@ impl Workbench {
         self.settle_active_edit();
         let theme_changed = self.model.borrow().dirty || self.has_draft();
         let prompt_changed = self.prompt_has_unexported_changes();
-        if !theme_changed && !prompt_changed {
+        let typography_changed = self.typography_dirty();
+        if !theme_changed && !prompt_changed && !typography_changed {
             self.window().close();
             return;
         }
 
-        let (message, detail) = match (theme_changed, prompt_changed) {
-            (true, true) => (
-                "Discard theme and prompt changes?",
-                "Theme and prompt changes since the last save or export will be lost.",
-            ),
-            (true, false) => (
-                "Discard unsaved theme changes?",
-                "Theme changes made since the last save will be lost.",
-            ),
-            (false, true) => (
-                "Discard unsaved prompt changes?",
-                "Prompt changes made since the last save or export will be lost.",
-            ),
-            (false, false) => unreachable!("clean documents close without confirmation"),
+        let (message, detail) = if typography_changed {
+            (
+                "Discard unsaved changes?",
+                "Unsaved typography changes will be lost, together with any unsaved theme or prompt edits. Saved presets and applied terminal settings are kept.",
+            )
+        } else {
+            match (theme_changed, prompt_changed) {
+                (true, true) => (
+                    "Discard theme and prompt changes?",
+                    "Theme and prompt changes since the last save or export will be lost.",
+                ),
+                (true, false) => (
+                    "Discard unsaved theme changes?",
+                    "Theme changes made since the last save will be lost.",
+                ),
+                (false, true) => (
+                    "Discard unsaved prompt changes?",
+                    "Prompt changes made since the last save or export will be lost.",
+                ),
+                (false, false) => unreachable!("clean documents close without confirmation"),
+            }
         };
         let dialog = gtk::AlertDialog::builder()
             .message(message)
@@ -6379,6 +6872,7 @@ impl Workbench {
                     let current_prompt = this.prompt_settings.borrow().clone();
                     *this.last_exported_prompt.borrow_mut() = current_prompt;
                     this.starship_editor.discard_warning();
+                    *this.typography_baseline.borrow_mut() = this.typography_settings();
                     this.window().close();
                 }
             },
@@ -6608,6 +7102,10 @@ impl Workbench {
     }
 
     fn save(self: &Rc<Self>) {
+        if self.typography_module_button.is_active() {
+            self.save_typography_preset();
+            return;
+        }
         if self.prompt_module_button.is_active() {
             self.request_starship_save();
             return;
@@ -6625,6 +7123,10 @@ impl Workbench {
     }
 
     fn choose_save_as(self: &Rc<Self>) {
+        if self.typography_module_button.is_active() {
+            self.choose_typography_export();
+            return;
+        }
         if self.prompt_module_button.is_active() {
             self.choose_starship_export();
             return;
@@ -6894,6 +7396,308 @@ fn palette_slug(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::prompt_diagnostics::is_rust_issue;
+
+    #[test]
+    #[ignore = "requires an X11 GTK/VTE session; run with --ignored --test-threads=1"]
+    fn typography_font_selection_reaches_live_vte() {
+        adw::init().unwrap();
+        gio::resources_register_include!("termimochi.gresource").unwrap();
+        gtk::IconTheme::for_display(&gdk::Display::default().unwrap())
+            .add_resource_path(&format!("{}/icons", crate::RESOURCE_BASE));
+        let app = adw::Application::builder()
+            .application_id("io.github.miiikuuu.termimochi.TypographyTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let preset_path = fixture.path().join(typography_preset::PRESET_NAME);
+        present_with_preset(&app, None, preset_path.clone());
+        let window = app.active_window().unwrap();
+        let this = unsafe {
+            window
+                .data::<Rc<Workbench>>("termimochi-workbench")
+                .unwrap()
+                .as_ref()
+                .clone()
+        };
+        let settle = || {
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_millis(350) {
+                while glib::MainContext::default().pending() {
+                    glib::MainContext::default().iteration(false);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        settle();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while this.preview_loading.get() {
+            assert!(std::time::Instant::now() < deadline);
+            settle();
+        }
+        gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-typography", None);
+        assert!(
+            !this.typography_dirty(),
+            "startup must not create a font edit"
+        );
+        this.font_size_input.set_value(11.0);
+        let model = this.font_family_selector.model().unwrap();
+        let mut families: Vec<_> = (0..model.n_items())
+            .map(|index| {
+                let family = model
+                    .item(index)
+                    .unwrap()
+                    .downcast::<gtk::StringObject>()
+                    .unwrap();
+                (index, family.string().to_string())
+            })
+            .filter(|(_, family)| {
+                matches!(
+                    family.as_str(),
+                    "DejaVu Sans Mono" | "Iosevka Nerd Font Mono" | "JetBrainsMono Nerd Font Mono"
+                )
+            })
+            .collect();
+        if families.len() < 2 {
+            families = (0..model.n_items().min(3))
+                .map(|index| {
+                    let family = model
+                        .item(index)
+                        .unwrap()
+                        .downcast::<gtk::StringObject>()
+                        .unwrap();
+                    (index, family.string().to_string())
+                })
+                .collect();
+        }
+        assert!(
+            families.len() >= 2,
+            "install at least two monospace families for this test"
+        );
+        let palette = this.model.borrow().palette.clone();
+        fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+            let mut result = vec![widget.clone()];
+            let mut child = widget.first_child();
+            while let Some(current) = child {
+                result.extend(descendants(&current));
+                child = current.next_sibling();
+            }
+            result
+        }
+        for (index, family) in families {
+            let toggle = this
+                .font_family_selector
+                .first_child()
+                .unwrap()
+                .downcast::<gtk::ToggleButton>()
+                .unwrap();
+            toggle.set_active(true);
+            settle();
+            let nodes = descendants(this.font_family_selector.upcast_ref());
+            let search = nodes
+                .iter()
+                .find_map(|node| node.clone().downcast::<gtk::SearchEntry>().ok())
+                .unwrap();
+            search.set_text(&family);
+            settle();
+            let list = nodes
+                .iter()
+                .find_map(|node| node.clone().downcast::<gtk::ListView>().ok())
+                .unwrap();
+            let filtered = list.model().unwrap();
+            assert!(filtered.n_items() > 0, "font search must find {family}");
+            assert_eq!(
+                filtered
+                    .item(0)
+                    .unwrap()
+                    .downcast::<gtk::StringObject>()
+                    .unwrap()
+                    .string(),
+                family
+            );
+            let label = descendants(list.upcast_ref())
+                .into_iter()
+                .find_map(|node| {
+                    node.downcast::<gtk::Label>()
+                        .ok()
+                        .filter(|label| label.text() == family)
+                })
+                .unwrap();
+            let bounds = label.compute_bounds(&window).unwrap();
+            let (dx, dy) = window.surface_transform();
+            let scale = f64::from(window.scale_factor());
+            let x = ((f64::from(bounds.x() + bounds.width() / 2.0) + dx) * scale).round() as i32;
+            let y = ((f64::from(bounds.y() + bounds.height() / 2.0) + dy) * scale).round() as i32;
+            window.set_title(Some("TermiMochi point-to-edit test"));
+            let mut child = std::process::Command::new("python3")
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../scripts/preview-pointer-driver.py"
+                ))
+                .args(["click", &x.to_string(), &y.to_string()])
+                .spawn()
+                .unwrap();
+            while child.try_wait().unwrap().is_none() {
+                settle();
+            }
+            assert!(child.wait().unwrap().success());
+            settle();
+            assert!(!toggle.is_active(), "selecting a font closes its popup");
+            assert_eq!(this.font_family_selector.selected(), index);
+            assert_eq!(this.typography_settings().family, family);
+            let applied = this.preview_terminal.font().unwrap();
+            assert_eq!(applied.family().as_deref(), Some(family.as_str()));
+            let resolved = this
+                .preview_terminal
+                .pango_context()
+                .load_font(&applied)
+                .unwrap();
+            assert_eq!(resolved.face().unwrap().family().name(), family);
+            eprintln!(
+                "selected={family}; VTE={applied}; cell={}x{}",
+                this.preview_terminal.char_width(),
+                this.preview_terminal.char_height()
+            );
+            if let Some(directory) = std::env::var_os("TERMIMOCHI_FONT_SCREENSHOT_DIR") {
+                std::fs::create_dir_all(&directory).unwrap();
+                window.set_title(Some("TermiMochi point-to-edit test"));
+                let mut child = std::process::Command::new("python3")
+                    .arg(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/../../scripts/preview-pointer-driver.py"
+                    ))
+                    .args(["capture", "0", "0"])
+                    .env(
+                        "TERMIMOCHI_INSPECT_SCREENSHOT",
+                        PathBuf::from(directory).join(format!("font-{index}.png")),
+                    )
+                    .spawn()
+                    .unwrap();
+                while child.try_wait().unwrap().is_none() {
+                    settle();
+                }
+                assert!(child.wait().unwrap().success());
+            }
+            for action in ["show-prompt", "show-palette", "show-typography"] {
+                gio::prelude::ActionGroupExt::activate_action(&this.window(), action, None);
+                settle();
+                assert_eq!(this.preview_terminal.font().unwrap(), applied);
+            }
+        }
+        let height = this.preview_terminal.char_height();
+        this.font_size_input.set_value(24.0);
+        settle();
+        assert!(this.preview_terminal.char_height() > height);
+        assert!(this.typography_dirty());
+        this.save_action.activate(None);
+        let saved = this.typography_settings();
+        assert_eq!(
+            PresetStore::open(preset_path.clone())
+                .unwrap()
+                .settings()
+                .unwrap(),
+            Some(saved.clone())
+        );
+        assert!(!this.typography_dirty());
+        assert!(
+            this.typography_status
+                .text()
+                .contains("restored on next launch")
+        );
+        this.undo_action.activate(None);
+        assert!(this.typography_dirty());
+        this.redo_action.activate(None);
+        assert!(!this.typography_dirty());
+        assert_eq!(this.typography_settings(), saved);
+        this.font_size_input.set_value(13.5);
+        this.font_weight_selector
+            .set_selected(PreviewFontWeight::Semibold.index());
+        this.line_height_input.set_value(1.25);
+        this.cell_width_input.set_value(1.1);
+        this.save_action.activate(None);
+        let saved = this.typography_settings();
+        let respond = |label: &str| {
+            settle();
+            let button = gtk::Window::list_toplevels()
+                .into_iter()
+                .flat_map(|widget| descendants(&widget))
+                .find_map(|widget| {
+                    widget
+                        .downcast::<gtk::Button>()
+                        .ok()
+                        .filter(|button| button.label().as_deref() == Some(label))
+                })
+                .unwrap_or_else(|| panic!("dialog button missing: {label}"));
+            button.emit_clicked();
+            settle();
+        };
+        this.font_size_input.set_value(15.0);
+        window.close();
+        respond("Cancel");
+        assert!(window.is_visible());
+        assert!(this.typography_dirty());
+        this.reload_typography_preset();
+        respond("Cancel");
+        assert_eq!(this.font_size_input.value(), 15.0);
+        this.reload_typography_preset();
+        respond("Replace Changes");
+        assert_eq!(this.typography_settings(), saved);
+        assert!(!this.typography_dirty());
+        // Opening an Apply confirmation is read-only; this test only cancels.
+        if TypographyTarget::discover().is_ok() {
+            let before = import_current_appearance().typography;
+            this.request_typography_apply();
+            respond("Cancel");
+            assert_eq!(import_current_appearance().typography, before);
+        }
+        let mut external = saved.clone();
+        external.size = 14.0;
+        PresetStore::open(preset_path.clone())
+            .unwrap()
+            .save(&external)
+            .unwrap();
+        this.font_size_input.set_value(16.0);
+        this.save_action.activate(None);
+        assert!(
+            this.typography_dirty(),
+            "conflicted save must not mark the draft clean"
+        );
+        assert_eq!(
+            PresetStore::open(preset_path.clone())
+                .unwrap()
+                .settings()
+                .unwrap(),
+            Some(external.clone())
+        );
+        this.reload_typography_preset();
+        respond("Replace Changes");
+        assert_eq!(this.typography_settings(), external);
+        assert!(!this.typography_dirty());
+        let saved = external;
+        assert_eq!(this.model.borrow().palette, palette);
+        window.destroy();
+        present_with_preset(&app, None, preset_path);
+        let restored_window = app.active_window().unwrap();
+        let restored = unsafe {
+            restored_window
+                .data::<Rc<Workbench>>("termimochi-workbench")
+                .unwrap()
+                .as_ref()
+                .clone()
+        };
+        settle();
+        assert_eq!(
+            restored.typography_settings(),
+            saved,
+            "reopening the app restores all saved font fields"
+        );
+        assert_eq!(
+            restored.preview_terminal.font().unwrap(),
+            saved.font_description()
+        );
+        assert!(!restored.typography_dirty());
+        restored_window.destroy();
+    }
 
     #[test]
     #[ignore = "requires a graphical GTK session; run with --ignored --test-threads=1"]

@@ -27,6 +27,12 @@ that looks balanced elsewhere can therefore become almost unreadable.
   the right-side Live Preview and diagnostics remain mounted.
 - Live VTE typography controls for installed monospace families, point size,
   weight, line height and cell width, with fallback-safe Nerd icon checks.
+- Typography presets: **Save Preset** (or `Ctrl+S` on Typography) remembers
+  all five font settings for the next launch. Open and export portable
+  `.termimochi-font.json` files; typography edits have their own Undo/Redo.
+  **Apply to Ptyxis** confirms the app-wide font and target-profile spacing,
+  saves a private backup, and blocks external-change conflicts. The Typography
+  save menu offers **Restore Previous Typography**. Saving alone never applies.
 - Live layout controls for content padding, rows and columns, cursor behavior,
   tab and scrollbar chrome, and preview-window spacing.
 - Optional point-to-edit in Live Preview: enable **Inspect** (off by default)

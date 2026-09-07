@@ -14,6 +14,8 @@ mod starship_modules;
 mod starship_scene;
 mod style;
 mod typography;
+mod typography_apply;
+mod typography_preset;
 mod window;
 
 use adw::prelude::*;

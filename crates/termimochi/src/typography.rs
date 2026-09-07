@@ -1,5 +1,6 @@
 use gtk::pango;
 use gtk::pango::prelude::*;
+use serde::{Deserialize, Serialize};
 
 pub(crate) const DEFAULT_FONT_FAMILY: &str = "Monospace";
 pub(crate) const DEFAULT_FONT_SIZE: f64 = 10.5;
@@ -21,7 +22,8 @@ pub(crate) const NERD_FONT_PROBES: [char; 5] = [
 ];
 const TERMINAL_TEXT_PROBES: [char; 5] = ['A', 'M', '0', '{', '|'];
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum PreviewFontWeight {
     #[default]
     Regular,
@@ -81,7 +83,8 @@ impl PreviewFontWeight {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct TypographySettings {
     pub(crate) family: String,
     pub(crate) size: f64,
@@ -103,6 +106,36 @@ impl Default for TypographySettings {
 }
 
 impl TypographySettings {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.family.trim().is_empty()
+            || self.family != self.family.trim()
+            || self.family.len() > 256
+            || self.family.chars().any(char::is_control)
+        {
+            return Err("The font family must be a non-empty name of at most 256 bytes.".into());
+        }
+        for (label, value, min, max) in [
+            ("Font size", self.size, MIN_FONT_SIZE, MAX_FONT_SIZE),
+            (
+                "Line height",
+                self.line_height,
+                MIN_CELL_SCALE,
+                MAX_CELL_SCALE,
+            ),
+            (
+                "Cell width",
+                self.cell_width,
+                MIN_CELL_SCALE,
+                MAX_CELL_SCALE,
+            ),
+        ] {
+            if !value.is_finite() || !(min..=max).contains(&value) {
+                return Err(format!("{label} must be between {min} and {max}."));
+            }
+        }
+        Ok(())
+    }
+
     /// Parse the Pango font strings used by GNOME and Ptyxis settings while
     /// keeping the preview's point-size contract explicit. Absolute pixel
     /// sizes and omitted sizes fall back instead of being mislabeled as pt.
