@@ -23,6 +23,7 @@ const OUTPUT_LIMIT: usize = 32 * 1024;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CurrentPreviewContext {
+    pub(crate) greeting: crate::greeting::GreetingContext,
     pub(crate) directory: PathBuf,
     pub(crate) shell: String,
     pub(crate) detail: String,
@@ -69,6 +70,7 @@ impl CurrentPreviewContext {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "shell".to_owned());
         let mut context = Self {
+            greeting: crate::greeting::GreetingContext::load(),
             absolute_path: sanitized_text(&directory.to_string_lossy()),
             path: display_path(&directory, &glib::home_dir()),
             shell,

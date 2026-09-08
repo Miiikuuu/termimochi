@@ -2,6 +2,8 @@ use std::{env, path::PathBuf, process::Command};
 
 const RESOURCE_XML: &str = "resources/io.github.miiikuuu.termimochi.gresource.xml";
 const ICON_FILES: &[&str] = &[
+    "resources/fastfetch/LICENSE",
+    "resources/fastfetch/README.md",
     "resources/icons/16x16/apps/io.github.miiikuuu.termimochi.png",
     "resources/icons/24x24/apps/io.github.miiikuuu.termimochi.png",
     "resources/icons/32x32/apps/io.github.miiikuuu.termimochi.png",

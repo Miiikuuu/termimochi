@@ -561,7 +561,7 @@ pub(crate) fn can_render_samples(directory: &Path) -> bool {
 
 /// VTE receives only text, LF and SGR color/style sequences. Imported strings
 /// cannot set titles, inject clipboard OSCs, move the cursor or erase content.
-fn terminal_safe_ansi(output: &str) -> String {
+pub(crate) fn terminal_safe_ansi(output: &str) -> String {
     let mut result = String::new();
     let mut chars = output.chars().peekable();
     while let Some(ch) = chars.next() {

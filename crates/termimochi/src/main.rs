@@ -1,5 +1,7 @@
 mod color_picker;
 mod document_store;
+mod greeting;
+mod greeting_official;
 mod layout;
 mod layout_apply;
 mod preview;
@@ -66,6 +68,7 @@ fn main() -> gtk::glib::ExitCode {
     application.set_accels_for_action("win.show-typography", &["<Control>2"]);
     application.set_accels_for_action("win.show-layout", &["<Control>3"]);
     application.set_accels_for_action("win.show-prompt", &["<Control>4"]);
+    application.set_accels_for_action("win.show-greeting", &["<Control>5"]);
 
     application.run()
 }

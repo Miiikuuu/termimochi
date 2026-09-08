@@ -3,7 +3,7 @@
 > Make terminal themes cute **and** usable.
 
 TermiMochi is a native Rust + GTK4/libadwaita workbench for terminal palettes
-and Starship prompts.
+and Starship prompts, with a terminal greeting designer.
 It treats colors as semantic relationships and checks how real terminal apps
 combine them, instead of judging a theme only by its swatches.
 
@@ -23,7 +23,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
 - Light/dark variant editor with an embedded HSV picker and exact HEX/RGB input.
 - Document-wide undo/redo with coalesced drag and text-edit transactions.
 - VS Code-style Activity Rail for switching the left-side Palette (`Ctrl+1`),
-  Typography (`Ctrl+2`), Layout (`Ctrl+3`) and Prompt (`Ctrl+4`) modules while
+  Typography (`Ctrl+2`), Layout (`Ctrl+3`), Prompt (`Ctrl+4`) and Greeting (`Ctrl+5`) modules while
   the right-side Live Preview and diagnostics remain mounted.
 - Live VTE typography controls for installed monospace families, point size,
   weight, line height and cell width, with fallback-safe Nerd icon checks.
@@ -43,13 +43,71 @@ that looks balanced elsewhere can therefore become almost unreadable.
   **Restore Previous Layout**. Remembered window sizing is disabled only after
   explicit Apply confirmation, so the chosen grid can take effect.
 - Complete setups: the top save menu's **Complete Setup → Save Workspace**
-  stores colors, typography, layout, Designer modules and imported Starship
+  stores colors, typography, layout, greetings, Designer modules and imported Starship
   text in one `.termimochi.json` file. Use **Open Workspace…** (or launch
   `termimochi my-setup.termimochi.json`) to restore it. Opening never applies
   terminal settings. Workspace prompts reopen detached; export them with
   **Save As** instead of overwriting this machine's Starship configuration.
   Module shortcuts still save their own files; workspace files are explicit,
   not automatically reopened on startup.
+- Greeting starting points: choose **Preset → Neofetch** to immediately enable
+  a complete Ubuntu welcome page. Five pinned upstream presets are included:
+  **Neofetch, Screenfetch, Paleofetch, Icons (Example 8), Bars (Example 9)** from
+  [Fastfetch 2.57.1](https://github.com/fastfetch-cli/fastfetch/tree/2.57.1/presets).
+  All original fields, decorative rows and module formats are retained, including
+  host, packages, resolution and desktop information. Every field can be toggled
+  or reordered with drag handles/arrows. Switching presets is undoable; **Custom
+  design** returns to the separate basic field controls. Network-, command- and
+  external-image-dependent upstream examples are not offered in this collection.
+- Greeting designer: enable the header switch to combine a welcome message,
+  full-size **Ubuntu / Arch Linux / Debian / Fedora / Linux Mint** upstream artwork,
+  a redesigned TermiMochi mark based on the app icon, Terminal art or custom text,
+  and ten optional
+  system-information fields: OS, Kernel, Shell, Terminal, CPU, GPU, Memory,
+  root Disk, Uptime and Date. Drag the field handles to reorder; arrow buttons
+  remain available for keyboard use, with independent Undo/Redo. Choose horizontal,
+  vertical, right-side artwork or a borderless minimal card. ANSI accents inherit
+  the current terminal palette instead of baking in theme colors.
+  The fresh-terminal preview shows the greeting once,
+  followed by the current prompt; switching to other editors keeps it mounted.
+  Use **Preview Source → Reset Preview Session** to return to command scenarios.
+  Official shapes retain their original character geometry (Ubuntu is 43 × 20
+  cells); palette markers are decoded and recolored with the selected ANSI accent.
+  Custom art supports **64 lines × 120 cells, up to 16 KiB**, including CJK,
+  emoji and kaomoji, with bounded grapheme-aware clipping
+  and a stacked fallback in narrow previews. Text controls and invalid artwork
+  are rejected, with independent Undo/Redo and unsaved-change protection.
+- Greeting width can follow Layout or use an exact **80 / 100 / 120 columns**,
+  without changing the Layout document. Pan wider grids with Shift+wheel.
+  A short, once-per-window hint appears when the preview is too wide: drag
+  the center divider or widen the window for more room. It dismisses on resize/panning or
+  after seven seconds, without interrupting terminal input or selection.
+  Official layouts stack when there is insufficient room for readable fields.
+  Taller artwork expands the greeting canvas, scrollable in the preview pane,
+  without pushing the logo's top rows into terminal scrollback. The Fastfetch
+  export captures the currently resolved horizontal/stacked composition; it
+  does not resize your terminal or implement runtime-responsive JSONC.
+  Optional **Fade in / Line by line / Shimmer** openings can be replayed with
+  the play button. Motion is **preview only**, respects system reduced motion,
+  and never changes terminal text; Fastfetch exports remain static.
+- **Save Preset** (`Ctrl+S` on Greeting) restores the greeting next launch.
+  Import/export `.termimochi-greeting.json` presets, or **Export Fastfetch…** to
+  `config.jsonc` or a separate `.fastfetch.jsonc` file. Custom-design preview needs
+  no Fastfetch installation; official preset preview needs **Fastfetch + Bubblewrap**.
+  To use the exported configuration, install Fastfetch and run
+  `fastfetch --config /path/to/config.jsonc`.
+  Custom preview reads bounded local snapshots; official module output is rendered
+  by the system Fastfetch in a **read-only, offline sandbox**, not an attached shell.
+  Desktop/terminal detection and disk mount flags may differ in that sandbox;
+  detection errors remain visible rather than silently removing fields.
+  Export includes only reviewed
+  built-in modules and literal text, never commands or a startup hook.
+  Existing destinations require an explicit **Back Up & Replace** confirmation;
+  private backups are kept in `termimochi-backups` beside the export. Symlinks,
+  hard links and concurrent external changes are rejected. Choosing your active
+  Fastfetch config changes future Fastfetch runs, but `.bashrc` is never modified.
+  Existing workspaces without a Greeting section load with it disabled; older
+  eight-field presets preserve their order and add GPU/Disk switched off.
 - Optional point-to-edit in Live Preview: enable **Inspect** (off by default)
   for a hover highlight and a named destination before clicking. Colored output selects its ANSI slot,
   ordinary text for Typography, a prompt for Prompt, or the cursor/padding/tab
@@ -110,6 +168,8 @@ that looks balanced elsewhere can therefore become almost unreadable.
 - VTE 0.76 or newer, for GTK4.
 - GLib resource compiler (`glib-compile-resources`).
 - Optional: Starship and Bubblewrap (`bwrap`) for safe existing-prompt previews.
+- Optional: Fastfetch to use exported greetings; system Fastfetch and Bubblewrap
+  are required for live official-preset preview. Custom-design preview works without them.
 
 Ubuntu/Debian development packages:
 

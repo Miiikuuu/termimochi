@@ -282,7 +282,13 @@ impl Workbench {
     }
 
     pub(super) fn refresh_editor_menus(&self) {
-        let (menu, label, tooltip) = if self.layout_module_button.is_active() {
+        let (menu, label, tooltip) = if self.greeting_module_button.is_active() {
+            (
+                &self.greeting_save_menu,
+                "Open Greeting Preset",
+                "Open a greeting preset  Ctrl+O",
+            )
+        } else if self.layout_module_button.is_active() {
             (
                 &self.layout_save_menu,
                 "Open Layout Preset",
@@ -319,7 +325,7 @@ impl Workbench {
             .borrow()
             .as_ref()
             .map(|draft| draft.contents().to_owned());
-        Workspace::new(
+        let mut snapshot = Workspace::new(
             &model.palette,
             model.active_variant,
             self.typography_settings(),
@@ -327,11 +333,14 @@ impl Workbench {
             self.prompt_settings.borrow().clone(),
             starship,
             self.preview_prompt_source.get() == 1,
-        )
+        );
+        snapshot.greeting = self.greeting.settings();
+        snapshot
     }
 
     pub(super) fn workspace_is_clean(&self) -> bool {
         !self.has_draft()
+            && !self.greeting.invalid.get()
             && !self.starship_editor.invalid()
             && self
                 .workspace_baseline
@@ -370,13 +379,15 @@ impl Workbench {
             || self.prompt_has_unexported_changes()
             || self.typography_dirty()
             || self.layout_dirty()
+            || self.greeting.dirty()
     }
 
     fn committed_workspace(&self) -> Result<Workspace, String> {
+        self.greeting.finish();
         self.settle_active_edit();
         self.committed_typography()?;
         self.committed_layout()?;
-        if self.has_draft() || self.starship_editor.invalid() {
+        if self.has_draft() || self.starship_editor.invalid() || self.greeting.invalid.get() {
             return Err("Fix the highlighted fields before saving the workspace.".into());
         }
         // Capture the imported source once, then keep the portable document
@@ -418,7 +429,7 @@ impl Workbench {
         match result {
             Ok(()) => {
                 self.refresh_all();
-                self.toast("Workspace saved: colors, typography, layout and prompt. Terminal settings are unchanged.");
+                self.toast("Workspace saved: colors, typography, layout, prompt and greeting. Terminal settings are unchanged.");
             }
             Err(error) => self.toast(&format!("Could not save workspace: {error}")),
         }
@@ -480,7 +491,7 @@ impl Workbench {
                     let Some(path) = file.path() else { this.toast("Only local workspaces can be opened."); return; };
                     this.settle_active_edit();
                     if this.has_unsaved_setup() {
-                        this.confirm_replace("Replace the current setup?", "Unsaved colors, typography, layout and prompt edits will be lost. Save Workspace first to keep the complete setup.", move |this| this.open_workspace_path(&path));
+                        this.confirm_replace("Replace the current setup?", "Unsaved colors, typography, layout, prompt and greeting edits will be lost. Save Workspace first to keep the complete setup.", move |this| this.open_workspace_path(&path));
                     } else { this.open_workspace_path(&path); }
                 }
                 Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
@@ -522,6 +533,8 @@ impl Workbench {
             .set(u32::from(snapshot.use_designer));
         self.set_typography_settings(&snapshot.typography, false);
         self.set_layout_settings(snapshot.layout, false);
+        self.greeting.replace(snapshot.greeting.clone(), false);
+        self.greeting.history.borrow_mut().clear();
         self.history.borrow_mut().clear();
         self.typography_history.borrow_mut().clear();
         self.layout_history.borrow_mut().clear();
@@ -538,6 +551,9 @@ impl Workbench {
                 self.schedule_copy_preview();
             }
             self.redraw_preview_contents();
+        }
+        if snapshot.greeting.enabled {
+            self.show_greeting_preview();
         }
         self.toast("Workspace opened. Terminal settings and shell files were not changed.");
     }

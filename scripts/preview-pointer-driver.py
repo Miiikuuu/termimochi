@@ -95,6 +95,11 @@ button(True)
 if mode == "drag":
     for offset in (10, 20, 30, 40, 50):
         move(px + offset, py)
+if mode == "drag_to":
+    tx, ty = int(sys.argv[4]), int(sys.argv[5])
+    for step in range(1, 17):
+        move(round(px + (tx - px) * step / 16), round(py + (ty - py) * step / 16))
+    time.sleep(0.15)
 button(False)
 if mode == "double":
     button(True)

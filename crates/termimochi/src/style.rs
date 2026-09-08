@@ -498,6 +498,17 @@ scale.picker-hue-scale slider {
   box-shadow: 0 3px 9px alpha(black, 0.16);
 }
 
+.preview-fit-hint {
+  font-family: sans-serif;
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: #ffffff;
+  background: alpha(#20292d, 0.94);
+  padding: 7px 11px;
+  border-radius: 7px;
+  box-shadow: 0 2px 8px alpha(black, 0.12);
+}
+
 .vte-preview:focus-visible {
   outline: 2px solid #505b63;
   outline-offset: -2px;
@@ -879,6 +890,15 @@ dropdown.prompt-property-control > button:focus-visible {
   min-height: 36px;
   padding: 1px 5px;
 }
+
+.greeting-info-row {
+  padding: 1px 4px;
+  border-top: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+}
+.greeting-info-row:hover { background: #f6f7f8; }
+.greeting-drop-before { border-top-color: #30383e; }
+.greeting-drop-after { border-bottom-color: #30383e; }
 
 .layout-row-label {
   color: #30383e;

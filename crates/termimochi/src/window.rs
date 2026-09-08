@@ -16,6 +16,8 @@ use termimochi_core::{
 use vte::prelude::*;
 
 mod documents;
+mod greeting;
+mod preview_hint;
 
 use crate::{
     color_picker::{ColorPicker, ColorSwatch, scroll_parent_vertically},
@@ -316,6 +318,15 @@ struct Workbench {
     save_menu: gio::Menu,
     typography_save_menu: gio::Menu,
     layout_save_menu: gio::Menu,
+    greeting_save_menu: gio::Menu,
+    greeting: Rc<greeting::GreetingEditor>,
+    greeting_module_button: gtk::ToggleButton,
+    greeting_preview: Cell<bool>,
+    greeting_redraw_pending: Cell<bool>,
+    greeting_motion: greeting::GreetingMotion,
+    greeting_official_key: RefCell<Option<greeting::OfficialKey>>,
+    greeting_official_result: RefCell<Option<Result<String, String>>>,
+    greeting_official_loading: Cell<bool>,
     save_action: gio::SimpleAction,
     undo_action: gio::SimpleAction,
     redo_action: gio::SimpleAction,
@@ -508,6 +519,10 @@ fn present_with_preset(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("layout.termimochi-layout.json");
+    let greeting_path = preset_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(crate::greeting::PRESET_NAME);
     let mut appearance = import_current_appearance();
     let (palette, current_path, source_label, preferred_variant, startup_notice) =
         if let Some(path) = initial_path.as_deref() {
@@ -752,7 +767,21 @@ fn present_with_preset(
     workspace_menu.append(Some("Open Workspace…"), Some("win.open-workspace"));
     workspace_menu.append(Some("Save Workspace"), Some("win.save-workspace"));
     workspace_menu.append(Some("Save Workspace As…"), Some("win.save-workspace-as"));
-    for menu in [&save_menu, &typography_save_menu, &layout_save_menu] {
+    let greeting_save_menu = gio::Menu::new();
+    for (label, action) in [
+        ("Save Greeting Preset", "save-greeting"),
+        ("Export Greeting Preset…", "export-greeting"),
+        ("Reload Saved Greeting…", "reload-greeting"),
+        ("Export Fastfetch Configuration…", "export-fastfetch"),
+    ] {
+        greeting_save_menu.append(Some(label), Some(&format!("win.{action}")));
+    }
+    for menu in [
+        &save_menu,
+        &typography_save_menu,
+        &layout_save_menu,
+        &greeting_save_menu,
+    ] {
         menu.append_section(Some("Complete Setup"), &workspace_menu);
     }
 
@@ -818,14 +847,20 @@ fn present_with_preset(
     main_paned.add_css_class("workbench-split");
     toast_overlay.set_child(Some(&main_paned));
 
-    let preview = build_preview(&variant_switch, &initial_typography);
+    let preview = build_preview(&variant_switch, &initial_typography, &main_paned);
     let editor = build_editor();
     let typography = build_typography_editor(&preview.terminal, &initial_typography);
     let layout = build_layout_editor(&initial_layout);
     let initial_prompt = PromptSettings::default();
     let prompt = build_prompt_editor(&initial_prompt);
-    let editor_workspace =
-        build_editor_workspace(&editor.root, &typography.root, &layout.root, &prompt.root);
+    let greeting = greeting::GreetingEditor::new(greeting_path);
+    let editor_workspace = build_editor_workspace(
+        &editor.root,
+        &typography.root,
+        &layout.root,
+        &prompt.root,
+        &greeting.root,
+    );
     main_paned.set_start_child(Some(&editor_workspace.root));
     main_paned.set_end_child(Some(&preview.root));
     main_paned.set_resize_start_child(false);
@@ -860,6 +895,15 @@ fn present_with_preset(
         save_menu,
         typography_save_menu,
         layout_save_menu,
+        greeting_save_menu,
+        greeting_module_button: editor_workspace.greeting_button.clone(),
+        greeting_preview: Cell::new(greeting.settings().enabled),
+        greeting_redraw_pending: Cell::new(false),
+        greeting_motion: greeting::GreetingMotion::new(),
+        greeting_official_key: RefCell::new(None),
+        greeting_official_result: RefCell::new(None),
+        greeting_official_loading: Cell::new(false),
+        greeting,
         save_action,
         undo_action,
         redo_action,
@@ -1015,6 +1059,7 @@ fn present_with_preset(
 
     Workbench::install_actions(&workbench);
     Workbench::connect_signals(&workbench);
+    Workbench::connect_greeting_motion(&workbench);
     workbench.refresh_all();
     workbench.show_appearance_source(&appearance);
     workbench
@@ -1049,7 +1094,7 @@ fn present_with_preset(
 }
 
 struct PreviewWidgets {
-    root: gtk::ScrolledWindow,
+    root: gtk::Overlay,
     content: gtk::Box,
     terminal_title: gtk::Label,
     terminal_shell: gtk::Box,
@@ -1163,6 +1208,7 @@ struct EditorWorkspaceWidgets {
     typography_button: gtk::ToggleButton,
     layout_button: gtk::ToggleButton,
     prompt_button: gtk::ToggleButton,
+    greeting_button: gtk::ToggleButton,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1171,10 +1217,17 @@ enum EditorModule {
     Typography,
     Layout,
     Prompt,
+    Greeting,
 }
 
 impl EditorModule {
-    const ALL: [Self; 4] = [Self::Palette, Self::Typography, Self::Layout, Self::Prompt];
+    const ALL: [Self; 5] = [
+        Self::Palette,
+        Self::Typography,
+        Self::Layout,
+        Self::Prompt,
+        Self::Greeting,
+    ];
 
     const fn stack_name(self) -> &'static str {
         match self {
@@ -1182,6 +1235,7 @@ impl EditorModule {
             Self::Typography => "typography",
             Self::Layout => "layout",
             Self::Prompt => "prompt",
+            Self::Greeting => "greeting",
         }
     }
 
@@ -1191,6 +1245,7 @@ impl EditorModule {
             Self::Typography => "Typography",
             Self::Layout => "Layout",
             Self::Prompt => "Prompt",
+            Self::Greeting => "Greeting",
         }
     }
 
@@ -1200,6 +1255,7 @@ impl EditorModule {
             Self::Typography => "font-x-generic-symbolic",
             Self::Layout => "termimochi-layout-symbolic",
             Self::Prompt => "termimochi-prompt-symbolic",
+            Self::Greeting => "face-smile-symbolic",
         }
     }
 
@@ -1209,6 +1265,7 @@ impl EditorModule {
             Self::Typography => "show-typography",
             Self::Layout => "show-layout",
             Self::Prompt => "show-prompt",
+            Self::Greeting => "show-greeting",
         }
     }
 
@@ -1218,6 +1275,7 @@ impl EditorModule {
             Self::Typography => "Control+2",
             Self::Layout => "Control+3",
             Self::Prompt => "Control+4",
+            Self::Greeting => "Control+5",
         }
     }
 
@@ -1227,6 +1285,7 @@ impl EditorModule {
             Self::Typography => "Ctrl+2",
             Self::Layout => "Ctrl+3",
             Self::Prompt => "Ctrl+4",
+            Self::Greeting => "Ctrl+5",
         }
     }
 
@@ -1236,6 +1295,7 @@ impl EditorModule {
             Self::Typography => "Show the Typography editor",
             Self::Layout => "Show the Layout editor",
             Self::Prompt => "Show the Prompt editor",
+            Self::Greeting => "Show the Greeting editor",
         }
     }
 }
@@ -2424,6 +2484,7 @@ fn build_editor_workspace(
     typography: &gtk::ScrolledWindow,
     layout: &gtk::ScrolledWindow,
     prompt: &gtk::ScrolledWindow,
+    greeting: &gtk::ScrolledWindow,
 ) -> EditorWorkspaceWidgets {
     let stack = gtk::Stack::builder()
         .hexpand(true)
@@ -2438,6 +2499,7 @@ fn build_editor_workspace(
     stack.add_named(typography, Some(EditorModule::Typography.stack_name()));
     stack.add_named(layout, Some(EditorModule::Layout.stack_name()));
     stack.add_named(prompt, Some(EditorModule::Prompt.stack_name()));
+    stack.add_named(greeting, Some(EditorModule::Greeting.stack_name()));
 
     let rail = gtk::Box::new(gtk::Orientation::Vertical, 6);
     rail.set_width_request(48);
@@ -2455,13 +2517,16 @@ fn build_editor_workspace(
     let (typography_item, typography_button) = build_activity_item(EditorModule::Typography);
     let (layout_item, layout_button) = build_activity_item(EditorModule::Layout);
     let (prompt_item, prompt_button) = build_activity_item(EditorModule::Prompt);
+    let (greeting_item, greeting_button) = build_activity_item(EditorModule::Greeting);
     typography_button.set_group(Some(&palette_button));
     layout_button.set_group(Some(&palette_button));
     prompt_button.set_group(Some(&palette_button));
+    greeting_button.set_group(Some(&palette_button));
     rail.append(&palette_item);
     rail.append(&typography_item);
     rail.append(&layout_item);
     rail.append(&prompt_item);
+    rail.append(&greeting_item);
 
     let stack_ref = stack.clone();
     palette_button.connect_toggled(move |button| {
@@ -2487,6 +2552,12 @@ fn build_editor_workspace(
             stack_ref.set_visible_child_name(EditorModule::Prompt.stack_name());
         }
     });
+    let stack_ref = stack.clone();
+    greeting_button.connect_toggled(move |button| {
+        if button.is_active() {
+            stack_ref.set_visible_child_name(EditorModule::Greeting.stack_name());
+        }
+    });
     palette_button.set_active(true);
     stack.set_visible_child_name(EditorModule::Palette.stack_name());
 
@@ -2503,6 +2574,7 @@ fn build_editor_workspace(
         typography_button,
         layout_button,
         prompt_button,
+        greeting_button,
     }
 }
 
@@ -2516,6 +2588,7 @@ fn install_editor_module_actions(
             EditorModule::Typography => workspace.typography_button.clone(),
             EditorModule::Layout => workspace.layout_button.clone(),
             EditorModule::Prompt => workspace.prompt_button.clone(),
+            EditorModule::Greeting => workspace.greeting_button.clone(),
         };
         let action = gio::SimpleAction::new(module.action_name(), None);
         action.connect_activate(move |_, _| {
@@ -2534,6 +2607,7 @@ fn install_editor_module_actions(
 fn build_preview(
     variant_switch: &gtk::Box,
     initial_typography: &TypographySettings,
+    divider: &gtk::Paned,
 ) -> PreviewWidgets {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     content.add_css_class("termimochi-preview-pane");
@@ -2893,7 +2967,7 @@ fn build_preview(
         .build();
 
     PreviewWidgets {
-        root: scroll,
+        root: preview_hint::attach(divider, &terminal_viewport, &scroll),
         content,
         terminal_title,
         terminal_shell: terminal,
@@ -3284,6 +3358,24 @@ impl Workbench {
     fn refresh_history_actions(&self) {
         self.refresh_prompt_save_actions();
         self.refresh_workspace_title();
+        self.greeting.refresh_status();
+        if !self.greeting.invalid.get()
+            && self
+                .workspace_baseline
+                .borrow()
+                .as_ref()
+                .is_some_and(|saved| saved.greeting == self.greeting.settings())
+        {
+            self.greeting.status.set_text("Saved in workspace");
+        }
+        if self.greeting_module_button.is_active() {
+            let history = self.greeting.history.borrow();
+            self.undo_action
+                .set_enabled(self.greeting.invalid.get() || history.can_undo());
+            self.redo_action
+                .set_enabled(!self.greeting.invalid.get() && history.can_redo());
+            return;
+        }
         if self.layout_module_button.is_active() {
             let history = self.layout_history.borrow();
             self.undo_action.set_enabled(history.can_undo());
@@ -3325,6 +3417,11 @@ impl Workbench {
     }
 
     fn undo_edit(&self) {
+        if self.greeting_module_button.is_active() {
+            self.greeting.undo();
+            self.refresh_history_actions();
+            return;
+        }
         if self.layout_module_button.is_active() {
             let target = self
                 .layout_history
@@ -3382,6 +3479,11 @@ impl Workbench {
     }
 
     fn redo_edit(&self) {
+        if self.greeting_module_button.is_active() {
+            self.greeting.redo();
+            self.refresh_history_actions();
+            return;
+        }
         if self.layout_module_button.is_active() {
             let target = self
                 .layout_history
@@ -3701,6 +3803,27 @@ impl Workbench {
         }
 
         for (name, operation) in [
+            ("save-greeting", 0),
+            ("export-greeting", 1),
+            ("reload-greeting", 2),
+            ("export-fastfetch", 3),
+        ] {
+            let action = gio::SimpleAction::new(name, None);
+            let weak = Rc::downgrade(this);
+            action.connect_activate(move |_, _| {
+                if let Some(this) = weak.upgrade() {
+                    match operation {
+                        0 => this.save_greeting_preset(),
+                        1 => this.choose_greeting_export(false),
+                        2 => this.reload_greeting_preset(),
+                        _ => this.choose_greeting_export(true),
+                    }
+                }
+            });
+            window.add_action(&action);
+        }
+
+        for (name, operation) in [
             ("save-typography", 0),
             ("export-typography", 1),
             ("apply-typography", 2),
@@ -3842,14 +3965,51 @@ impl Workbench {
             }
         });
 
-        for button in [&this.typography_module_button, &this.layout_module_button] {
+        for button in [
+            &this.typography_module_button,
+            &this.layout_module_button,
+            &this.greeting_module_button,
+        ] {
             let weak = Rc::downgrade(this);
             button.connect_toggled(move |_| {
                 if let Some(this) = weak.upgrade() {
+                    this.greeting_motion.stop();
                     this.refresh_editor_menus();
                 }
             });
         }
+
+        let weak = Rc::downgrade(this);
+        this.greeting_module_button.connect_toggled(move |button| {
+            if let Some(this) = weak.upgrade() {
+                this.greeting.finish();
+                if button.is_active() && !this.navigating_preview.get() {
+                    this.show_greeting_preview();
+                }
+            }
+        });
+        let weak = Rc::downgrade(this);
+        this.greeting.connect_changed(move || {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if this.updating.get() {
+                return;
+            }
+            this.refresh_history_actions();
+            this.ensure_official_greeting_preview();
+            if !this.greeting_redraw_pending.replace(true) {
+                let weak = Rc::downgrade(&this);
+                glib::timeout_add_local_once(Duration::from_millis(80), move || {
+                    if let Some(this) = weak.upgrade() {
+                        this.greeting_redraw_pending.set(false);
+                        if !this.greeting.invalid.get() {
+                            this.show_greeting_preview();
+                        }
+                    }
+                });
+            }
+        });
 
         let weak = Rc::downgrade(this);
         this.prompt_module_button.connect_toggled(move |button| {
@@ -4449,6 +4609,7 @@ impl Workbench {
         self.refresh_titles();
         self.refresh_typography();
         self.refresh_layout();
+        self.greeting.refresh_status();
         self.refresh_prompt_controls();
         self.refresh_preview();
         self.refresh_deployment();
@@ -4553,6 +4714,9 @@ impl Workbench {
     }
 
     fn reset_prompt_preview(&self) {
+        self.greeting_preview.set(false);
+        self.greeting_motion.stop();
+        self.refresh_terminal_geometry(&self.layout_settings());
         self.preview_uses_prompt.set(false);
         self.copy_generation
             .set(self.copy_generation.get().wrapping_add(1));
@@ -4574,6 +4738,10 @@ impl Workbench {
     }
 
     fn redraw_preview_contents(&self) {
+        self.greeting_motion.stop();
+        if self.greeting_preview.get() {
+            self.refresh_terminal_geometry(&self.layout_settings());
+        }
         self.preview_feed.borrow_mut().clear();
         self.used_prompt_characters.borrow_mut().clear();
         *self.preview_map.borrow_mut() = PreviewMap::default();
@@ -4582,6 +4750,10 @@ impl Workbench {
         // Queue a screen clear with the feed, so pending VTE input from the
         // loading state or a previous scene cannot survive an async redraw.
         self.feed_preview(PREVIEW_HOME_AND_CLEAR);
+        if self.greeting_preview.get() {
+            self.redraw_greeting();
+            return;
+        }
         self.prompt_compare_selector
             .set_visible(self.preview_uses_prompt.get());
         if self.preview_uses_prompt.get() {
@@ -4675,7 +4847,14 @@ impl Workbench {
         // Keep the menu available even for invalid fields: Reload and Restore
         // are recovery actions. Individual write actions stay disabled.
         self.prompt_export_button.set_sensitive(true);
-        if self.layout_module_button.is_active() {
+        if self.greeting_module_button.is_active() {
+            self.save_action.set_enabled(!self.greeting.invalid.get());
+            if self.greeting.dirty() {
+                self.save_button.add_css_class("save-ready");
+            } else {
+                self.save_button.remove_css_class("save-ready");
+            }
+        } else if self.layout_module_button.is_active() {
             self.save_action.set_enabled(true);
             if self.layout_dirty() {
                 self.save_button.add_css_class("save-ready");
@@ -5246,6 +5425,7 @@ impl Workbench {
             let weak = Rc::downgrade(this);
             adjustment.connect_value_changed(move |_| {
                 if let Some(this) = weak.upgrade() {
+                    this.greeting_motion.stop();
                     this.invalidate_preview_inspection();
                 }
             });
@@ -5586,6 +5766,7 @@ impl Workbench {
     fn inspect_preview_target(&self, target: PreviewTarget) {
         let module = match target {
             PreviewTarget::Ansi(_) => EditorModule::Palette,
+            PreviewTarget::Greeting => EditorModule::Greeting,
             PreviewTarget::Typography => EditorModule::Typography,
             PreviewTarget::Cursor | PreviewTarget::Padding | PreviewTarget::TabBar => {
                 EditorModule::Layout
@@ -5607,6 +5788,7 @@ impl Workbench {
         gio::prelude::ActionGroupExt::activate_action(&self.window(), module.action_name(), None);
         self.navigating_preview.set(false);
         let focus: Option<gtk::Widget> = match target {
+            PreviewTarget::Greeting => Some(self.greeting.root.clone().upcast()),
             PreviewTarget::Ansi(index) => {
                 self.select_color(&format!("Color{index}"));
                 Some(self.color_picker.inspection_field().upcast())
@@ -6010,20 +6192,53 @@ impl Workbench {
         }
         let viewport_width = self.preview_terminal_viewport.hadjustment().page_size() as i64;
         let cell_width = self.preview_terminal.char_width();
-        let columns = fitted_preview_columns(
-            layout.columns,
-            viewport_width,
-            cell_width,
-            layout.content_padding,
-            self.fit_preview_switch.is_active(),
-        );
+        let greeting_width = if self.greeting_preview.get() {
+            self.greeting.settings().preview_columns
+        } else {
+            0
+        };
+        let columns = if greeting_width > 0 {
+            usize::from(greeting_width)
+        } else {
+            fitted_preview_columns(
+                layout.columns,
+                viewport_width,
+                cell_width,
+                layout.content_padding,
+                self.fit_preview_switch.is_active(),
+            )
+        };
+        self.preview_terminal_canvas
+            .set_halign(if greeting_width > 0 {
+                gtk::Align::Start
+            } else {
+                gtk::Align::Fill
+            });
+        self.preview_terminal.set_hexpand(greeting_width == 0);
+        self.preview_terminal_viewport
+            .set_hscrollbar_policy(if greeting_width > 0 {
+                gtk::PolicyType::Automatic
+            } else {
+                gtk::PolicyType::External
+            });
+        // A complete logo can be much taller than the old six-line sketch.
+        // Let the outer preview pane scroll it without pushing its first rows
+        // into VTE scrollback. This never changes the saved Layout document.
+        let rows = if self.greeting_preview.get() {
+            layout.rows.max(
+                (self.greeting_text_for_width(columns).lines().count()
+                    + 5
+                    + self.preview_input.borrow().submitted().len() * 3)
+                    .min(96),
+            )
+        } else {
+            layout.rows
+        };
         self.preview_terminal.set_size(
             columns
                 .try_into()
                 .expect("normalized terminal columns fit c_long"),
-            layout
-                .rows
-                .try_into()
+            rows.try_into()
                 .expect("normalized terminal rows fit c_long"),
         );
         self.preview_terminal.set_margin_top(layout.content_padding);
@@ -6037,7 +6252,7 @@ impl Workbench {
             terminal_grid_extent(self.preview_terminal.char_width(), columns, 0, 1);
         let terminal_height = terminal_grid_extent(
             self.preview_terminal.char_height(),
-            layout.rows,
+            rows,
             0,
             PREVIEW_MIN_HEIGHT,
         );
@@ -6935,6 +7150,10 @@ impl Workbench {
     }
 
     fn choose_open(self: &Rc<Self>) {
+        if self.greeting_module_button.is_active() {
+            self.choose_greeting_open();
+            return;
+        }
         if self.layout_module_button.is_active() {
             self.choose_layout_open();
             return;
@@ -7032,7 +7251,7 @@ impl Workbench {
         }
         let dialog = gtk::AlertDialog::builder()
             .message("Discard unsaved setup changes?")
-            .detail("Unsaved colors, typography, layout or prompt edits will be lost. Save Workspace to keep the complete setup. Saved files and applied terminal settings are kept.")
+            .detail("Unsaved colors, typography, layout, prompt or greeting edits will be lost. Save Workspace to keep the complete setup. Saved files and applied terminal settings are kept.")
             .buttons(["Cancel", "Discard Changes"])
             .cancel_button(0)
             .default_button(0)
@@ -7055,6 +7274,8 @@ impl Workbench {
                     *this.typography_baseline.borrow_mut() = this.typography_settings();
                     this.layout_baseline.set(this.layout_settings());
                     this.workspace_baseline.borrow_mut().take();
+                    this.greeting.replace(this.greeting.settings(), false);
+                    *this.greeting.baseline.borrow_mut() = this.greeting.settings();
                     this.window().close();
                 }
             },
@@ -7167,6 +7388,8 @@ impl Workbench {
     }
 
     fn refresh_current_context(self: &Rc<Self>) {
+        self.greeting_official_result.borrow_mut().take();
+        self.ensure_official_greeting_preview();
         let generation = self.preview_generation.get().wrapping_add(1);
         self.preview_generation.set(generation);
         // Coalesce repeated refreshes into one follow-up instead of spawning
@@ -7284,6 +7507,10 @@ impl Workbench {
     }
 
     fn save(self: &Rc<Self>) {
+        if self.greeting_module_button.is_active() {
+            self.save_greeting_preset();
+            return;
+        }
         if self.layout_module_button.is_active() {
             self.save_layout_preset();
             return;
@@ -7309,6 +7536,10 @@ impl Workbench {
     }
 
     fn choose_save_as(self: &Rc<Self>) {
+        if self.greeting_module_button.is_active() {
+            self.choose_greeting_export(false);
+            return;
+        }
         if self.layout_module_button.is_active() {
             self.choose_layout_export();
             return;
@@ -9274,11 +9505,13 @@ mod tests {
 
     #[test]
     fn editor_modules_have_stable_navigation_metadata() {
-        assert_eq!(EditorModule::ALL.len(), 4);
+        assert_eq!(EditorModule::ALL.len(), 5);
         assert_eq!(EditorModule::Palette.stack_name(), "palette");
         assert_eq!(EditorModule::Typography.stack_name(), "typography");
         assert_eq!(EditorModule::Layout.stack_name(), "layout");
         assert_eq!(EditorModule::Prompt.stack_name(), "prompt");
+        assert_eq!(EditorModule::Greeting.stack_name(), "greeting");
+        assert_eq!(EditorModule::Greeting.shortcut(), "Control+5");
         assert_ne!(
             EditorModule::Palette.stack_name(),
             EditorModule::Typography.stack_name()
@@ -9752,13 +9985,13 @@ mod tests {
     fn editor_modules_have_unique_navigation_metadata() {
         use std::collections::HashSet;
 
-        assert_eq!(EditorModule::ALL.len(), 4);
+        assert_eq!(EditorModule::ALL.len(), 5);
         for values in [
             EditorModule::ALL.map(EditorModule::stack_name),
             EditorModule::ALL.map(EditorModule::action_name),
             EditorModule::ALL.map(EditorModule::shortcut),
         ] {
-            assert_eq!(values.into_iter().collect::<HashSet<_>>().len(), 4);
+            assert_eq!(values.into_iter().collect::<HashSet<_>>().len(), 5);
         }
         assert_eq!(EditorModule::Prompt.label(), "Prompt");
         assert_eq!(

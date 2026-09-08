@@ -15,7 +15,8 @@ termimochi-cli                         termimochi (GTK/libadwaita)
                                                            |-> Palette
                                                            |-> Typography
                                                            |-> Layout
-                                                           +-> Prompt
+                                                           |-> Prompt
+                                                           +-> Greeting
                                          persistent preview -> diagnostics
                                                         |-> atomic save / export
                                                         +-> Ptyxis install / rollback
@@ -57,7 +58,7 @@ symbolic recoloring preserves their geometry at normal and high-DPI scales.
 
 The opt-in `light_chrome_pages_and_native_controls` GTK test checks both CSS
 paths, entry contrast, neutral accents and unchanged palette data while visiting
-all four editors and their native menus. Run it separately from other graphical
+the Palette, Typography, Layout and Prompt editors and their native menus. Run it separately from other graphical
 tests; set `TERMIMOCHI_CHROME_SCREENSHOT_DIR` on X11 to capture each page and
 popover through the pointer driver's named test-window bounds:
 
@@ -70,13 +71,14 @@ GDK_BACKEND=x11 GTK_A11Y=none \
 The desktop crate owns only presentation and file interaction. Every edit is
 written to the in-memory core model, after which the preview and diagnostics
 are recomputed. A narrow Activity Rail switches only the left module stack
-between Palette (`Ctrl+1`), Typography (`Ctrl+2`), Layout (`Ctrl+3`) and Prompt
-(`Ctrl+4`). The right-side Live Preview and diagnostics are constructed once
+between Palette (`Ctrl+1`), Typography (`Ctrl+2`), Layout (`Ctrl+3`), Prompt
+(`Ctrl+4`) and Greeting (`Ctrl+5`). The right-side Live Preview and diagnostics are constructed once
 and remain mounted. Palette, Typography and Layout share the selected scenario
 and active light/dark variant. Current Folder is the default, including a
 read-only Starship import when available. Prompt separates Your Starship from
 Designer, which has a selector for the same folder snapshot and repeatable project,
-failure, SSH, root and alignment samples. Activity Rail and point-to-edit
+failure, SSH, root and alignment samples. Greeting explicitly selects its fresh-terminal
+scene; the existing four modules and point-to-edit
 navigation switch only the editor: neither clears VTE, resets scratch input nor
 queues a prompt render. The active preview source is independent of the left
 editor source selector, including during inspection and asynchronous rendering.
@@ -323,7 +325,7 @@ Tests use isolated schemas and an in-memory settings backend.
 `workspace.rs` defines portable `.termimochi.json` complete setups. The common
 save menu exposes Open Workspace, Save Workspace and Save Workspace As on
 every module. A workspace contains the entire palette and active variant,
-typography, layout, ordered Designer modules (including disabled modules),
+typography, layout, greeting settings, ordered Designer modules (including disabled modules),
 lossless imported Starship text, and the active prompt source. It contains no
 file destinations, profile IDs or terminal deployment actions. Whole-document
 validation precedes all UI mutations. Imported Starship data reopens detached
@@ -332,7 +334,7 @@ disabled. Missing imported content stays absent instead of being replaced by
 asynchronous discovery of the host configuration. Preview rendering uses the
 existing restricted renderer: custom commands are preserved as text, not run.
 
-A complete workspace savepoint covers all four modules for close warnings,
+A complete workspace savepoint covers all five modules for close warnings,
 without pretending any module's standalone file or actual terminal settings
 were saved. Module shortcuts retain their contextual behavior. Workspace
 files are opened explicitly, while typography/layout presets restore at launch.
@@ -345,6 +347,127 @@ Starship and asynchronous startup recovery. Run separately on 1x and 2x:
 GDK_SCALE=1 cargo test -p termimochi layout_and_workspace_save_restore_and_safety -- \
   --ignored --test-threads=1
 ```
+
+`window/preview_hint.rs` overlays a small, non-targetable resize hint on the
+preview pane when its horizontal adjustment still overflows after a 500 ms
+settle delay. It appears once per window, expires after seven seconds, and
+dismisses on divider movement, horizontal panning, resolved overflow or unmap.
+The overlay does not participate in size measurement or change terminal input,
+grid sizing, document history or saved configuration. Timers and signal handlers
+use weak widget references; fades respect reduced motion. The opt-in
+`preview_fit_hint_is_once_nonblocking_and_dismisses_on_resize_pan_or_timeout`
+GTK/VTE test covers its lifecycle, layout stability and native divider dragging
+with `TERMIMOCHI_POINTER_TEST=1`; run separately at `GDK_SCALE=1` and `2`.
+
+Greeting (`Ctrl+5`) is a separate editor in `window/greeting.rs`, backed by the
+declarative model and renderer in `greeting.rs`. Its header switch defaults off;
+the optional workspace field also defaults off for older documents. Presets
+use `greeting.termimochi-greeting.json` beside the typography/layout presets.
+Independent coalesced text history, contextual Open/Save/Save As, rollback to
+the saved preset, external-change protection and close warnings follow the
+existing document workflow. Invalid pasted artwork is never fed into VTE or
+exported; undo discards the whole paste transaction rather than an intermediate
+TextBuffer deletion.
+
+Entering Greeting selects a fresh-terminal preview; its render state is separate
+from the left module, so changing colors, fonts and layout retains that preview.
+The opening output is followed by the selected prompt and harmless local scratch
+input. Reset Preview Session returns to the previous scenario mechanism.
+Inspect maps greeting output to its own editor. Rendering is coalesced and uses
+the active ANSI palette and font. Unicode graphemes are clipped by cell width;
+wide side-by-side artwork stacks above the information in narrow viewports.
+Built-in art includes a TermiMochi mark based on the app icon, Terminal, and pinned
+upstream Ubuntu/Arch/Debian/Fedora/Linux Mint artwork. The upstream MIT license
+and provenance are also compiled into GResources. Fastfetch `$1`…`$9` palette
+markers and `$$` escapes are decoded without changing geometry; user Custom text
+does not use that substitution. Custom artwork is limited to 64 lines, 120 cells
+per line and 16 KiB, with the same terminal-control and bidi protections.
+Minimal card suppresses
+art without deleting the selected/custom logo. GTK DragSource/DropTarget on the
+field handles support stable insertion at the target's upper/lower edge, with
+drop feedback and a single undo transaction; arrow buttons are the keyboard
+alternative. External text drops and invalid drafts cannot reorder fields.
+The optional `preview_columns` (0/80/100/120) overrides only the greeting VTE grid,
+not the Layout document or the external terminal's dimensions. Fixed grids can
+be panned. Greeting height can grow to retain complete artwork and is scrolled
+by the outer preview pane. Official presets reserve at least 36 columns for
+fields, stacking on narrower grids. Export snapshots that resolved placement
+before opening the save dialog; it is a static layout, not runtime responsiveness.
+Reset
+Preview Session restores Layout sizing. Older exact eight-item lists migrate
+by appending disabled GPU and Disk entries, preserving order and appearance.
+
+The optional `opening` defaults to None. Fade, line reveal and shimmer run as
+a non-targetable Cairo overlay on the existing VTE, using the GTK frame clock.
+No animation frame feeds escape sequences or changes terminal allocation.
+Redraw/typing, pointer interaction and reflow cancel the mask; generation checks
+invalidate earlier runs. The 850 ms motion respects GTK reduced motion and can
+be replayed explicitly. It is stored in presets/workspaces, not exported to
+Fastfetch, which receives a static configuration.
+
+The existing folder worker also takes a bounded snapshot of `/etc/os-release`,
+Linux procfs kernel/CPU/memory/uptime fields, the inherited shell/terminal name
+and local date. GPU names use bounded DRM sysfs entries and the local PCI ID
+database (falling back to numeric PCI IDs); the root disk uses GIO filesystem
+size/free attributes. No process, network connection, user script, config file or
+Fastfetch plugin is launched for these fields. Missing facts say Unavailable.
+Values are refreshed explicitly, not polled on the UI thread; live Fastfetch
+values, terminal detection, font fallback and some formatting may differ.
+
+Fastfetch export follows the upstream [configuration schema](https://github.com/fastfetch-cli/fastfetch/blob/dev/doc/json_schema.json).
+Custom design emits only ten reviewed system modules, literal Custom text and `data-raw`
+artwork are emitted. Literal opening braces are escaped against Fastfetch's
+format parser; artwork dollar/color placeholders remain literal. No Command
+module, external art path or shell startup hook is emitted. GPU exports names;
+Disk explicitly targets `/`, matching the snapshot. ANSI slot references and
+`brightColor: false` preserve theme inheritance. Exports allow `config.jsonc` or
+the separate `.fastfetch.jsonc` suffix, with checked atomic writes and private
+backups. An existing destination requires a second Back Up & Replace dialog;
+its bytes are captured before confirmation and rechecked before writing. JSONC
+comments are preserved in backups without executing or importing the file.
+Shell startup filenames, symlinks and hard links are excluded. Arbitrary
+Fastfetch configs are not imported or executed in the first version.
+
+`greeting_official.rs` adds five pinned, audited Fastfetch 2.57.1 presets:
+Neofetch, Screenfetch, Paleofetch and examples 8/9. `official_preset` defaults to
+None and `official_items` defaults empty for existing documents. Each official
+item identifies an exact module array index plus its enabled state: module
+objects, duplicate types, decorative rows and formats are retained rather than
+mapped lossily to the custom ten-field catalog. Validation requires every
+original ID exactly once. The dynamic GTK field list supports switches, arrows,
+drag insertion, single-transaction Undo/Redo and portable preset/workspace saves.
+The custom field list is retained separately while exploring official presets.
+
+Only compile-time bundled JSONC is parsed; arbitrary user Fastfetch documents,
+commands, image paths and network-enabled examples cannot enter this execution
+path. Official fields run through `/usr/bin/fastfetch` in `/usr/bin/bwrap` with a
+read-only root, private temporary directory and PID namespace, no network, cleared
+environment and no unsandboxed fallback. The shared concurrent-pipe helper limits
+stdout to 32 KiB and runtime to 2.2 seconds, kills/reaps timeouts, and reports failures.
+Module SGR output is sanitized before grapheme-aware clipping and composition
+with the bundled logo. Desktop/terminal detection and read-only disk flags are
+sandbox observations, explicitly disclosed in the UI; module detection errors
+are shown. Export keeps the original module formats and runs normally in the user's
+terminal. Official module requests are coalesced into at most one running worker;
+source-key checks prevent stale preset results replacing newer edits. Palette/font
+changes, widths and artwork edits reuse the result without launching another probe.
+
+`greeting_editor_preview_persistence_and_workspace_safety` is an opt-in GTK/VTE
+test covering controls, widths, motion/reduced motion, Unicode text, invalid-paste undo, module
+isolation, cancelled discard/reload, save conflicts, restart and Workspace
+round trips. Set `TERMIMOCHI_GREETING_DRAG_TEST=1` for real X11 pointer dragging
+and its undo/redo assertions. Run it separately at 1x and 2x. The additional opt-in
+`real_fastfetch_accepts_export_and_preserves_literal_text` test checks exported
+configurations using a real executable (override with
+`TERMIMOCHI_FASTFETCH_TEST_BIN`). It verifies all artwork positions and ensures
+environment-variable-like welcome text stays literal. Neither test changes
+the user's shell startup files or terminal settings.
+`upstream_logo_geometry_matches_real_fastfetch` compares all five decoded logos
+against actual built-in Fastfetch output, including Debian dollar escaping.
+`real_official_presets_render_offline_and_remain_terminal_safe` exercises all five
+presets in the sandbox. `official_greeting_presets_preserve_fields_history_workspace_and_full_art`
+adds GTK/VTE checks for all official fields, quick switching, drag undo/redo,
+80/100/120 columns, expanded canvas, preset restart and Workspace restoration.
 
 Prompt composition is a separate in-memory document with its own Undo/Redo
 history. The same VTE renders current-folder or sample contexts for an ordered

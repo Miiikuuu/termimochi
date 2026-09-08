@@ -26,6 +26,7 @@ pub(crate) const ANSI_NAMES: [&str; 16] = [
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PreviewTarget {
+    Greeting,
     Typography,
     Ansi(u8),
     Cursor,
@@ -40,6 +41,7 @@ pub(crate) enum PreviewTarget {
 impl PreviewTarget {
     pub(crate) fn label(self) -> String {
         match self {
+            Self::Greeting => "Greeting · Welcome Screen".into(),
             Self::Typography => "Typography · Font Family".into(),
             Self::Ansi(index) => ANSI_NAMES.get(usize::from(index)).map_or_else(
                 || format!("Palette · Color{index}"),

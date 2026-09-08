@@ -20,6 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 termimochi-core.workspace = true
 unicode-segmentation = "1.12"
+unicode-width = "0.2"
 toml = "1.1.5"
 toml_edit = "0.25"
 tempfile = "3"

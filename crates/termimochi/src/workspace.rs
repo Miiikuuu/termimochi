@@ -19,6 +19,8 @@ pub(crate) struct Workspace {
     pub designer: PromptSettings,
     pub starship: Option<String>,
     pub use_designer: bool,
+    #[serde(default)]
+    pub greeting: crate::greeting::GreetingSettings,
 }
 
 impl Workspace {
@@ -41,6 +43,7 @@ impl Workspace {
             designer,
             starship,
             use_designer,
+            greeting: Default::default(),
         }
     }
     pub fn variant(&self) -> Variant {
@@ -67,6 +70,7 @@ impl Document for Workspace {
         self.typography.validate()?;
         self.layout.validate()?;
         self.designer.validate()?;
+        self.greeting.validate()?;
         if let Some(source) = &self.starship {
             StarshipDraft::new("workspace-starship.toml".into(), source.clone())?;
         }
@@ -169,5 +173,34 @@ mod tests {
         for invalid in [duplicate, missing, destination, action, nested] {
             assert!(decode::<Workspace>(&serde_json::to_vec(&invalid).unwrap()).is_err());
         }
+    }
+
+    #[test]
+    fn old_workspaces_default_to_disabled_greeting_and_new_ones_preserve_it() {
+        let palette =
+            PtyxisPalette::from_text(include_str!("../resources/themes/fog-paper.palette"))
+                .unwrap();
+        let mut workspace = Workspace::new(
+            &palette,
+            Variant::Light,
+            TypographySettings::default(),
+            LayoutSettings::default(),
+            PromptSettings::default(),
+            None,
+            true,
+        );
+        let mut old = serde_json::to_value(&workspace).unwrap();
+        old.as_object_mut().unwrap().remove("greeting");
+        let loaded = decode::<Workspace>(&serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(!loaded.greeting.enabled);
+        workspace.greeting.enabled = true;
+        workspace.greeting.message = "Welcome 你好 🦀".into();
+        workspace.greeting.items.reverse();
+        assert_eq!(
+            decode::<Workspace>(&encode(&workspace).unwrap()).unwrap(),
+            workspace
+        );
+        workspace.greeting.custom_logo = "\x1b[2J".into();
+        assert!(encode(&workspace).is_err());
     }
 }
