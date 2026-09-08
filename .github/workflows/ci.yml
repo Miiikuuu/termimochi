@@ -40,6 +40,7 @@ jobs:
             libgtk-4-dev \
             libvte-2.91-gtk4-dev \
             libxml2-utils \
+            python3 \
             xvfb
 
       - name: Install the Rust toolchain
@@ -92,35 +93,10 @@ jobs:
             exit 1
           fi
 
-      - name: Validate desktop metadata and embedded resources
+      - name: Validate desktop metadata, embedded resources, and packaged copies
         run: |
-          desktop-file-validate data/io.github.miiikuuu.termimochi.desktop
-          grep --fixed-strings --line-regexp --quiet \
-            'Exec=termimochi %f' \
-            data/io.github.miiikuuu.termimochi.desktop
-          appstreamcli validate --pedantic \
-            data/io.github.miiikuuu.termimochi.metainfo.xml
-          xmllint --noout \
-            data/io.github.miiikuuu.termimochi.metainfo.xml \
-            crates/termimochi/resources/io.github.miiikuuu.termimochi.gresource.xml
-          glib-compile-resources \
-            crates/termimochi/resources/io.github.miiikuuu.termimochi.gresource.xml \
-            --sourcedir=crates/termimochi \
-            --target="$RUNNER_TEMP/termimochi.gresource"
-          test "$(gresource list "$RUNNER_TEMP/termimochi.gresource" | wc -l)" -eq 11
-
-      - name: Check packaged resource copies
-        run: |
-          cmp themes/fog-paper.palette \
-            crates/termimochi-core/fixtures/fog-paper.palette
-          cmp themes/fog-paper-codex.palette \
-            crates/termimochi-core/fixtures/fog-paper-codex.palette
-          cmp themes/fog-paper-codex.palette \
-            crates/termimochi-cli/fixtures/fog-paper-codex.palette
-          cmp themes/fog-paper.palette \
-            crates/termimochi/resources/themes/fog-paper.palette
-          diff --recursive --brief \
-            data/icons/hicolor crates/termimochi/resources/icons
+          python3 -m unittest discover -s scripts -p 'test_desktop_resources.py' -v
+          python3 scripts/validate_desktop_resources.py
 
       - name: Assemble and verify every crate package
         run: cargo package --workspace --allow-dirty --locked

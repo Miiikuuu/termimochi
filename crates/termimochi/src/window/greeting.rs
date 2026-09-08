@@ -1420,7 +1420,9 @@ impl Workbench {
         let navigating = self.navigating_preview.replace(true);
         self.ensure_starship_copy();
         self.navigating_preview.set(navigating);
-        self.greeting_preview.set(true);
+        if !self.greeting_preview.replace(true) {
+            self.preview_scroll.start();
+        }
         self.ensure_official_greeting_preview();
         let previous_columns = self.preview_terminal.column_count();
         self.refresh_terminal_geometry(&self.layout_settings());

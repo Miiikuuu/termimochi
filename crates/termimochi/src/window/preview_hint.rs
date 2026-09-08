@@ -23,7 +23,7 @@ struct FitHint {
 pub(super) fn attach(
     divider: &gtk::Paned,
     viewport: &gtk::ScrolledWindow,
-    content: &gtk::ScrolledWindow,
+    content: &impl IsA<gtk::Widget>,
 ) -> gtk::Overlay {
     build(divider, viewport, content).0
 }
@@ -31,7 +31,7 @@ pub(super) fn attach(
 fn build(
     divider: &gtk::Paned,
     viewport: &gtk::ScrolledWindow,
-    content: &gtk::ScrolledWindow,
+    content: &impl IsA<gtk::Widget>,
 ) -> (gtk::Overlay, Rc<FitHint>) {
     let label = gtk::Label::builder()
         .label(HINT_TEXT)

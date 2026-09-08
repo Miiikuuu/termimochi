@@ -55,6 +55,13 @@ terminal palettes, swatches and semantic diagnostic colors are independent.
 for both legacy named colors and GTK 4.16+ CSS variables without changing desktop
 preferences. Navigation icons use original 24 px filled SVG contours so GTK's
 symbolic recoloring preserves their geometry at normal and high-DPI scales.
+The terminal's scene/comparison dropdowns are transparent at rest, with subtle
+hover/open feedback. Its viewport suppresses GTK undershoot/overshoot decorations
+so the enclosing AdwToolbarView cannot draw an interior seam after scrolling;
+the terminal shell's exterior shadow remains unchanged. The opt-in
+`terminal_scroll_edges_and_idle_controls_blend_into_both_themes` test checks
+rendered edge pixels and idle button transparency in light/dark palettes under
+the same toolbar ancestor. Run it separately at 1x and with `GDK_SCALE=2`.
 
 The opt-in `light_chrome_pages_and_native_controls` GTK test checks both CSS
 paths, entry contrast, neutral accents and unchanged palette data while visiting
@@ -390,8 +397,18 @@ drop feedback and a single undo transaction; arrow buttons are the keyboard
 alternative. External text drops and invalid drafts cannot reorder fields.
 The optional `preview_columns` (0/80/100/120) overrides only the greeting VTE grid,
 not the Layout document or the external terminal's dimensions. Fixed grids can
-be panned. Greeting height can grow to retain complete artwork and is scrolled
-by the outer preview pane. Official presets reserve at least 36 columns for
+be panned. Greeting height can grow to retain complete artwork inside the
+terminal's own viewport, without enlarging the surrounding pane. Live Preview
+controls and diagnostics remain fixed; the editor and diagnostics scroll separately.
+`window/preview_scroll.rs` combines VTE history units and canvas pixels into one
+local adjustment used by the optional Layout scrollbar. A capture-phase controller
+contains wheel/touchpad gestures even at boundaries and handles Shift+wheel panning.
+The VTE pixel-unit option is respected; surface deltas retain fractional precision.
+Typing queues cursor visibility after asynchronous VTE feeds; deliberate scrolling
+cancels that reveal, and Original/Edited comparison restores the local position.
+Vertical canvas changes invalidate Inspect hit targets and stop opening motion.
+Real X11 wheel tests cover tall artwork, history, edge containment, horizontal
+panning and fixed chrome at 1x/2x. Official presets reserve at least 36 columns for
 fields, stacking on narrower grids. Export snapshots that resolved placement
 before opening the save dialog; it is a static layout, not runtime responsiveness.
 Reset

@@ -137,8 +137,11 @@ that looks balanced elsewhere can therefore become almost unreadable.
   the center divider or widen the window for more room. It dismisses on resize/panning or
   after seven seconds, without interrupting terminal input or selection.
   Official layouts stack when there is insufficient room for readable fields.
-  Taller artwork expands the greeting canvas, scrollable in the preview pane,
-  without pushing the logo's top rows into terminal scrollback. The Fastfetch
+  Taller artwork expands the greeting canvas inside an independently scrolling
+  terminal. **Live Preview**, its controls and **Preview Checks** stay fixed;
+  wheel gestures never spill into the editor or logs at the terminal's edges.
+  The optional Layout scrollbar spans both full-size artwork and terminal history.
+  Typing reveals the input line without moving the surrounding interface. The Fastfetch
   export captures the currently resolved horizontal/stacked composition; it
   does not resize your terminal or implement runtime-responsive JSONC.
   Optional **Fade in / Line by line / Shimmer** openings can be replayed with
@@ -338,7 +341,16 @@ rollback; rollback stops if another program changed the installed file.
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
+python3 -m unittest discover -s scripts -p 'test_desktop_resources.py' -v
+python3 scripts/validate_desktop_resources.py
 ```
+
+The desktop/resource checks need `desktop-file-validate`, `appstreamcli`,
+`xmllint`, GLib's resource tools, and Python 3. They check the complete resource
+paths and embedded bytes, shared desktop icons, bundled licenses, and palette
+copies. Private action icons are embedded only; no fixed resource count is used.
+CI also runs the isolated installer, a GUI smoke test, crate packaging and tests
+of the unpacked packages, plus a separate RustSec dependency audit.
 
 ## Repository structure
 

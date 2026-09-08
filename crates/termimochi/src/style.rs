@@ -541,21 +541,26 @@ scale.picker-hue-scale slider {
   min-height: 24px;
 }
 
-dropdown.preview-scenario button {
+dropdown.preview-scenario > button {
   min-height: 26px;
   padding: 1px 7px;
   border: 1px solid transparent;
   border-radius: 3px;
   color: inherit;
-  background: alpha(currentColor, 0.10);
+  background: transparent;
   box-shadow: none;
 }
 
-dropdown.preview-scenario button:hover {
-  background: alpha(currentColor, 0.16);
+dropdown.preview-scenario > button:hover {
+  background: alpha(currentColor, 0.05);
 }
 
-dropdown.preview-scenario button:focus-visible {
+dropdown.preview-scenario > button:active,
+dropdown.preview-scenario > button:checked {
+  background: alpha(currentColor, 0.08);
+}
+
+dropdown.preview-scenario > button:focus-visible {
   outline: 2px solid #505b63;
   outline-offset: 1px;
 }
@@ -569,6 +574,14 @@ dropdown.preview-scenario button:focus-visible {
 .terminal-viewport {
   border: none;
   background: transparent;
+  box-shadow: none;
+}
+
+/* AdwToolbarView's undershoot must not divide the terminal's own surface. */
+.terminal-viewport > undershoot,
+.terminal-viewport > overshoot {
+  background: none;
+  border: none;
   box-shadow: none;
 }
 
@@ -1255,6 +1268,7 @@ pub fn chrome_css(modern: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gtk::{gdk, glib, prelude::*};
     use std::str::FromStr;
     use termimochi_core::{Rgb, contrast_ratio};
 
@@ -1285,5 +1299,136 @@ mod tests {
         assert!(chrome_css(false).contains("@define-color accent_bg_color #343b41"));
         assert!(!chrome_css(false).contains("--accent-bg-color"));
         assert!(!include_str!("chrome.css").contains(".vte-preview"));
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display; run separately at 1x and 2x"]
+    fn terminal_scroll_edges_and_idle_controls_blend_into_both_themes() {
+        fn settle() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(180);
+            let context = glib::MainContext::default();
+            while std::time::Instant::now() < deadline {
+                while context.pending() {
+                    context.iteration(false);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        fn pixels(widget: &impl IsA<gtk::Widget>) -> (usize, usize, Vec<u8>) {
+            let widget = widget.as_ref();
+            let snapshot = gtk::Snapshot::new();
+            gtk::WidgetPaintable::new(Some(widget)).snapshot(
+                &snapshot,
+                f64::from(widget.width()),
+                f64::from(widget.height()),
+            );
+            let texture = widget.native().unwrap().renderer().unwrap().render_texture(
+                snapshot.to_node().unwrap(),
+                Some(&gtk::graphene::Rect::new(
+                    0.0,
+                    0.0,
+                    widget.width() as f32,
+                    widget.height() as f32,
+                )),
+            );
+            let (width, height) = (texture.width() as usize, texture.height() as usize);
+            let mut data = vec![0; width * height * 4];
+            texture.download(&mut data, width * 4);
+            (width, height, data)
+        }
+
+        adw::init().unwrap();
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceLight);
+        let display = gdk::Display::default().unwrap();
+        let provider = gtk::CssProvider::new();
+        provider.load_from_data(&chrome_css(gtk::check_version(4, 16, 0).is_none()));
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        let colors = gtk::CssProvider::new();
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &colors,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+        );
+        let shell = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        shell.set_css_classes(&["terminal-shell", "scroll-style-test"]);
+        let selector = gtk::DropDown::from_strings(&["Edited", "Original"]);
+        selector.add_css_class("preview-scenario");
+        selector.set_halign(gtk::Align::End);
+        shell.append(&selector);
+        let canvas = gtk::DrawingArea::new();
+        canvas.set_size_request(1000, 1000);
+        canvas.add_css_class("scroll-style-canvas");
+        let viewport = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::External)
+            .vscrollbar_policy(gtk::PolicyType::External)
+            .vexpand(true)
+            .child(&canvas)
+            .build();
+        viewport.add_css_class("terminal-viewport");
+        shell.append(&viewport);
+        // Match the workbench ancestor: AdwToolbarView's flat header enables
+        // undershoot styles on descendant scrollers, including the terminal.
+        let toolbar = adw::ToolbarView::new();
+        toolbar.set_content(Some(&shell));
+        toolbar.add_top_bar(&gtk::Label::new(Some("Live Preview")));
+        let window = gtk::Window::builder()
+            .title("TermiMochi scroll style test")
+            .default_width(420)
+            .default_height(320)
+            .child(&toolbar)
+            .build();
+        window.present();
+        gtk::prelude::GtkWindowExt::set_focus(&window, None::<&gtk::Widget>);
+        for (background, foreground) in [("#f8f7f5", "#242424"), ("#17191c", "#eeeeee")] {
+            colors.load_from_data(&format!(
+                ".scroll-style-test, .scroll-style-canvas {{ background: {background}; color: {foreground}; }}"
+            ));
+            settle();
+            assert!(viewport.hadjustment().upper() > viewport.hadjustment().page_size() + 100.0);
+            assert!(viewport.vadjustment().upper() > viewport.vadjustment().page_size() + 100.0);
+            for position in [0.0, 160.0, 1000.0] {
+                viewport.hadjustment().set_value(position);
+                viewport.vadjustment().set_value(position);
+                settle();
+                let (width, height, data) = pixels(&viewport);
+                let pixel =
+                    |x: usize, y: usize| &data[(y * width + x) * 4..(y * width + x + 1) * 4];
+                let center = pixel(width / 2, height / 2);
+                // GTK's undershoot/overshoot nodes must not add seams at any edge.
+                for offset in [0, 1, 2, 4, 8] {
+                    for (x, y) in [
+                        (width / 2, offset),
+                        (width / 2, height - 1 - offset),
+                        (offset, height / 2),
+                        (width - 1 - offset, height / 2),
+                    ] {
+                        assert_eq!(
+                            pixel(x, y),
+                            center,
+                            "{background}, scroll {position}, edge ({x}, {y})"
+                        );
+                    }
+                }
+            }
+            let (width, height, data) = pixels(&selector);
+            // Padding beside the label/chevron should be entirely transparent.
+            // Download uses native ARGB32 byte order; locate alpha portably.
+            let alpha = if cfg!(target_endian = "little") { 3 } else { 0 };
+            for x in [4, width - 5] {
+                assert_eq!(
+                    data[(height / 2 * width + x) * 4 + alpha],
+                    0,
+                    "idle dropdown has a solid background in {background}"
+                );
+            }
+        }
+        window.close();
+        settle();
+        gtk::style_context_remove_provider_for_display(&display, &colors);
+        gtk::style_context_remove_provider_for_display(&display, &provider);
     }
 }

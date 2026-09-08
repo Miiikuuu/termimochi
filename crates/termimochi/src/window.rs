@@ -18,6 +18,7 @@ use vte::prelude::*;
 mod documents;
 mod greeting;
 mod preview_hint;
+mod preview_scroll;
 
 use crate::{
     color_picker::{ColorPicker, ColorSwatch, scroll_parent_vertically},
@@ -356,6 +357,7 @@ struct Workbench {
     preview_terminal_canvas: gtk::Box,
     preview_terminal_viewport: gtk::ScrolledWindow,
     preview_terminal_scrollbar_revealer: gtk::Revealer,
+    preview_scroll: Rc<preview_scroll::PreviewScroll>,
     preview_selector: gtk::DropDown,
     prompt_preview_selector: gtk::DropDown,
     prompt_compare_selector: gtk::DropDown,
@@ -942,6 +944,7 @@ fn present_with_preset(
         preview_terminal_canvas: preview.terminal_canvas,
         preview_terminal_viewport: preview.terminal_viewport,
         preview_terminal_scrollbar_revealer: preview.terminal_scrollbar_revealer,
+        preview_scroll: preview.scroll,
         preview_selector: preview.selector,
         prompt_preview_selector: preview.prompt_selector,
         prompt_compare_selector: preview.compare_selector,
@@ -1116,6 +1119,7 @@ struct PreviewWidgets {
     terminal_canvas: gtk::Box,
     terminal_viewport: gtk::ScrolledWindow,
     terminal_scrollbar_revealer: gtk::Revealer,
+    scroll: Rc<preview_scroll::PreviewScroll>,
     selector: gtk::DropDown,
     prompt_selector: gtk::DropDown,
     compare_selector: gtk::DropDown,
@@ -1672,7 +1676,7 @@ fn build_layout_editor(defaults: &LayoutSettings) -> LayoutWidgets {
     let scrollbar_switch = layout_switch(
         defaults.scrollbar,
         "Scrollbar",
-        "Show a scrollbar connected to the terminal scrollback",
+        "Show a scrollbar for terminal content and history",
     );
     let window_spacing_input = layout_spin_button(
         defaults.window_spacing,
@@ -2624,6 +2628,8 @@ fn build_preview(
     content.set_margin_bottom(16);
     content.set_margin_start(18);
     content.set_margin_end(18);
+    content.set_width_request(360);
+    content.set_vexpand(true);
 
     let heading = gtk::Label::new(Some("Live Preview"));
     heading.set_xalign(0.0);
@@ -2720,6 +2726,7 @@ fn build_preview(
     let terminal = gtk::Box::new(gtk::Orientation::Vertical, 8);
     terminal.set_widget_name("termimochi-terminal");
     terminal.add_css_class("terminal-shell");
+    terminal.set_vexpand(true);
     terminal.set_margin_bottom(4);
 
     let terminal_header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -2782,8 +2789,8 @@ fn build_preview(
             .try_into()
             .expect("preview row count fits c_long"),
     );
-    // VTE owns text input and selection. Scrollback is handled before the
-    // outer pane, including when the profile hides its scrollbar.
+    // VTE owns text input and selection. Its local scroll controller works
+    // even when the profile hides the terminal's scrollbar.
     vte_terminal.set_can_target(true);
     vte_terminal.set_focusable(true);
     vte_terminal.set_font(Some(&initial_typography.font_description()));
@@ -2808,15 +2815,14 @@ fn build_preview(
     // window is narrow.
     let terminal_canvas = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     terminal_canvas.set_vexpand(false);
+    terminal_canvas.set_valign(gtk::Align::Start);
     terminal_canvas.add_css_class("terminal-canvas");
     terminal_canvas.append(&vte_terminal);
-    let terminal_scrollbar = gtk::Scrollbar::new(
-        gtk::Orientation::Vertical,
-        vte_terminal.vadjustment().as_ref(),
-    );
+    let terminal_scrollbar =
+        gtk::Scrollbar::new(gtk::Orientation::Vertical, None::<&gtk::Adjustment>);
     terminal_scrollbar.set_vexpand(true);
     terminal_scrollbar.set_valign(gtk::Align::Fill);
-    terminal_scrollbar.set_tooltip_text(Some("Terminal scrollback"));
+    terminal_scrollbar.set_tooltip_text(Some("Scroll terminal content and history"));
     terminal_scrollbar.add_css_class("terminal-scrollbar");
     terminal_scrollbar.update_property(&[gtk::accessible::Property::Label("Terminal Scrollbar")]);
     let terminal_scrollbar_revealer = gtk::Revealer::builder()
@@ -2831,62 +2837,37 @@ fn build_preview(
         // external policy keeps its rail invisible while touchpad and
         // Shift+wheel panning remain available.
         .hscrollbar_policy(gtk::PolicyType::External)
-        .vscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
         .propagate_natural_width(false)
-        .vexpand(false)
+        .propagate_natural_height(false)
+        .vexpand(true)
         .height_request(PREVIEW_MIN_HEIGHT)
         .css_classes(["terminal-viewport"])
         .child(&terminal_canvas)
         .build();
     terminal_viewport.set_hexpand(true);
     terminal_viewport.set_tooltip_text(Some(
-        "Terminal preview · use Shift+wheel or a sideways touchpad gesture to pan wide grids",
+        "Scroll terminal content independently · Shift+wheel or a sideways touchpad gesture pans wide grids",
     ));
     terminal_viewport.update_property(&[
         gtk::accessible::Property::Label("Terminal Preview"),
         gtk::accessible::Property::Description(
-            "A terminal grid that can be panned horizontally when it is wider than the preview",
+            "Scroll terminal content without moving the editor or diagnostics; pan wide grids horizontally with Shift+wheel",
         ),
     ]);
-    // VTE sits inside a horizontal scroller. Prioritize its row-based
-    // scrollback, then pass gestures at either boundary to the outer pane.
-    let terminal_scroll =
-        gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
-    terminal_scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
-    // Start outside the inner horizontal ScrolledWindow. Passing the viewport
-    // itself would resolve that widget as its own ancestor and swallow the
-    // vertical gesture instead of reaching the outer preview scroller.
-    let terminal_scroll_source = content.clone();
-    let scrollback_terminal = vte_terminal.clone();
-    terminal_scroll.connect_scroll(move |controller, _, delta_y| {
-        if let Some(adjustment) = scrollback_terminal.vadjustment() {
-            let destination = preview_scrollback_destination(
-                adjustment.value(),
-                adjustment.lower(),
-                adjustment.upper(),
-                adjustment.page_size(),
-                delta_y,
-                scrollback_terminal.char_height() as f64,
-                controller.unit(),
-            );
-            if let Some(destination) = destination {
-                adjustment.set_value(destination);
-                return glib::Propagation::Stop;
-            }
-        }
-        scroll_parent_vertically(&terminal_scroll_source, delta_y, controller.unit());
-        glib::Propagation::Stop
-    });
-    terminal_viewport.add_controller(terminal_scroll);
+    let scroll = preview_scroll::PreviewScroll::new(&vte_terminal, &terminal_viewport);
+    terminal_scrollbar.set_adjustment(Some(&scroll.adjustment));
     let terminal_stage = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     terminal_stage.set_hexpand(true);
-    terminal_stage.set_vexpand(false);
+    terminal_stage.set_vexpand(true);
+    scroll.attach(&terminal_stage);
     terminal_stage.add_css_class("terminal-stage");
     terminal_stage.append(&terminal_viewport);
     terminal_stage.append(&terminal_scrollbar_revealer);
     terminal.append(&terminal_stage);
 
     let inspect_layer = gtk::Overlay::new();
+    inspect_layer.set_vexpand(true);
     inspect_layer.set_child(Some(&terminal));
     let inspect_highlight = gtk::DrawingArea::new();
     inspect_highlight.set_can_target(false);
@@ -2950,6 +2931,8 @@ fn build_preview(
     let diagnostic_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
+        // A late diagnostic must not resize the independent terminal viewport.
+        .min_content_height(96)
         .max_content_height(96)
         .propagate_natural_height(true)
         .css_classes(["diagnostic-scroll"])
@@ -2964,19 +2947,8 @@ fn build_preview(
     quality.append(&diagnostic_surface);
     content.append(&quality);
 
-    let scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        // Hide the large pane scrollbar without making the content dictate
-        // the window's minimum height. Unlike `Never`, `External` keeps the
-        // viewport scrollable by wheel and touchpad when the window is short.
-        .vscrollbar_policy(gtk::PolicyType::External)
-        .min_content_width(360)
-        .css_classes(["preview-scroll"])
-        .child(&content)
-        .build();
-
     PreviewWidgets {
-        root: preview_hint::attach(divider, &terminal_viewport, &scroll),
+        root: preview_hint::attach(divider, &terminal_viewport, &content),
         content,
         terminal_title,
         terminal_shell: terminal,
@@ -2989,6 +2961,7 @@ fn build_preview(
         terminal_canvas,
         terminal_viewport,
         terminal_scrollbar_revealer,
+        scroll,
         selector,
         prompt_selector,
         compare_selector,
@@ -3193,27 +3166,6 @@ fn preview_visible_origin(terminal: &vte::Terminal) -> Option<(i64, f64)> {
         }
     }
     matched
-}
-
-fn preview_scrollback_destination(
-    value: f64,
-    lower: f64,
-    upper: f64,
-    page_size: f64,
-    delta: f64,
-    cell_height: f64,
-    unit: gdk::ScrollUnit,
-) -> Option<f64> {
-    if !delta.is_finite() || delta == 0.0 {
-        return None;
-    }
-    let rows = if unit == gdk::ScrollUnit::Surface {
-        delta / cell_height.max(1.0)
-    } else {
-        delta * 3.0
-    };
-    let destination = (value + rows).clamp(lower, (upper - page_size).max(lower));
-    ((destination - value).abs() > f64::EPSILON).then_some(destination)
 }
 
 fn fitted_preview_columns(
@@ -4279,20 +4231,10 @@ impl Workbench {
                 if this.navigating_preview.get() || !this.preview_uses_prompt.get() {
                     return;
                 }
-                let adjustment = this.preview_terminal.vadjustment();
-                let position = adjustment.as_ref().map(|a| a.value());
+                let position = this.preview_scroll.adjustment.value();
                 this.redraw_preview_contents();
+                this.preview_scroll.restore_after_redraw(position);
                 this.schedule_diagnostics();
-                let generation = this.inspect_generation.get();
-                let weak = Rc::downgrade(&this);
-                glib::timeout_add_local_once(Duration::from_millis(40), move || {
-                    if let Some(this) = weak.upgrade()
-                        && this.inspect_generation.get() == generation
-                        && let (Some(adjustment), Some(position)) = (adjustment, position)
-                    {
-                        adjustment.set_value(position);
-                    }
-                });
             });
         let weak = Rc::downgrade(this);
         this.fit_preview_switch.connect_active_notify(move |_| {
@@ -4777,6 +4719,12 @@ impl Workbench {
     }
 
     fn redraw_preview_contents(&self) {
+        if !self.greeting_preview.get()
+            || !self.preview_input.borrow().text().is_empty()
+            || !self.preview_input.borrow().submitted().is_empty()
+        {
+            self.preview_scroll.follow_input();
+        }
         self.greeting_motion.stop();
         if self.greeting_preview.get() {
             self.refresh_terminal_geometry(&self.layout_settings());
@@ -5457,6 +5405,7 @@ impl Workbench {
         for adjustment in [
             this.preview_terminal.vadjustment(),
             Some(this.preview_terminal_viewport.hadjustment()),
+            Some(this.preview_terminal_viewport.vadjustment()),
         ]
         .into_iter()
         .flatten()
@@ -6261,8 +6210,8 @@ impl Workbench {
                 gtk::PolicyType::External
             });
         // A complete logo can be much taller than the old six-line sketch.
-        // Let the outer preview pane scroll it without pushing its first rows
-        // into VTE scrollback. This never changes the saved Layout document.
+        // Keep the full grid in the terminal's own viewport; the header/log
+        // stay mounted. This never changes the saved Layout document.
         let rows = if self.greeting_preview.get() {
             layout.rows.max(
                 (self.greeting_text_for_width(columns).lines().count()
@@ -6302,8 +6251,6 @@ impl Workbench {
         self.preview_terminal_canvas
             .set_width_request(preview_width);
         self.preview_terminal_canvas
-            .set_height_request(preview_height);
-        self.preview_terminal_viewport
             .set_height_request(preview_height);
         self.updating_geometry.set(false);
     }
@@ -6505,7 +6452,8 @@ impl Workbench {
         let notes = issue_count - errors - warnings;
 
         remove_status_classes(&self.summary_icon);
-        self.diagnostic_header.set_visible(issue_count != 1);
+        // Keep the summary row allocated as async checks add/remove notices.
+        self.diagnostic_header.set_visible(true);
         self.summary_icon.set_visible(issue_count == 0);
         if errors > 0 {
             self.summary_icon.add_css_class("status-error");
@@ -8242,6 +8190,20 @@ mod tests {
         this.palette_module_button.set_active(true);
         this.name_entry.grab_focus();
         capture("palette");
+        let scene_button = this
+            .preview_selector
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::ToggleButton>()
+            .expect("native scene dropdown toggle");
+        scene_button.set_active(true);
+        capture("preview-scene-menu");
+        assert!(scene_button.is_active());
+        scene_button.set_active(false);
+        this.dark_button.set_active(true);
+        this.name_entry.grab_focus();
+        capture("palette-dark");
+        this.light_button.set_active(true);
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-typography", None);
         settle();
         capture("typography");
@@ -8293,6 +8255,16 @@ mod tests {
         let designer_edited = this.prompt_settings.borrow().clone();
         assert_ne!(designer_original, designer_edited);
         capture("designer-edited");
+        let compare_button = this
+            .prompt_compare_selector
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::ToggleButton>()
+            .expect("native compare dropdown toggle");
+        compare_button.set_active(true);
+        capture("preview-compare-menu");
+        assert!(compare_button.is_active());
+        compare_button.set_active(false);
         this.prompt_compare_selector.set_selected(1);
         assert_eq!(this.preview_prompt_settings(), designer_original);
         assert_eq!(*this.prompt_settings.borrow(), designer_edited);
@@ -9965,36 +9937,6 @@ mod tests {
         assert_eq!(save_button_state(true, false, true), (true, true));
         assert_eq!(save_button_state(true, true, false), (false, false));
         assert_eq!(save_button_state(false, false, false), (false, false));
-    }
-
-    #[test]
-    fn preview_scrollback_routes_to_outer_pane_only_at_boundaries() {
-        let wheel = gdk::ScrollUnit::Wheel;
-        let surface = gdk::ScrollUnit::Surface;
-        assert_eq!(
-            preview_scrollback_destination(80.0, 0.0, 100.0, 20.0, -1.0, 20.0, wheel),
-            Some(77.0)
-        );
-        assert_eq!(
-            preview_scrollback_destination(80.0, 0.0, 100.0, 20.0, 1.0, 20.0, wheel),
-            None
-        );
-        assert_eq!(
-            preview_scrollback_destination(0.0, 0.0, 100.0, 20.0, -1.0, 20.0, wheel),
-            None
-        );
-        assert_eq!(
-            preview_scrollback_destination(0.0, 0.0, 20.0, 20.0, 1.0, 20.0, wheel),
-            None
-        );
-        assert_eq!(
-            preview_scrollback_destination(40.0, 0.0, 100.0, 20.0, 10.0, 20.0, surface),
-            Some(40.5)
-        );
-        assert_eq!(
-            preview_scrollback_destination(40.0, 0.0, 100.0, 20.0, f64::NAN, 20.0, wheel),
-            None
-        );
     }
 
     #[test]
