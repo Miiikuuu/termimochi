@@ -773,6 +773,15 @@ fn present_with_preset(
         ("Export Greeting Preset…", "export-greeting"),
         ("Reload Saved Greeting…", "reload-greeting"),
         ("Export Fastfetch Configuration…", "export-fastfetch"),
+        ("Export Logo as TXT…", "export-greeting-txt"),
+        ("Export Logo as ANSI…", "export-greeting-ans"),
+        (
+            "Load Current Fastfetch Configuration",
+            "load-current-fastfetch",
+        ),
+        ("Import Fastfetch Configuration…", "import-fastfetch"),
+        ("Review & Apply Fastfetch…", "apply-fastfetch"),
+        ("Restore Previous Fastfetch…", "restore-fastfetch"),
     ] {
         greeting_save_menu.append(Some(label), Some(&format!("win.{action}")));
     }
@@ -3824,6 +3833,35 @@ impl Workbench {
         }
 
         for (name, operation) in [
+            ("load-current-fastfetch", 0),
+            ("import-fastfetch", 1),
+            ("apply-fastfetch", 2),
+            ("restore-fastfetch", 3),
+            ("import-greeting-art", 4),
+            ("export-greeting-txt", 5),
+            ("export-greeting-ans", 6),
+            ("edit-greeting-art-text", 7),
+        ] {
+            let action = gio::SimpleAction::new(name, None);
+            let weak = Rc::downgrade(this);
+            action.connect_activate(move |_, _| {
+                if let Some(this) = weak.upgrade() {
+                    match operation {
+                        0 => this.load_fastfetch_path(crate::fastfetch_apply::default_path()),
+                        1 => this.choose_fastfetch_import(),
+                        2 => this.request_fastfetch_apply(),
+                        3 => this.request_fastfetch_restore(),
+                        4 => this.choose_greeting_art_import(),
+                        5 => this.choose_greeting_art_export(false),
+                        6 => this.choose_greeting_art_export(true),
+                        _ => this.edit_greeting_art_text(),
+                    }
+                }
+            });
+            window.add_action(&action);
+        }
+
+        for (name, operation) in [
             ("save-typography", 0),
             ("export-typography", 1),
             ("apply-typography", 2),
@@ -3998,6 +4036,7 @@ impl Workbench {
             }
             this.refresh_history_actions();
             this.ensure_official_greeting_preview();
+            this.schedule_diagnostics();
             if !this.greeting_redraw_pending.replace(true) {
                 let weak = Rc::downgrade(&this);
                 glib::timeout_add_local_once(Duration::from_millis(80), move || {
@@ -6405,6 +6444,7 @@ impl Workbench {
                 .and_then(|context| context.imported_prompt.source.clone()),
         };
         let mut issues = issues.to_vec();
+        issues.extend(self.greeting_compatibility_issues());
         issues.extend(self.prompt_diagnostics.borrow_mut().check(
             &self.preview_terminal.pango_context(),
             &self.typography_settings().font_description(),

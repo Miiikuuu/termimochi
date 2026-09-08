@@ -376,7 +376,8 @@ input. Reset Preview Session returns to the previous scenario mechanism.
 Inspect maps greeting output to its own editor. Rendering is coalesced and uses
 the active ANSI palette and font. Unicode graphemes are clipped by cell width;
 wide side-by-side artwork stacks above the information in narrow viewports.
-Built-in art includes a TermiMochi mark based on the app icon, Terminal, and pinned
+Built-in art includes a compact 38 × 12 printable-ASCII TermiMochi mark based on the
+app icon (letter/punctuation texture with a negative-space terminal chevron and underscore), Terminal, and pinned
 upstream Ubuntu/Arch/Debian/Fedora/Linux Mint artwork. The upstream MIT license
 and provenance are also compiled into GResources. Fastfetch `$1`…`$9` palette
 markers and `$$` escapes are decoded without changing geometry; user Custom text
@@ -425,8 +426,8 @@ the separate `.fastfetch.jsonc` suffix, with checked atomic writes and private
 backups. An existing destination requires a second Back Up & Replace dialog;
 its bytes are captured before confirmation and rechecked before writing. JSONC
 comments are preserved in backups without executing or importing the file.
-Shell startup filenames, symlinks and hard links are excluded. Arbitrary
-Fastfetch configs are not imported or executed in the first version.
+Shell startup filenames, symlinks and hard links are excluded. This export path
+is separate from the explicit, restorable apply workflow described below.
 
 `greeting_official.rs` adds five pinned, audited Fastfetch 2.57.1 presets:
 Neofetch, Screenfetch, Paleofetch and examples 8/9. `official_preset` defaults to
@@ -438,9 +439,27 @@ original ID exactly once. The dynamic GTK field list supports switches, arrows,
 drag insertion, single-transaction Undo/Redo and portable preset/workspace saves.
 The custom field list is retained separately while exploring official presets.
 
-Only compile-time bundled JSONC is parsed; arbitrary user Fastfetch documents,
-commands, image paths and network-enabled examples cannot enter this execution
-path. Official fields run through `/usr/bin/fastfetch` in `/usr/bin/bwrap` with a
+TermiMochi's own `resources/termimochi-greeting.jsonc` uses that same full native
+pipeline: 19 configurable modules including title/separator, host/packages,
+desktop/display, hardware, memory/disk and a color strip. Its compact ASCII logo
+follows the existing brand vector silhouette and negative-space `>_`, with visible
+`o/l/c` texture and punctuation contours like the upstream ASCII artwork, not
+Unicode blocks or Braille. A regression test restricts the asset to printable
+ASCII plus line feeds; cell geometry and native export remain identical. The
+legacy `official_preset`/`official_items` field names are retained for document
+compatibility; the brand preset appends stable ID 6 (`termimochi`) while upstream
+IDs 1–5 remain unchanged. Display order is independent: TermiMochi comes first.
+`GreetingSettings::starter()` selects it at 100 columns, disabled until enabled,
+only for new editor sessions. `Default`/legacy deserialization and saved custom
+documents are unchanged. Brand and upstream presets share toggles, drag ordering,
+field editing, width handling, exports and Undo/Redo. The opt-in GTK test
+`termimochi_brand_starter_preview_and_saved_custom_preservation` checks 80/100/120
+columns, restart/save behavior and preservation of existing custom greetings.
+
+Native preview accepts generated designer configurations or a restricted
+projection of imported JSONC, never the complete imported document. Command
+modules, user-selected image paths and network-enabled examples cannot enter
+this execution path. Fields run through `/usr/bin/fastfetch` in `/usr/bin/bwrap` with a
 read-only root, private temporary directory and PID namespace, no network, cleared
 environment and no unsandboxed fallback. The shared concurrent-pipe helper limits
 stdout to 32 KiB and runtime to 2.2 seconds, kills/reaps timeouts, and reports failures.
@@ -451,6 +470,87 @@ are shown. Export keeps the original module formats and runs normally in the use
 terminal. Official module requests are coalesced into at most one running worker;
 source-key checks prevent stale preset results replacing newer edits. Palette/font
 changes, widths and artwork edits reuse the result without launching another probe.
+
+`greeting_fields.rs` defines validated, serde-default `FieldStyle` overrides:
+literal label/inline icon, ANSI key/output color slots and a reviewed format
+catalog. IDs address custom field identities, pinned preset/index pairs or
+imported array indices, so duplicates remain distinct and reset is lossless.
+`window/greeting/fields.rs` attaches one reusable popover to field-name buttons.
+Atomic entry notifications avoid committing the intermediate deletion during a
+paste; invalid drafts block save/apply and cannot be hidden by editing a color.
+Styles use the same generated module objects for native preview and export.
+Unstyled custom designs retain the lightweight snapshot path. Native rendering
+requires system Fastfetch 2.x >= 2.57 and Bubblewrap; a failed version/dependency
+check never falls back to executing the imported file or an unsandboxed process.
+
+`fastfetch_document.rs` uses jsonc-parser's lossless CST. It enforces 64 KiB,
+32 nesting levels, 128 modules, strict JSON syntax except comments/trailing
+commas, unique object keys and bounded ASCII module type names. Batch field
+edits modify only selected scalar properties, retaining comments, whitespace,
+unknown properties and all untouched modules. `imported_source` and overrides
+are portable document data; an external write target is not serialized.
+The safe preview projection allows reviewed local module types, bounded scalar
+formats, explicitly named built-in/small logos and bounded text artwork with SGR only.
+Disk probing is pinned to `/`. Commands, network/custom modules, imported file
+paths and unsupported display/general options are omitted and reported, while
+export/apply retains them. Imported layout is read-only rather than pretending
+that designer layout controls can represent arbitrary upstream configurations.
+
+`greeting_art.rs` bounds UTF-8 TXT/ANS logos to 16 KiB, 64 rows and 120 terminal
+cells per row. An SGR whitelist retains 16/256/RGB foreground/background colors,
+bold/dim, italic, underline, reverse and strike. OSC/DCS/APC/C1 controls, cursor
+movement, erasure, blink/conceal and bidi controls are removed with a notice;
+this deliberately is not an ANSI screen emulator. Tabs expand at 8-cell stops,
+CRLF/BOM normalize, and style state resets/reopens at line boundaries for safe
+composition. Serialized ANSI/plain pairs are revalidated on load. GTK edits
+plain text only; removing imported styles is explicit and undoable.
+
+Fastfetch `data` and `file` decode `$1`–`$9` and `$$`; raw types keep dollars
+literal. Sanitized marker text and explicit safe color slots are passed as `data`
+so native host-default colors (including unset slots) are preserved, not guessed.
+Marker source tabs follow Fastfetch's four-space expansion. Built-in and small
+types remain distinct. Reviewed padding/position,
+printRemaining and color slots are projected. At explicit config import only,
+literal regular text files contained inside the canonical config directory are
+snapshotted (no leaf symlink/hardlink, special files or word expansion). Preview
+passes embedded sanitized text, never a filesystem source, to Fastfetch. The
+saved snapshot/descriptor survives portable presets but mismatches are rejected.
+Relative resolution differs from Fastfetch's CWD semantics and is reported;
+original config/path/controls remain untouched. Explicit artwork import replaces
+only the logo type/source through the lossless CST, embedding safe `data-raw`.
+Exports of just the logo use checked TXT/ANS writes, extension guards and backups;
+native built-in logo export runs on a bounded worker without system modules.
+Tests cover encoding, widths, controls, snapshots, aliases/FIFOs, conflicts,
+multiline color, actual Fastfetch projection, GTK cancel/undo and restart.
+
+`window/greeting/fastfetch.rs` exposes Load Current, Import, Review & Apply and
+Restore Previous. The collapsed Compatibility report distinguishes runtime,
+offline detection, Pango missing/private-use fallback glyphs and retained-but-
+unsimulated source settings. Actionable runtime/font issues also join existing
+Preview Checks. Full read-only Before/After panes show the explicit destination;
+Cancel is initially focused, and both the draft and destination bytes are
+rechecked when accepting. The standard path follows the GLib/XDG config directory,
+preferring config.jsonc over config.json. Shell startup files are never targets.
+
+`fastfetch_apply.rs` writes private backups and a checked durable rollback receipt
+under `state_directory()/fastfetch-state`. Apply prepares rollback before an
+atomic write. A failed target write restores the previous receipt; a finalization
+error after replacement keeps the new receipt and explicitly reports that the
+new bytes are present. Restore checks both receipt and target, backs up current
+bytes, then restores the exact original or removes only the exact newly created
+config. All writes reject symlinks, hard links, readonly files and detected
+concurrent changes. Unsupported imported settings may execute later when the
+user invokes Fastfetch externally; the review dialog explicitly discloses this.
+
+`greeting_field_editor_import_review_apply_restore_and_invalid_input` is a separate
+opt-in GTK test for popover lifecycle, live output, undo/redo, invalid drafts,
+font notices, lossless import, command non-execution, cancellation, late file
+conflicts, apply, portable save/workspaces and restart/restore. Run at 1x and 2x;
+`TERMIMOCHI_FIELDS_SCREENSHOT` optionally captures the field editor. The native
+`reviewed_field_formats_render_without_unresolved_placeholders` test checks the
+entire reviewed format catalog using offline Fastfetch. Pure tests cover bounded
+JSONC parsing, retained comments, omitted unsafe preview settings, failed second
+applies, maximum-sized receipts and exact rollback behavior.
 
 `greeting_editor_preview_persistence_and_workspace_safety` is an opt-in GTK/VTE
 test covering controls, widths, motion/reduced motion, Unicode text, invalid-paste undo, module

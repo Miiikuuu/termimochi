@@ -7,10 +7,12 @@ See the accompanying MIT license. These are bundled so installing a different
 Fastfetch version cannot silently change saved presets. The application's
 TermiMochi artwork is separate and is not an upstream Fastfetch asset.
 
-Only the five reviewed, local-information presets are exposed. Examples that
+The five upstream presets are exposed alongside TermiMochi's separate, original
+`../termimochi-greeting.jsonc` preset. Examples that
 launch commands, access the network or depend on external images are not run.
 The original module objects (including formats, duplicate types and decorative
 modules) are retained; explicit field switches and ordering are applied by ID.
 The workbench can customize artwork, placement and accent. The installed
 Fastfetch executable renders the retained modules in a read-only offline
-Bubblewrap sandbox; no arbitrary config file is imported or executed.
+Bubblewrap sandbox. Imported documents use a separate restricted preview
+projection; their command/network/image settings are never executed by preview.

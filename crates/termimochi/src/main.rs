@@ -1,6 +1,10 @@
 mod color_picker;
 mod document_store;
+mod fastfetch_apply;
+mod fastfetch_document;
 mod greeting;
+mod greeting_art;
+mod greeting_fields;
 mod greeting_official;
 mod layout;
 mod layout_apply;

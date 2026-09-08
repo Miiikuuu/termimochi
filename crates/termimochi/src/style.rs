@@ -509,6 +509,18 @@ scale.picker-hue-scale slider {
   box-shadow: 0 2px 8px alpha(black, 0.12);
 }
 
+.greeting-field-button > button {
+  padding: 5px 6px;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  border: none;
+}
+
+.greeting-field-button > button:hover {
+  background: alpha(#20292d, 0.06);
+}
+
 .vte-preview:focus-visible {
   outline: 2px solid #505b63;
   outline-offset: -2px;
@@ -650,7 +662,8 @@ button.prompt-catalog-item:focus-visible {
 }
 
 popover.prompt-menu-popover > contents,
-popover.prompt-catalog-popover > contents {
+popover.prompt-catalog-popover > contents,
+popover.greeting-field-popover > contents {
   padding: 0;
   border: none;
   border-radius: 10px;

@@ -1,5 +1,5 @@
-//! Pinned, reviewed upstream presets. No user-supplied Fastfetch document is
-//! accepted. Preserve module objects exactly; order/toggles reference their IDs.
+//! Pinned upstream presets and an offline renderer for generated configurations.
+//! Imported documents must first pass fastfetch_document's safe projection.
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -15,15 +15,31 @@ pub(crate) enum OfficialPreset {
     Paleofetch,
     Icons,
     Bars,
+    #[serde(rename = "termimochi")]
+    TermiMochi,
 }
 impl OfficialPreset {
-    pub const ALL: [Self; 5] = [
+    // Keep persisted IDs 1..5 unchanged; the brand preset appends ID 6.
+    pub const ALL: [Self; 6] = [
+        Self::Neofetch,
+        Self::Screenfetch,
+        Self::Paleofetch,
+        Self::Icons,
+        Self::Bars,
+        Self::TermiMochi,
+    ];
+    pub const CHOICES: [Self; 6] = [
+        Self::TermiMochi,
         Self::Neofetch,
         Self::Screenfetch,
         Self::Paleofetch,
         Self::Icons,
         Self::Bars,
     ];
+    pub const IMPORTED_INDEX: u32 = Self::CHOICES.len() as u32 + 1;
+    pub fn selector_index(self) -> u32 {
+        Self::CHOICES.iter().position(|p| *p == self).unwrap() as u32 + 1
+    }
     pub fn label(self) -> &'static str {
         match self {
             Self::Neofetch => "Neofetch",
@@ -31,6 +47,7 @@ impl OfficialPreset {
             Self::Paleofetch => "Paleofetch",
             Self::Icons => "Icons · Example 8",
             Self::Bars => "Bars · Example 9",
+            Self::TermiMochi => "TermiMochi",
         }
     }
     pub fn source(self) -> &'static str {
@@ -40,6 +57,7 @@ impl OfficialPreset {
             Self::Paleofetch => include_str!("../resources/fastfetch/presets/paleofetch.jsonc"),
             Self::Icons => include_str!("../resources/fastfetch/presets/example-8.jsonc"),
             Self::Bars => include_str!("../resources/fastfetch/presets/example-9.jsonc"),
+            Self::TermiMochi => include_str!("../resources/termimochi-greeting.jsonc"),
         }
     }
     pub fn index(self) -> u32 {
@@ -92,6 +110,7 @@ impl OfficialPreset {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub fn selected_config(self, items: &[OfficialItem]) -> Result<Value, String> {
         self.validate_items(items)?;
         let mut config = self.config();
@@ -154,6 +173,7 @@ fn parse_jsonc(source: &str) -> Result<Value, String> {
 /// Render only pinned module objects. User text/art never enters this process.
 /// The layout is composed locally around these ANSI lines, using the same logo
 /// data and exported module configuration. No project directory is mounted RW.
+#[cfg(test)]
 pub(crate) fn render(
     preset: OfficialPreset,
     items: &[OfficialItem],
@@ -161,12 +181,17 @@ pub(crate) fn render(
 ) -> Result<String, String> {
     let mut config = preset.selected_config(items)?;
     config["logo"] = json!({"type":"none"});
+    config["display"]["color"] = json!({"keys":accent.to_string()});
+    render_config(config)
+}
+
+/// Only call with a generated designer config or a filtered imported projection.
+pub(crate) fn render_config(mut config: Value) -> Result<String, String> {
     config["display"]["pipe"] = json!(false);
     config["display"]["hideCursor"] = json!(false);
     config["display"]["disableLinewrap"] = json!(false);
     config["display"]["brightColor"] = json!(false);
     config["display"]["showErrors"] = json!(true);
-    config["display"]["color"] = json!({"keys":accent.to_string()});
     config["general"] = json!({"processingTimeout":200});
     let scratch = tempfile::Builder::new()
         .prefix("termimochi-fastfetch-")
@@ -182,9 +207,33 @@ pub(crate) fn render(
         || !std::path::Path::new("/usr/bin/bwrap").is_file()
     {
         return Err(
-            "Install Fastfetch and Bubblewrap to preview official presets. Export still works."
+            "Install system Fastfetch and Bubblewrap for native field preview. Export still works."
                 .into(),
         );
+    }
+    let version = crate::preview_context::run_bounded(
+        Command::new("/usr/bin/fastfetch")
+            .arg("--version")
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin"),
+        Instant::now() + Duration::from_millis(500),
+    )
+    .map_err(|_| {
+        "Could not check the installed Fastfetch version. Refresh the system snapshot to retry."
+            .to_owned()
+    })?;
+    let numbers: Vec<_> = version
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("")
+        .split('.')
+        .filter_map(|n| n.parse::<u32>().ok())
+        .collect();
+    if numbers.len() < 2 || numbers[0] != 2 || numbers[1] < 57 {
+        return Err(format!(
+            "Fastfetch version not supported for field preview: {}. Use Fastfetch 2.57 or newer 2.x; exports remain available for review.",
+            version.trim()
+        ));
     }
     let mut command = Command::new("/usr/bin/bwrap");
     command
@@ -242,15 +291,48 @@ pub(crate) fn render(
         &mut command,
         Instant::now() + Duration::from_millis(2200),
     )
-    .map_err(|e| {
-        format!("Official preview unavailable ({e:?}). No unsandboxed fallback was run.")
-    })?;
+    .map_err(|e| format!("Native preview unavailable ({e:?}). No unsandboxed fallback was run."))?;
     Ok(crate::starship_import::terminal_safe_ansi(&output))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires system Fastfetch and Bubblewrap; offline native format validation"]
+    fn reviewed_field_formats_render_without_unresolved_placeholders() {
+        let mut modules = Vec::new();
+        for kind in [
+            "cpu", "gpu", "memory", "disk", "os", "shell", "terminal", "datetime",
+        ] {
+            for (index, (_, format)) in crate::greeting_fields::formats(kind).iter().enumerate() {
+                let mut module = json!({"type":kind});
+                crate::greeting_fields::FieldStyle {
+                    label: Some(format!("{kind}-{index}")),
+                    icon: Some("+".into()),
+                    key_color: Some(4),
+                    value_color: Some(2),
+                    format: Some((*format).into()),
+                }
+                .apply(&mut module)
+                .unwrap();
+                if kind == "disk" {
+                    module["folders"] = json!("/");
+                }
+                modules.push(module);
+            }
+        }
+        let output = render_config(json!({"logo":{"type":"none"},"modules":modules})).unwrap();
+        assert!(!output.contains('{'), "{output}");
+        assert!(!output.contains("Unknown"), "{output}");
+        for kind in ["cpu", "memory", "disk", "os", "datetime"] {
+            for (index, _) in crate::greeting_fields::formats(kind).iter().enumerate() {
+                assert!(output.contains(&format!("+ {kind}-{index}")), "{output}");
+            }
+        }
+        assert!(output.contains("\x1b[34m"), "{output}");
+        assert!(!output.contains("\x1b]"));
+    }
     #[test]
     fn bundled_presets_have_only_reviewed_local_modules_and_preserve_every_object() {
         let allowed = [

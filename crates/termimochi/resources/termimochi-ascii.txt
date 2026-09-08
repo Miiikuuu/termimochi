@@ -1,18 +1,12 @@
-                     .:::cccccccccc:::.
-               .:cooooooooooooooooooooooooc:.
-            :cooooooooooooooooooooooooooooooooc:
-         :coooooooo:.:cooooooooooooooooooooooooooc:
-       :ooooooooooc    .cooooooooooooooooooooooooooo:
-     .oooooooooooooo:    .cooooooooooooooooooooooooooo.
-    :ooooooooooooooooo:    .coooooooooooooooooooooooooo:
-   cooooooooooooooooooo:    .oooooooooooooooooooooooooooc
-  .ooooooooooooooooooc.    :ooooooooooooooooooooooooooooo.
-  :ooooooooooooooooc.    :oooooocccccccccccccccoooooooooo:
-  cooooooooooooooo:    :oooooooc               ooooooooooc
-  :ooooooooooooooooc:cooooooooooc:::::::::::::coooooooooo:
-  .oooooooooooooooooooooooooooooooooooooooooooooooooooooo.
-   .oooooooooooooooooooooooooooooooooooooooooooooooooooo.
-     :oooooooooooooooooooooooooooooooooooooooooooooooo:
-       :cooooooooooooooooooooooooooooooooooooooooooc:
-          .:cooooooooooooooooooooooooooooooooooc:.
-                .:::cccccccccccccccccccc:::.
+          .::clloooooollc::.
+      .:looolooooooooooooooool:.
+    :looooo. .coooooooooooooooool:
+  :ooooooool,  .coooooooooooooooooo:
+ coooooooooooc.  .loooooooooooooooooc
+:oooooooooooo:   ,ooooooooooooooooooo:
+loooooooooo:   ,looooooooooooooooooool
+ooooooooooo,.,looooo,         ,ooooooo
+cooooooooooooooooooooooooooooooooooooc
+ :oooooooooooooooooooooooooooooooooo:
+   :looooooooooooooooooooooooooool:
+      ,:cllloooooooooooooolllc:,

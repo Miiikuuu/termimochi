@@ -4,8 +4,11 @@ use crate::greeting::{
     GreetingPreset, GreetingSettings, Info, Logo, Opening, PRESET_NAME, Position,
 };
 use crate::greeting_official::{OfficialItem, OfficialPreset};
+mod artwork;
+mod fastfetch;
+mod fields;
 
-pub(super) type OfficialKey = (OfficialPreset, Vec<OfficialItem>, u8);
+pub(super) type OfficialKey = (Option<OfficialPreset>, String);
 type OfficialRow = (u16, gtk::Box, gtk::Switch, gtk::Button, gtk::Button);
 
 const WIDTHS: [u16; 4] = [0, 80, 100, 120];
@@ -44,6 +47,15 @@ impl HistorySnapshot for GreetingSettings {
 type Changed = Box<dyn Fn()>;
 pub(super) struct GreetingEditor {
     pub root: gtk::ScrolledWindow,
+    fields: fields::FieldInspector,
+    appearance_group: gtk::Box,
+    imported_list: gtk::Box,
+    imported_signature: RefCell<Vec<String>>,
+    compatibility: gtk::Expander,
+    report_body: gtk::Box,
+    last_report: RefCell<Vec<String>>,
+    fastfetch_target: RefCell<Option<crate::fastfetch_apply::Target>>,
+    fastfetch_state: PathBuf,
     enabled: gtk::Switch,
     preset: gtk::DropDown,
     preset_note: gtk::Label,
@@ -79,6 +91,10 @@ pub(super) struct GreetingEditor {
 
 impl GreetingEditor {
     pub fn new(path: PathBuf) -> Rc<Self> {
+        let fastfetch_state = path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("fastfetch-state");
         let loaded = DocumentStore::<GreetingPreset>::open(path).and_then(|store| {
             let preset = store.document()?;
             Ok((store, preset))
@@ -88,12 +104,14 @@ impl GreetingEditor {
                 let saved = preset.is_some();
                 (
                     Some(store),
-                    preset.map(|p| p.greeting).unwrap_or_default(),
+                    preset
+                        .map(|p| p.greeting)
+                        .unwrap_or_else(GreetingSettings::starter),
                     saved,
                     None,
                 )
             }
-            Err(error) => (None, GreetingSettings::default(), false, Some(error)),
+            Err(error) => (None, GreetingSettings::starter(), false, Some(error)),
         };
         let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
         content.set_margin_top(16);
@@ -114,14 +132,32 @@ impl GreetingEditor {
         header.append(&enabled);
         content.append(&header);
         let mut presets = vec!["Custom design"];
-        presets.extend(OfficialPreset::ALL.map(OfficialPreset::label));
+        presets.extend(OfficialPreset::CHOICES.map(OfficialPreset::label));
         let preset = layout_drop_down(
             &presets,
-            settings.official_preset.map_or(0, OfficialPreset::index),
+            settings
+                .official_preset
+                .map_or(0, OfficialPreset::selector_index),
             "Greeting Starting Point",
-            "Five reviewed Fastfetch 2.57.1 presets. All original module formats are preserved. Switching is undoable.",
+            "TermiMochi and five reviewed Fastfetch presets. Full native fields, editable formats and undoable switching.",
         );
         content.append(&layout_row("Preset", &preset));
+        let config_menu = gio::Menu::new();
+        for (label, action) in [
+            ("Load Current Configuration", "load-current-fastfetch"),
+            ("Import Fastfetch Configuration…", "import-fastfetch"),
+            ("Review & Apply…", "apply-fastfetch"),
+            ("Restore Previous Configuration…", "restore-fastfetch"),
+        ] {
+            config_menu.append(Some(label), Some(&format!("win.{action}")));
+        }
+        let config_button = gtk::MenuButton::builder()
+            .label("Fastfetch Configuration")
+            .menu_model(&config_menu)
+            .has_frame(false)
+            .halign(gtk::Align::Start)
+            .build();
+        content.append(&config_button);
         let preset_note = gtk::Label::new(None);
         preset_note.set_xalign(0.0);
         preset_note.set_wrap(true);
@@ -166,7 +202,7 @@ impl GreetingEditor {
             "Artwork Gap",
             "Spacing in terminal cells",
         );
-        content.append(&layout_group(
+        let appearance_group = layout_group(
             "Appearance",
             [
                 layout_row("Artwork", &logo),
@@ -174,12 +210,30 @@ impl GreetingEditor {
                 layout_row("Accent", &accent),
                 layout_row("Gap", &gap),
             ],
-        ));
+        );
+        content.append(&appearance_group);
         let artwork_size = gtk::Label::new(None);
         artwork_size.set_xalign(0.0);
         artwork_size.add_css_class("dim-label");
         artwork_size.set_tooltip_text(Some("Original character dimensions, not a scaled thumbnail. Wider artwork can be panned at a fixed preview width."));
         content.append(&artwork_size);
+        let art_menu = gio::Menu::new();
+        for (label, action) in [
+            ("Import Artwork…", "win.import-greeting-art"),
+            ("Export Plain Text…", "win.export-greeting-txt"),
+            ("Export ANSI…", "win.export-greeting-ans"),
+            ("Edit as Plain Text", "win.edit-greeting-art-text"),
+        ] {
+            art_menu.append(Some(label), Some(action));
+        }
+        let art_files = gtk::MenuButton::builder()
+            .label("Artwork Files")
+            .menu_model(&art_menu)
+            .halign(gtk::Align::Start)
+            .build();
+        art_files.add_css_class("flat");
+        art_files.set_tooltip_text(Some("Import UTF-8 .txt / .ans artwork, export the logo, or remove ANSI colors for text editing."));
+        content.append(&art_files);
         let artwork = gtk::TextView::builder()
             .monospace(true)
             .wrap_mode(gtk::WrapMode::None)
@@ -253,10 +307,7 @@ impl GreetingEditor {
             handle.set_cursor_from_name(Some("grab"));
             handle.set_tooltip_text(Some("Drag to reorder · or use the arrow buttons"));
             row.append(&handle);
-            let label = gtk::Label::new(Some(kind.label()));
-            label.set_xalign(0.0);
-            label.set_hexpand(true);
-            label.add_css_class("layout-row-label");
+            let label = fields::field_button(kind.label());
             let up = gtk::Button::from_icon_name("go-up-symbolic");
             let down = gtk::Button::from_icon_name("go-down-symbolic");
             for (button, direction) in [(&up, "up"), (&down, "down")] {
@@ -277,6 +328,16 @@ impl GreetingEditor {
         content.append(&list);
         let official_list = gtk::Box::new(gtk::Orientation::Vertical, 1);
         content.append(&official_list);
+        let imported_list = gtk::Box::new(gtk::Orientation::Vertical, 1);
+        content.append(&imported_list);
+        let fields = fields::FieldInspector::new();
+        let report_body = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let compatibility = gtk::Expander::builder()
+            .label("Compatibility")
+            .child(&report_body)
+            .expanded(false)
+            .build();
+        content.append(&compatibility);
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         for (label, action) in [
             ("Save Preset", "win.save-greeting"),
@@ -310,6 +371,15 @@ impl GreetingEditor {
             .build();
         let this = Rc::new_cyclic(|weak| Self {
             root,
+            fields,
+            appearance_group,
+            imported_list,
+            imported_signature: RefCell::new(Vec::new()),
+            compatibility,
+            report_body,
+            last_report: RefCell::new(Vec::new()),
+            fastfetch_target: RefCell::new(None),
+            fastfetch_state,
             enabled,
             preset,
             preset_note,
@@ -344,6 +414,7 @@ impl GreetingEditor {
         });
         this.refresh();
         Self::connect(&this);
+        Self::connect_field_inspector(&this);
         if let Some(notice) = notice {
             this.status
                 .set_text(&format!("Saved greeting unavailable: {notice}"));
@@ -414,8 +485,26 @@ impl GreetingEditor {
         self.updating.set(true);
         let settings = self.settings();
         self.enabled.set_active(settings.enabled);
+        let mut labels = vec!["Custom design"];
+        labels.extend(OfficialPreset::CHOICES.map(OfficialPreset::label));
+        if settings.imported_source.is_some() {
+            labels.push("Imported Fastfetch");
+        }
+        if self
+            .preset
+            .model()
+            .is_none_or(|m| m.n_items() as usize != labels.len())
+        {
+            self.preset.set_model(Some(&gtk::StringList::new(&labels)));
+        }
         self.preset
-            .set_selected(settings.official_preset.map_or(0, OfficialPreset::index));
+            .set_selected(if settings.imported_source.is_some() {
+                OfficialPreset::IMPORTED_INDEX
+            } else {
+                settings
+                    .official_preset
+                    .map_or(0, OfficialPreset::selector_index)
+            });
         self.logo.set_selected(settings.logo.index());
         self.position.set_selected(settings.position.index());
         self.accent.set_selected(settings.accent.into());
@@ -436,6 +525,12 @@ impl GreetingEditor {
         ));
         self.message.set_text(&settings.message);
         self.artwork.buffer().set_text(&settings.custom_logo);
+        let colored = settings
+            .custom_art
+            .as_ref()
+            .is_some_and(|art| art.ansi.contains('\x1b'));
+        self.artwork.set_editable(!colored);
+        self.artwork.set_tooltip_text(Some(if colored {"Colors are preserved. Artwork Files → Edit as Plain Text removes colors and enables editing; Undo restores them."}else{"UTF-8 artwork: up to 64 lines, 120 cells per line and 16 KiB."}));
         self.message.remove_css_class("error");
         self.artwork.remove_css_class("error");
         self.artwork_scroll
@@ -456,6 +551,8 @@ impl GreetingEditor {
         self.refresh_status();
         self.refresh_artwork_info();
         self.refresh_official_fields();
+        self.refresh_imported_fields();
+        self.refresh_field_inspector();
         self.updating.set(false);
     }
     pub fn refresh_status(&self) {
@@ -495,15 +592,17 @@ impl GreetingEditor {
     }
     fn refresh_official_fields(&self) {
         let settings = self.settings();
-        self.list.set_visible(settings.official_preset.is_none());
+        self.list
+            .set_visible(settings.official_preset.is_none() && settings.imported_source.is_none());
         self.official_list
             .set_visible(settings.official_preset.is_some());
         self.preset_note.set_text(match settings.official_preset {
+            Some(OfficialPreset::TermiMochi) => "TermiMochi · full native system profile",
             Some(OfficialPreset::Icons) => "Official Example 8 · uses Nerd Font icons",
             Some(_) => "Fastfetch 2.57.1 · original fields and formats",
-            None => "Choose an official preset to get started",
+            None => "Basic custom fields · choose TermiMochi for a complete preset",
         });
-        self.preset_note.set_tooltip_text(Some("Five bundled upstream presets. Network/command/image-dependent examples are not included. Official formats are retained when toggling or dragging fields. Desktop-specific facts may be unavailable in the offline sandbox; exports use live Fastfetch detection."));
+        self.preset_note.set_tooltip_text(Some("TermiMochi's own full preset and five bundled upstream presets. Formats are retained when toggling or dragging fields. Desktop-specific facts may be unavailable in the offline sandbox; exports use live Fastfetch detection."));
         if self.shown_official.get() != settings.official_preset {
             self.shown_official.set(settings.official_preset);
             self.official_dragging.set(None);
@@ -520,14 +619,11 @@ impl GreetingEditor {
                     let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
                     handle.set_cursor_from_name(Some("grab"));
                     handle.set_tooltip_text(Some("Drag to reorder this official field"));
-                    let name = gtk::Label::new(Some(&label));
-                    name.set_xalign(0.0);
-                    name.set_hexpand(true);
-                    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                    name.add_css_class("layout-row-label");
+                    let name = fields::field_button(&label);
+                    self.bind_field(&name, usize::from(id));
                     let toggle = layout_switch(
                         true,
-                        &format!("Show official {label}"),
+                        &format!("Show preset {label}"),
                         "Retains the original Fastfetch module and format",
                     );
                     let up = gtk::Button::from_icon_name("go-up-symbolic");
@@ -703,7 +799,7 @@ impl GreetingEditor {
         row.add_controller(target);
     }
     fn read_controls(&self, text_edit: bool) {
-        if self.updating.get() {
+        if self.updating.get() || self.invalid_field_draft() {
             return;
         }
         let mut settings = self.settings();
@@ -716,9 +812,13 @@ impl GreetingEditor {
         settings.gap = self.gap.value_as_int().clamp(0, 8) as u8;
         settings.message = self.message.text().into();
         let buffer = self.artwork.buffer();
-        settings.custom_logo = buffer
+        let text: String = buffer
             .text(&buffer.start_iter(), &buffer.end_iter(), true)
             .into();
+        if text != settings.custom_logo {
+            settings.custom_art = None;
+            settings.custom_logo = text;
+        }
         for item in &mut settings.items {
             item.enabled = self
                 .rows
@@ -752,7 +852,8 @@ impl GreetingEditor {
             *self.settings.borrow_mut() = settings;
         }
         self.artwork_scroll.set_visible(
-            self.settings.borrow().logo == Logo::Custom
+            self.settings.borrow().imported_source.is_none()
+                && self.settings.borrow().logo == Logo::Custom
                 && self.settings.borrow().position != Position::Card,
         );
         self.replay.set_sensitive(
@@ -779,13 +880,16 @@ impl GreetingEditor {
             }
             if this.invalid.get() {
                 this.status
-                    .set_text("Fix or undo the invalid artwork before switching presets.");
+                    .set_text("Fix or undo invalid input before switching presets.");
                 this.updating.set(true);
-                selector.set_selected(
-                    this.settings()
+                let settings = this.settings();
+                selector.set_selected(if settings.imported_source.is_some() {
+                    OfficialPreset::IMPORTED_INDEX
+                } else {
+                    settings
                         .official_preset
-                        .map_or(0, OfficialPreset::index),
-                );
+                        .map_or(0, OfficialPreset::selector_index)
+                });
                 this.updating.set(false);
                 return;
             }
@@ -795,9 +899,24 @@ impl GreetingEditor {
                 // presets. Returning to them is an explicit, undoable choice.
                 settings.official_preset = None;
                 settings.official_items.clear();
-            } else {
+                settings.imported_source = None;
+                settings.source_logo = None;
                 settings
-                    .use_official(OfficialPreset::ALL[(selector.selected() - 1).min(4) as usize]);
+                    .field_styles
+                    .retain(|key, _| !key.starts_with("imported:"));
+            } else if selector.selected() == OfficialPreset::IMPORTED_INDEX
+                && settings.imported_source.is_some()
+            {
+                return;
+            } else {
+                let Some(preset) = selector
+                    .selected()
+                    .checked_sub(1)
+                    .and_then(|i| OfficialPreset::CHOICES.get(i as usize))
+                else {
+                    return;
+                };
+                settings.use_official(*preset);
             }
             this.replace(settings, true);
         });
@@ -856,6 +975,13 @@ impl GreetingEditor {
         }
         for (kind, row, _, up, down) in &this.rows {
             let kind = *kind;
+            if let Some(button) = row
+                .first_child()
+                .and_then(|handle| handle.next_sibling())
+                .and_then(|w| w.downcast::<gtk::MenuButton>().ok())
+            {
+                this.bind_field(&button, Info::ALL.iter().position(|k| *k == kind).unwrap());
+            }
             let source = gtk::DragSource::builder()
                 .actions(gdk::DragAction::MOVE)
                 .build();
@@ -1007,16 +1133,40 @@ impl GreetingMotion {
 impl Workbench {
     pub(super) fn ensure_official_greeting_preview(self: &Rc<Self>) {
         let settings = self.greeting.settings();
-        let key = settings
-            .official_preset
-            .filter(|_| settings.enabled)
-            .map(|preset| {
-                (
-                    preset,
-                    settings.official_items.clone(),
-                    settings.color_code(),
-                )
-            });
+        let key = if settings.enabled && settings.needs_native() {
+            let config = if settings.imported_source.is_some() {
+                settings
+                    .fastfetch_config()
+                    .and_then(|source| {
+                        crate::fastfetch_document::preview_config_with_logo(
+                            &source,
+                            settings.source_logo.as_ref(),
+                        )
+                    })
+                    .map(|(config, _)| config)
+            } else {
+                let mut snapshot = settings.clone();
+                snapshot.message.clear();
+                snapshot
+                    .fastfetch_config()
+                    .and_then(|text| {
+                        serde_json::from_str::<serde_json::Value>(&text).map_err(|e| e.to_string())
+                    })
+                    .map(|mut config| {
+                        config["logo"] = serde_json::json!({"type":"none"});
+                        config
+                    })
+            };
+            match config {
+                Ok(config) => Some((settings.official_preset, config.to_string())),
+                Err(error) => {
+                    self.greeting.preset_note.set_text(&error);
+                    None
+                }
+            }
+        } else {
+            None
+        };
         if key != *self.greeting_official_key.borrow() {
             *self.greeting_official_key.borrow_mut() = key.clone();
             self.greeting_official_result.borrow_mut().take();
@@ -1032,11 +1182,11 @@ impl Workbench {
         let (sender, receiver) = mpsc::sync_channel(1);
         let requested = key.clone();
         std::thread::spawn(move || {
-            let _ = sender.send(crate::greeting_official::render(
-                requested.0,
-                &requested.1,
-                requested.2,
-            ));
+            let _ = sender.send(
+                serde_json::from_str(&requested.1)
+                    .map_err(|e| e.to_string())
+                    .and_then(crate::greeting_official::render_config),
+            );
         });
         let weak = Rc::downgrade(self);
         glib::timeout_add_local(Duration::from_millis(40), move || {
@@ -1047,7 +1197,7 @@ impl Workbench {
                 Ok(result) => result,
                 Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
                 Err(_) => Err(
-                    "Official preview worker stopped. Refresh the system snapshot to retry.".into(),
+                    "Native preview worker stopped. Refresh the system snapshot to retry.".into(),
                 ),
             };
             this.greeting_official_loading.set(false);
@@ -1060,13 +1210,14 @@ impl Workbench {
             } else {
                 this.greeting
                     .preset_note
-                    .set_text(if key.0 == OfficialPreset::Icons {
+                    .set_text(if key.0 == Some(OfficialPreset::Icons) {
                         "Official Example 8 · uses Nerd Font icons"
                     } else {
                         "Offline preview · desktop detection and disk flags may differ"
                     });
             }
             *this.greeting_official_result.borrow_mut() = Some(result);
+            this.schedule_diagnostics();
             if this.greeting_preview.get() {
                 this.redraw_preview_contents();
             }
@@ -1081,12 +1232,12 @@ impl Workbench {
         let text = match result.as_ref() {
             Some(Ok(text)) => Some(text.as_str()),
             Some(Err(_)) => {
-                Some("Official preview unavailable\r\nSee the message beside the preset selector.")
+                Some("Native preview unavailable\r\nOpen Greeting > Compatibility for details.")
             }
             None => None,
         };
         let settings = self.greeting.settings();
-        if settings.official_preset.is_none() {
+        if !settings.needs_native() {
             return settings.render(facts, columns);
         }
         settings.render_with_official(facts, columns, text)
@@ -1650,7 +1801,7 @@ mod tests {
         assert!(export_fastfetch(&alias, &settings, &None).is_err());
     }
 
-    fn settle() {
+    pub(super) fn settle() {
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_millis(300) {
             while glib::MainContext::default().pending() {
@@ -1659,7 +1810,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+    pub(super) fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
         let mut result = vec![widget.clone()];
         let mut child = widget.first_child();
         while let Some(current) = child {
@@ -1668,7 +1819,7 @@ mod tests {
         }
         result
     }
-    fn respond(label: &str) {
+    pub(super) fn respond(label: &str) {
         settle();
         gtk::Window::list_toplevels()
             .into_iter()
@@ -1682,7 +1833,7 @@ mod tests {
             .emit_clicked();
         settle();
     }
-    fn controller(window: &gtk::Window) -> Rc<Workbench> {
+    pub(super) fn controller(window: &gtk::Window) -> Rc<Workbench> {
         unsafe {
             window
                 .data::<Rc<Workbench>>("termimochi-workbench")
@@ -1691,7 +1842,7 @@ mod tests {
                 .clone()
         }
     }
-    fn feed(this: &Workbench) -> String {
+    pub(super) fn feed(this: &Workbench) -> String {
         this.preview_feed
             .borrow()
             .iter()
@@ -1699,7 +1850,7 @@ mod tests {
             .collect()
     }
 
-    fn wait_official(this: &Workbench) {
+    pub(super) fn wait_official(this: &Workbench) {
         settle();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while this.greeting_official_loading.get()
@@ -1720,6 +1871,100 @@ mod tests {
             "{:?}",
             this.greeting_official_result.borrow()
         );
+    }
+
+    #[test]
+    #[ignore = "requires GTK/VTE, system Fastfetch and Bubblewrap; run at 1x and 2x"]
+    fn termimochi_brand_starter_preview_and_saved_custom_preservation() {
+        adw::init().unwrap();
+        gio::resources_register_include!("termimochi.gresource").unwrap();
+        gtk::IconTheme::for_display(&gdk::Display::default().unwrap())
+            .add_resource_path(&format!("{}/icons", crate::RESOURCE_BASE));
+        let app = adw::Application::builder()
+            .application_id("io.github.miiikuuu.termimochi.BrandGreetingTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(typography_preset::PRESET_NAME);
+        present_with_preset(&app, None, path.clone());
+        let window = app.active_window().unwrap();
+        window.set_default_size(1320, 850);
+        let this = controller(&window);
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while this.preview_loading.get() {
+            assert!(std::time::Instant::now() < deadline);
+            settle();
+        }
+        assert_eq!(this.greeting.settings(), GreetingSettings::starter());
+        assert!(!this.greeting.dirty());
+        gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+        this.greeting.enabled.set_active(true);
+        wait_official(&this);
+        assert_eq!(this.greeting.preset.selected(), 1);
+        assert_eq!(this.greeting.official_rows.borrow().len(), 19);
+        assert!(!this.greeting.list.is_visible());
+        for width in [1, 2, 3] {
+            this.greeting.columns.set_selected(width);
+            settle();
+            assert_eq!(
+                this.preview_terminal.column_count(),
+                i64::from(WIDTHS[width as usize])
+            );
+            assert_eq!(
+                this.greeting
+                    .settings()
+                    .position_at_width(WIDTHS[width as usize] as usize),
+                Position::Left
+            );
+            assert!(feed(&this).contains("oooooooo"));
+            assert!(feed(&this).contains("Packages"));
+            assert!(feed(&this).contains("Memory"));
+            assert!(!feed(&this).contains("Welcome back"));
+        }
+        this.greeting.columns.set_selected(2);
+        settle();
+        if let Some(path) = std::env::var_os("TERMIMOCHI_BRAND_SCREENSHOT") {
+            window.set_title(Some("TermiMochi point-to-edit test"));
+            let mut child = std::process::Command::new("python3")
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../scripts/preview-pointer-driver.py"
+                ))
+                .args(["capture", "0", "0"])
+                .env("TERMIMOCHI_INSPECT_SCREENSHOT", path)
+                .spawn()
+                .unwrap();
+            while child.try_wait().unwrap().is_none() {
+                settle();
+            }
+            assert!(child.wait().unwrap().success());
+        }
+        this.save_greeting_preset();
+        let brand = this.greeting.settings();
+        this.greeting
+            .preset
+            .set_selected(OfficialPreset::Neofetch.selector_index());
+        this.greeting.undo();
+        wait_official(&this);
+        assert_eq!(this.greeting.settings(), brand);
+        window.destroy();
+        present_with_preset(&app, None, path.clone());
+        let window = app.active_window().unwrap();
+        let this = controller(&window);
+        assert_eq!(this.greeting.settings(), brand);
+        this.greeting.preset.set_selected(0);
+        this.greeting
+            .message
+            .set_text("My existing custom greeting");
+        this.save_greeting_preset();
+        let custom = this.greeting.settings();
+        window.destroy();
+        present_with_preset(&app, None, path);
+        let window = app.active_window().unwrap();
+        assert_eq!(controller(&window).greeting.settings(), custom);
+        assert!(custom.official_preset.is_none());
+        window.destroy();
     }
 
     #[test]
@@ -1749,7 +1994,7 @@ mod tests {
         let original = this.greeting.settings();
         let layout = this.layout_settings();
         for preset in OfficialPreset::ALL {
-            this.greeting.preset.set_selected(preset.index());
+            this.greeting.preset.set_selected(preset.selector_index());
             wait_official(&this);
             assert_eq!(this.greeting.settings().official_preset, Some(preset));
             assert_eq!(
@@ -1758,9 +2003,22 @@ mod tests {
             );
             assert!(!this.greeting.list.is_visible());
             assert!(this.greeting.official_list.is_visible());
-            assert!(feed(&this).contains("cooooo"));
+            assert!(
+                feed(&this).contains(if preset == OfficialPreset::TermiMochi {
+                    "oooooooo"
+                } else {
+                    "cooooo"
+                })
+            );
             assert!(!feed(&this).contains("Reading official preset"));
-            assert_eq!(this.greeting.settings().artwork().lines().count(), 20);
+            assert_eq!(
+                this.greeting.settings().artwork().lines().count(),
+                if preset == OfficialPreset::TermiMochi {
+                    12
+                } else {
+                    20
+                }
+            );
             let toggle = this.greeting.official_rows.borrow()[0].2.clone();
             toggle.set_active(false);
             wait_official(&this);
@@ -1783,13 +2041,19 @@ mod tests {
             assert_eq!(this.greeting.settings().official_items[0].id, 0);
         }
         // Rapid selection must not let an older worker replace the final preset.
-        this.greeting.preset.set_selected(1);
-        this.greeting.preset.set_selected(3);
-        this.greeting.preset.set_selected(2);
+        this.greeting
+            .preset
+            .set_selected(OfficialPreset::Neofetch.selector_index());
+        this.greeting
+            .preset
+            .set_selected(OfficialPreset::Paleofetch.selector_index());
+        this.greeting
+            .preset
+            .set_selected(OfficialPreset::Screenfetch.selector_index());
         wait_official(&this);
         assert_eq!(
             this.greeting_official_key.borrow().as_ref().unwrap().0,
-            OfficialPreset::Screenfetch
+            Some(OfficialPreset::Screenfetch)
         );
         for (index, columns) in WIDTHS.into_iter().enumerate().skip(1) {
             this.greeting.columns.set_selected(index as u32);
@@ -1876,6 +2140,11 @@ mod tests {
             if std::env::var_os("TERMIMOCHI_CAPTURE_MOCHI").is_some() {
                 this.greeting.logo.set_selected(Logo::Mochi.index());
                 settle();
+                assert_eq!(this.greeting.artwork_size.text().as_str(), "38 × 12 cells");
+                assert_eq!(
+                    this.greeting.settings().position_at_width(80),
+                    Position::Left
+                );
             }
             window.set_title(Some("TermiMochi point-to-edit test"));
             let mut child = std::process::Command::new("python3")
@@ -1918,6 +2187,9 @@ mod tests {
         present_with_preset(&app, None, preset.clone());
         let window = app.active_window().unwrap();
         let this = controller(&window);
+        // Exercise the retained basic editor, independent of the new starter.
+        this.greeting.replace(GreetingSettings::default(), false);
+        *this.greeting.baseline.borrow_mut() = this.greeting.settings();
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while this.preview_loading.get() {
             assert!(std::time::Instant::now() < deadline);

@@ -50,8 +50,14 @@ that looks balanced elsewhere can therefore become almost unreadable.
   **Save As** instead of overwriting this machine's Starship configuration.
   Module shortcuts still save their own files; workspace files are explicit,
   not automatically reopened on startup.
-- Greeting starting points: choose **Preset → Neofetch** to immediately enable
-  a complete Ubuntu welcome page. Five pinned upstream presets are included:
+- Greeting starts with **Preset → TermiMochi** selected for new users; turn on
+  the header switch to preview it. This complete native preset combines the
+  brand mark, user/host title, separator, system/desktop/hardware fields and a
+  bottom color strip. It defaults to a 100-column canvas and stays side-by-side
+  at 80/100/120 columns. Existing saved custom presets are not replaced; select
+  **TermiMochi** explicitly to switch, with Undo/Redo and Save Preset available.
+  Choose **Preset → Neofetch** for a complete Ubuntu welcome page.
+  Five pinned upstream presets are also included:
   **Neofetch, Screenfetch, Paleofetch, Icons (Example 8), Bars (Example 9)** from
   [Fastfetch 2.57.1](https://github.com/fastfetch-cli/fastfetch/tree/2.57.1/presets).
   All original fields, decorative rows and module formats are retained, including
@@ -61,8 +67,10 @@ that looks balanced elsewhere can therefore become almost unreadable.
   external-image-dependent upstream examples are not offered in this collection.
 - Greeting designer: enable the header switch to combine a welcome message,
   full-size **Ubuntu / Arch Linux / Debian / Fedora / Linux Mint** upstream artwork,
-  a redesigned TermiMochi mark based on the app icon, Terminal art or custom text,
-  and ten optional
+  a compact **38 × 12** ASCII TermiMochi mark based on the app icon, Terminal art or custom text.
+  The TermiMochi mark uses visible `o`, `l`, `c` and punctuation textures rather than solid Unicode
+  blocks. The brand silhouette and negative-space `>_` remain recognizable.
+  The basic designer offers ten optional
   system-information fields: OS, Kernel, Shell, Terminal, CPU, GPU, Memory,
   root Disk, Uptime and Date. Drag the field handles to reorder; arrow buttons
   remain available for keyboard use, with independent Undo/Redo. Choose horizontal,
@@ -77,6 +85,52 @@ that looks balanced elsewhere can therefore become almost unreadable.
   emoji and kaomoji, with bounded grapheme-aware clipping
   and a stacked fallback in narrow previews. Text controls and invalid artwork
   are rejected, with independent Undo/Redo and unsaved-change protection.
+- **Artwork Files → Import Artwork…** accepts UTF-8/ASCII `.txt` and `.ans`
+  logos. ANSI imports retain 16/256/RGB colors and supported text styles; cursor
+  movement, screen clearing, clipboard/title commands, links and unsupported
+  controls are filtered and reported in **Compatibility**. Tabs expand to
+  8-column stops. Legacy CP437 artwork needs conversion to UTF-8 first.
+  Colored imports show a read-only plain-text editor; **Edit as Plain Text**
+  removes colors for manual editing, with Undo to restore them. **Export Plain
+  Text… / Export ANSI…** exports only the logo, not machine information.
+  Overwrites require confirmation, retain a backup and reject external changes.
+  PNG/SVG conversion and Kitty/Sixel image logos are not supported yet.
+- Click a system field's name to edit its **label, inline icon, name/content
+  colors and display format** in a compact popover. CPU/GPU summaries, memory
+  and disk percentages/bars, and date/time formats share the same native
+  Fastfetch configuration in preview and export. **Reset Field** restores the
+  original; edits support Undo/Redo and portable preset/workspace saves.
+  **Compatibility** expands only when needed: it reports unavailable native
+  rendering, offline detection differences, missing icon glyphs and imported
+  settings that are retained but not simulated.
+- **Fastfetch Configuration → Load Current** reads the standard user
+  `fastfetch/config.jsonc` (or existing `config.json`); **Import…** selects another
+  `config.jsonc`, `config.json` or `.fastfetch.jsonc` file. Imports retain JSONC
+  comments, formatting, duplicate module types and unrecognized options.
+  Supported fields can be edited; other modules remain read-only. Imported
+  layout settings stay in the source, so designer layout controls are hidden.
+  Preview uses a restricted local projection, never the entire imported file:
+  command/network/custom modules and external image logos are not run.
+  Unsupported display settings, paths and modules are listed in Compatibility.
+  Text logos support `builtin` / `small`, `data` / `data-raw` and local `file` /
+  `file-raw`, including `$1`–`$9` color slots and `$$` escaping in non-raw sources.
+  On config import, literal text-file references **inside the config directory**
+  are read once into a portable preview snapshot. Path expressions, aliases and
+  outside references are refused; no path is passed to Fastfetch for expansion.
+  This preview resolves relative paths from the config directory, while Fastfetch
+  itself uses its working directory. The original path remains in config exports.
+  Use **Import Artwork…** to replace it with embedded, sanitized `data-raw` text
+  for portable Fastfetch output. Original imported ANSI controls remain in the
+  source until this explicit replacement; the preview alone does not clean it.
+- **Review & Apply…** shows the exact destination and Before/After text, then
+  requires **Back Up & Apply**. External changes block replacement. **Restore
+  Previous…** restores the last successful apply, including after restarting
+  TermiMochi; backups and the checked rollback record live under
+  `XDG_STATE_HOME/termimochi/fastfetch-state`. Restore also checks for external
+  edits and retains a recovery copy. Imported unsupported settings remain in
+  the applied file and can run when **you** invoke Fastfetch; review them first.
+  Loading, saving a TermiMochi preset and applying a Fastfetch file are separate
+  actions. None edits `.bashrc` or enables automatic shell startup.
 - Greeting width can follow Layout or use an exact **80 / 100 / 120 columns**,
   without changing the Layout document. Pan wider grids with Shift+wheel.
   A short, once-per-window hint appears when the preview is too wide: drag
@@ -92,16 +146,18 @@ that looks balanced elsewhere can therefore become almost unreadable.
   and never changes terminal text; Fastfetch exports remain static.
 - **Save Preset** (`Ctrl+S` on Greeting) restores the greeting next launch.
   Import/export `.termimochi-greeting.json` presets, or **Export Fastfetch…** to
-  `config.jsonc` or a separate `.fastfetch.jsonc` file. Custom-design preview needs
-  no Fastfetch installation; official preset preview needs **Fastfetch + Bubblewrap**.
+  `config.jsonc` or a separate `.fastfetch.jsonc` file. Basic, unstyled custom preview
+  needs no Fastfetch installation; field overrides, official presets and imports
+  need system **Fastfetch 2.57+ (2.x) + Bubblewrap** for native preview.
   To use the exported configuration, install Fastfetch and run
   `fastfetch --config /path/to/config.jsonc`.
-  Custom preview reads bounded local snapshots; official module output is rendered
+  Basic custom preview reads bounded local snapshots; native module output is rendered
   by the system Fastfetch in a **read-only, offline sandbox**, not an attached shell.
   Desktop/terminal detection and disk mount flags may differ in that sandbox;
   detection errors remain visible rather than silently removing fields.
-  Export includes only reviewed
-  built-in modules and literal text, never commands or a startup hook.
+  Designer export includes only reviewed
+  built-in modules and literal text, never commands or a startup hook. Imported
+  export preserves the original document with only the selected field overrides.
   Existing destinations require an explicit **Back Up & Replace** confirmation;
   private backups are kept in `termimochi-backups` beside the export. Symlinks,
   hard links and concurrent external changes are rejected. Choosing your active

@@ -1,6 +1,7 @@
 //! Declarative greetings. No shell, Fastfetch config, network or user command
 //! is executed. Machine facts are bounded, read-only Linux snapshots.
 use crate::document_store::Document;
+use crate::greeting_fields::FieldStyle;
 use crate::greeting_official::{OfficialItem, OfficialPreset};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs::File, io::Read};
@@ -175,6 +176,10 @@ pub(crate) struct GreetingSettings {
     pub enabled: bool,
     pub logo: Logo,
     pub custom_logo: String,
+    #[serde(default)]
+    pub custom_art: Option<crate::greeting_art::Artwork>,
+    #[serde(default)]
+    pub source_logo: Option<crate::greeting_art::LogoSnapshot>,
     pub position: Position,
     /// 0..15 follow ANSI palette slots; 16 follows terminal foreground.
     pub accent: u8,
@@ -192,6 +197,11 @@ pub(crate) struct GreetingSettings {
     pub official_preset: Option<OfficialPreset>,
     #[serde(default)]
     pub official_items: Vec<OfficialItem>,
+    #[serde(default)]
+    pub field_styles: BTreeMap<String, FieldStyle>,
+    /// Lossless imported JSONC, portable but detached from any destination path.
+    #[serde(default)]
+    pub imported_source: Option<String>,
 }
 
 fn deserialize_items<'de, D: serde::Deserializer<'de>>(
@@ -218,6 +228,8 @@ impl Default for GreetingSettings {
             enabled: false,
             logo: Logo::Mochi,
             custom_logo: "(づ｡◕‿‿◕｡)づ".into(),
+            custom_art: None,
+            source_logo: None,
             position: Position::Left,
             accent: 6,
             gap: 3,
@@ -226,6 +238,8 @@ impl Default for GreetingSettings {
             opening: Opening::None,
             official_preset: None,
             official_items: Vec::new(),
+            field_styles: BTreeMap::new(),
+            imported_source: None,
             items: Info::ALL
                 .into_iter()
                 .map(|kind| Item {
@@ -237,7 +251,52 @@ impl Default for GreetingSettings {
     }
 }
 impl GreetingSettings {
+    /// New editor sessions start with a complete brand preset. Legacy files
+    /// still deserialize exactly as saved, including their basic custom mode.
+    pub fn starter() -> Self {
+        let mut settings = Self::default();
+        settings.use_official(OfficialPreset::TermiMochi);
+        settings.enabled = false;
+        settings.preview_columns = 100;
+        settings
+    }
     pub fn validate(&self) -> Result<(), String> {
+        let imported = self
+            .imported_source
+            .as_deref()
+            .map(crate::fastfetch_document::value)
+            .transpose()?;
+        if imported.is_some() && self.official_preset.is_some() {
+            return Err("Imported and official sources cannot both be active.".into());
+        }
+        if let Some(art) = &self.custom_art {
+            art.validate()?;
+            if art.plain != self.custom_logo {
+                return Err("Artwork text and color snapshot disagree.".into());
+            }
+        }
+        if let Some(snapshot) = &self.source_logo {
+            snapshot.validate()?;
+            if imported.as_ref().map(|v| &v["logo"]) != Some(&snapshot.descriptor) {
+                return Err("Imported logo snapshot no longer matches the configuration.".into());
+            }
+        }
+        if self.field_styles.len() > 256 {
+            return Err("Too many field overrides.".into());
+        }
+        for (id, style) in &self.field_styles {
+            let module = if let Some(index) = id.strip_prefix("imported:") {
+                imported
+                    .as_ref()
+                    .and_then(|v| v["modules"].as_array())
+                    .and_then(|m| index.parse::<usize>().ok().and_then(|i| m.get(i)))
+                    .cloned()
+            } else {
+                Self::module_for_style_id(id)
+            }
+            .ok_or("Unknown greeting field override")?;
+            style.validate(crate::greeting_fields::module_kind(&module))?;
+        }
         if self.accent > 16 || self.gap > 8 || ![0, 80, 100, 120].contains(&self.preview_columns) {
             return Err("Greeting color or spacing is outside the supported range.".into());
         }
@@ -272,6 +331,9 @@ impl GreetingSettings {
         Ok(())
     }
     pub fn artwork(&self) -> String {
+        if self.imported_source.is_some() {
+            return String::new();
+        }
         if self.position == Position::Card {
             return String::new();
         }
@@ -303,14 +365,26 @@ impl GreetingSettings {
         plain
     }
     pub fn use_official(&mut self, preset: OfficialPreset) {
+        self.imported_source = None;
+        self.source_logo = None;
+        self.field_styles
+            .retain(|key, _| !key.starts_with("imported:"));
         self.enabled = true;
         self.official_preset = Some(preset);
         self.official_items = preset.items();
-        self.logo = Logo::Ubuntu;
+        self.logo = if preset == OfficialPreset::TermiMochi {
+            Logo::Mochi
+        } else {
+            Logo::Ubuntu
+        };
         self.position = Position::Left;
         self.message.clear();
         self.gap = 3;
-        self.accent = 1;
+        self.accent = if preset == OfficialPreset::TermiMochi {
+            6
+        } else {
+            1
+        };
     }
     pub fn position_at_width(&self, columns: usize) -> Position {
         let width = columns.clamp(12, 240).saturating_sub(1);
@@ -336,8 +410,95 @@ impl GreetingSettings {
             _ => 39,
         }
     }
+    pub fn style_id(&self, index: usize) -> String {
+        if self.imported_source.is_some() {
+            return format!("imported:{index}");
+        }
+        match self.official_preset {
+            Some(preset) => format!("official:{}:{index}", preset.index()),
+            None => format!("custom:{index}"),
+        }
+    }
+    pub fn module_for_field_id(&self, id: &str) -> Option<serde_json::Value> {
+        if let Some(index) = id.strip_prefix("imported:") {
+            return crate::fastfetch_document::value(self.imported_source.as_ref()?).ok()?["modules"].as_array()?.get(index.parse::<usize>().ok()?).cloned();
+        }
+        Self::module_for_style_id(id)
+    }
+    pub fn module_for_style_id(id: &str) -> Option<serde_json::Value> {
+        let parts: Vec<_> = id.split(':').collect();
+        match parts.as_slice() {
+            ["custom", index] => {
+                let kind = Info::ALL.get(index.parse::<usize>().ok()?)?;
+                Some(serde_json::json!({"type":kind.module(), "key":kind.label()}))
+            }
+            ["official", preset, index] => {
+                let preset =
+                    OfficialPreset::ALL.get(preset.parse::<usize>().ok()?.checked_sub(1)?)?;
+                preset.config()["modules"]
+                    .as_array()?
+                    .get(index.parse::<usize>().ok()?)
+                    .cloned()
+            }
+            _ => None,
+        }
+    }
+    pub fn needs_native(&self) -> bool {
+        self.imported_source.is_some()
+            || self.official_preset.is_some()
+            || self.items.iter().any(|item| {
+                item.enabled
+                    && self.field_styles.contains_key(
+                        &self.style_id(Info::ALL.iter().position(|k| *k == item.kind).unwrap()),
+                    )
+            })
+    }
     fn colored(&self, text: &str) -> String {
         format!("\x1b[{}m{text}\x1b[0m", self.color_code())
+    }
+
+    pub fn artwork_ansi(&self) -> String {
+        if self.imported_source.is_none()
+            && self.position != Position::Card
+            && self.logo == Logo::Custom
+            && let Some(art) = &self.custom_art
+            && art.ansi.contains('\x1b')
+        {
+            return art.ansi.clone();
+        }
+        self.artwork()
+            .lines()
+            .map(|line| self.colored(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn import_artwork(&mut self, art: crate::greeting_art::Artwork) -> Result<(), String> {
+        art.validate()?;
+        if art.plain.trim().is_empty() {
+            return Err("Artwork contains no visible text.".into());
+        }
+        let mut next = self.clone();
+        if let Some(source) = &self.imported_source {
+            let edited = crate::fastfetch_document::replace_logo_art(source, &art)?;
+            next.source_logo = Some(crate::greeting_art::LogoSnapshot {
+                descriptor: crate::fastfetch_document::value(&edited)?["logo"].clone(),
+                artwork: art,
+                marked_source: None,
+            });
+            next.imported_source = Some(edited);
+        } else {
+            next.custom_logo = art.plain.clone();
+            next.custom_art = Some(art);
+            next.logo = Logo::Custom;
+            if next.position == Position::Card {
+                next.position = Position::Left;
+            }
+        }
+        next.enabled = true;
+        next.validate()?;
+        *self = next;
+        Ok(())
     }
 
     /// Insert at an edge rather than swapping: all intervening fields retain
@@ -376,9 +537,23 @@ impl GreetingSettings {
         if !self.enabled || self.validate().is_err() {
             return String::new();
         }
+        if self.imported_source.is_some() {
+            return format!(
+                "{}\x1b[0m\r\n\r\n",
+                official
+                    .unwrap_or("Reading imported configuration…")
+                    .split("\r\n")
+                    .map(|line| clip_ansi(line, columns.clamp(12, 240).saturating_sub(1)).0)
+                    .collect::<Vec<_>>()
+                    .join("\r\n")
+                    .trim_end()
+            );
+        }
         let width = columns.clamp(12, 240).saturating_sub(1);
         let artwork = self.artwork();
         let logo: Vec<_> = artwork.lines().collect();
+        let colored_artwork = self.artwork_ansi();
+        let colored_logo: Vec<_> = colored_artwork.lines().collect();
         let logo_width = logo.iter().map(|line| line.width()).max().unwrap_or(0);
         let gap = usize::from(self.gap);
         let position = self.position_at_width(columns);
@@ -397,8 +572,8 @@ impl GreetingSettings {
                 info.push((self.colored(&"─".repeat(cells)), cells));
             }
         }
-        if self.official_preset.is_some() {
-            for line in official.unwrap_or("Reading official preset…").split("\r\n") {
+        if self.needs_native() {
+            for line in official.unwrap_or("Rendering native fields…").split("\r\n") {
                 let (text, cells) = clip_ansi(line, info_width);
                 info.push((text, cells));
             }
@@ -428,20 +603,20 @@ impl GreetingSettings {
                 lines.push(if self.position == Position::Left {
                     format!(
                         "{}{}{text}",
-                        self.colored(art),
+                        clip_ansi(colored_logo.get(index).copied().unwrap_or(""), logo_width).0,
                         " ".repeat(logo_width - art.width() + gap)
                     )
                 } else {
                     format!(
                         "{text}{}{}",
                         " ".repeat(info_cells - cells + gap),
-                        self.colored(art)
+                        clip_ansi(colored_logo.get(index).copied().unwrap_or(""), logo_width).0
                     )
                 });
             }
         } else {
-            for line in logo {
-                lines.push(self.colored(&clip(line, width)));
+            for line in colored_logo.into_iter().take(logo.len()) {
+                lines.push(clip_ansi(line, width).0);
             }
             if !lines.is_empty() && !info.is_empty() {
                 lines.push(String::new());
@@ -454,13 +629,42 @@ impl GreetingSettings {
         format!("{}\x1b[0m\r\n\r\n", lines.join("\r\n"))
     }
 
-    /// Only reviewed built-ins and literal Custom text are emitted. No Command
-    /// module, logo command/path, dynamic format or shell startup hook is used.
+    /// Designer output contains reviewed built-ins and literal artwork only.
+    /// Imported documents preserve all settings, including unsupported modules;
+    /// preview MUST use fastfetch_document::preview_config, never this directly.
     pub fn fastfetch_config(&self) -> Result<String, String> {
         use serde_json::json;
         self.validate()?;
+        if let Some(source) = &self.imported_source {
+            let mut edits = Vec::new();
+            for (id, style) in &self.field_styles {
+                if let Some(index) = id.strip_prefix("imported:") {
+                    edits.push((index.parse::<usize>().map_err(|e| e.to_string())?, style));
+                }
+            }
+            return crate::fastfetch_document::edit_fields(source, edits);
+        }
         let mut config = if let Some(preset) = self.official_preset {
-            preset.selected_config(&self.official_items)?
+            let mut base = preset.config();
+            for (index, module) in base["modules"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .enumerate()
+            {
+                if let Some(style) = self.field_styles.get(&self.style_id(index)) {
+                    style.apply(module)?;
+                }
+            }
+            let source = base["modules"].as_array().unwrap();
+            base["modules"] = json!(
+                self.official_items
+                    .iter()
+                    .filter(|i| i.enabled)
+                    .map(|i| source[usize::from(i.id)].clone())
+                    .collect::<Vec<_>>()
+            );
+            base
         } else {
             json!({})
         };
@@ -490,6 +694,10 @@ impl GreetingSettings {
                         module["folders"] = json!("/");
                         module["format"] = json!("{size-used} / {size-total}");
                     }
+                    let index = Info::ALL.iter().position(|k| *k == item.kind).unwrap();
+                    if let Some(style) = self.field_styles.get(&self.style_id(index)) {
+                        style.apply(&mut module)?;
+                    }
                     modules.push(module);
                 }
             }
@@ -499,12 +707,7 @@ impl GreetingSettings {
         if modules.is_empty() {
             modules.push(json!({"type":"custom", "format":""}));
         }
-        let art = self
-            .artwork()
-            .lines()
-            .map(|line| self.colored(line))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let art = self.artwork_ansi();
         let logo = if !self.enabled || art.is_empty() {
             json!({"type":"none"})
         } else {
@@ -797,6 +1000,113 @@ impl Document for GreetingPreset {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn brand_starter_is_a_complete_native_preset_without_migrating_custom_documents() {
+        let starter = GreetingSettings::starter();
+        starter.validate().unwrap();
+        assert_eq!(starter.official_preset, Some(OfficialPreset::TermiMochi));
+        assert_eq!(starter.logo, Logo::Mochi);
+        assert_eq!(starter.preview_columns, 100);
+        assert!(!starter.enabled, "no automatic startup/preview activation");
+        assert!(starter.message.is_empty());
+        assert!(starter.needs_native());
+        let mut enabled = starter.clone();
+        enabled.enabled = true;
+        let config: serde_json::Value =
+            serde_json::from_str(&enabled.fastfetch_config().unwrap()).unwrap();
+        let modules = config["modules"].as_array().unwrap();
+        assert_eq!(modules.len(), 19);
+        for kind in [
+            "title",
+            "separator",
+            "host",
+            "packages",
+            "display",
+            "de",
+            "wm",
+            "cpu",
+            "gpu",
+            "memory",
+            "disk",
+            "colors",
+        ] {
+            assert!(
+                modules
+                    .iter()
+                    .any(|m| crate::greeting_fields::module_kind(m) == kind),
+                "missing {kind}"
+            );
+        }
+        assert!(!enabled.fastfetch_config().unwrap().contains("Welcome back"));
+        for preset in OfficialPreset::ALL {
+            assert_eq!(
+                OfficialPreset::CHOICES[(preset.selector_index() - 1) as usize],
+                preset
+            );
+        }
+        assert_eq!(OfficialPreset::Neofetch.index(), 1);
+        assert_eq!(OfficialPreset::Bars.index(), 5);
+        assert_eq!(OfficialPreset::TermiMochi.index(), 6);
+        assert_eq!(OfficialPreset::TermiMochi.selector_index(), 1);
+        assert_eq!(
+            GreetingSettings::module_for_style_id("official:1:0").unwrap(),
+            serde_json::json!("title")
+        );
+        let legacy = GreetingPreset::new(GreetingSettings::default());
+        let bytes = crate::document_store::encode(&legacy).unwrap();
+        assert_eq!(
+            crate::document_store::decode::<GreetingPreset>(&bytes).unwrap(),
+            legacy
+        );
+    }
+    #[test]
+    fn mochi_mark_is_printable_ascii_and_matches_fastfetch_export() {
+        let mut settings = GreetingSettings {
+            enabled: true,
+            ..Default::default()
+        };
+        let art = settings.artwork();
+        let rows = art.lines().count();
+        let columns = art.lines().map(str::width).max().unwrap();
+        assert_eq!((columns, rows), (38, 12));
+        assert!(
+            art.bytes()
+                .all(|ch| ch == b'\n' || (b' '..=b'~').contains(&ch)),
+            "the logo must be printable ASCII, never Unicode block/Braille art"
+        );
+        assert!(
+            art.contains(",         ,") && art.contains("c.  .l") && art.contains("looooo"),
+            "retain the negative-space underscore"
+        );
+        assert!(
+            art.lines()
+                .all(|line| !line.is_empty() && line.trim_end() == line)
+        );
+        assert!(
+            columns < 40 && rows < 14,
+            "keep the textured ASCII logo compact beside a full system profile"
+        );
+        let config: serde_json::Value =
+            serde_json::from_str(&settings.fastfetch_config().unwrap()).unwrap();
+        assert_eq!(config["logo"]["type"], "data-raw");
+        assert_eq!(
+            config["logo"]["source"].as_str().unwrap(),
+            art.lines()
+                .map(|line| format!("\x1b[36m{line}\x1b[0m"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        // Even official formats get useful information width at 80 columns.
+        // No saved sizing, preset schema or upstream logo is changed.
+        for preset in OfficialPreset::ALL {
+            settings.use_official(preset);
+            settings.logo = Logo::Mochi;
+            for width in [80, 100, 120] {
+                assert_eq!(settings.position_at_width(width), Position::Left);
+            }
+        }
+    }
+
     #[test]
     fn full_size_artwork_and_larger_custom_documents_preserve_geometry() {
         let mut settings = GreetingSettings {
