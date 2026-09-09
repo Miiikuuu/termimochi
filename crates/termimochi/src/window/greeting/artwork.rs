@@ -39,7 +39,7 @@ fn exported_art(settings: &GreetingSettings) -> Result<Artwork, String> {
 }
 
 impl Workbench {
-    fn art_draft_matches(&self, before: &GreetingSettings) -> bool {
+    pub(super) fn art_draft_matches(&self, before: &GreetingSettings) -> bool {
         if self.greeting.invalid.get() || &self.greeting.settings() != before {
             self.toast("Greeting changed while the dialog was open. Import again to keep your latest edits.");
             false
@@ -48,20 +48,47 @@ impl Workbench {
         }
     }
     pub(in crate::window) fn choose_greeting_art_import(self: &Rc<Self>) {
+        self.choose_artwork_file(false);
+    }
+    pub(super) fn choose_original_image(self: &Rc<Self>) {
+        self.choose_artwork_file(true);
+    }
+    fn choose_artwork_file(self: &Rc<Self>, image_only: bool) {
+        if let Some(dialog) = self.greeting.image_import_window.upgrade() {
+            dialog.present();
+            return;
+        }
         if self.greeting.invalid.get() {
             self.toast("Fix the invalid Greeting field before importing artwork.");
             return;
         }
         let before = self.greeting.settings();
         let filter = gtk::FileFilter::new();
-        filter.set_name(Some("UTF-8 Text / ANSI Artwork"));
-        for suffix in ["txt", "ans"] {
+        filter.set_name(Some(if image_only {
+            "Original Image"
+        } else {
+            "Images / Text / ANSI Artwork"
+        }));
+        let suffixes: &[&str] = if image_only {
+            &["png", "jpg", "jpeg", "webp"]
+        } else {
+            &["png", "jpg", "jpeg", "webp", "txt", "ans"]
+        };
+        for suffix in suffixes {
             filter.add_suffix(suffix);
+            filter.add_suffix(&suffix.to_ascii_uppercase());
+        }
+        for mime in ["image/png", "image/jpeg", "image/webp"] {
+            filter.add_mime_type(mime);
         }
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
         let dialog = gtk::FileDialog::builder()
-            .title("Import Artwork")
+            .title(if image_only {
+                "Reimport Original Image"
+            } else {
+                "Import Artwork"
+            })
             .filters(&filters)
             .default_filter(&filter)
             .modal(true)
@@ -79,11 +106,19 @@ impl Workbench {
                         if !this.art_draft_matches(&before) {
                             return;
                         }
-                        match file
-                            .path()
-                            .ok_or("Select a local artwork file.".into())
-                            .and_then(|p| greeting_art::file_art(&p))
-                        {
+                        let Some(path) = file.path() else {
+                            this.toast("Select a local artwork file.");
+                            return;
+                        };
+                        if crate::greeting_image::is_image(&path) {
+                            this.open_image_artwork(before, path);
+                            return;
+                        }
+                        if image_only {
+                            this.toast("Choose the original PNG, JPG or WebP image, not a text/ANSI export.");
+                            return;
+                        }
+                        match greeting_art::file_art(&path) {
                             Ok(art) => this.confirm_greeting_art(before, art),
                             Err(error) => this.toast(&error),
                         }
@@ -158,6 +193,7 @@ impl Workbench {
             return;
         }
         settings.custom_art = None;
+        settings.editable_artwork = None;
         self.greeting.replace(settings, true);
         self.greeting.artwork.grab_focus();
         self.toast("Plain-text editing enabled. Undo restores the original colors.");
@@ -233,7 +269,11 @@ impl Workbench {
     fn confirm_greeting_art_export(self: &Rc<Self>, path: PathBuf, contents: String, ansi: bool) {
         let expected = match typography_preset::read_private_with_limit(
             &path,
-            crate::greeting::ART_MAX_BYTES as u64,
+            if ansi {
+                crate::greeting::ART_MAX_ANSI_BYTES
+            } else {
+                crate::greeting::ART_MAX_BYTES
+            } as u64,
         ) {
             Ok(bytes) => bytes,
             Err(error) => {

@@ -1,5 +1,5 @@
 //! Bounded text artwork. Only reviewed SGR reaches VTE or generated exports.
-use crate::greeting::{ART_MAX_BYTES, ART_MAX_COLUMNS, ART_MAX_ROWS};
+use crate::greeting::{ART_MAX_ANSI_BYTES, ART_MAX_BYTES, ART_MAX_COLUMNS, ART_MAX_ROWS};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
@@ -43,9 +43,9 @@ impl LogoSnapshot {
 // Reopen a compact style after each newline, so clipping/composing one logo
 // row cannot bleed into the information column or lose a multiline color.
 #[derive(Default, Clone)]
-struct Style([Option<Vec<u16>>; 8]);
+pub(crate) struct Style([Option<Vec<u16>>; 8]);
 impl Style {
-    fn apply(&mut self, codes: &[u16]) -> Option<()> {
+    pub(crate) fn apply(&mut self, codes: &[u16]) -> Option<()> {
         let mut index = 0;
         while index < codes.len() {
             let n = codes[index];
@@ -88,7 +88,7 @@ impl Style {
         }
         Some(())
     }
-    fn prefix(&self) -> String {
+    pub(crate) fn prefix(&self) -> String {
         let codes: Vec<_> = self
             .0
             .iter()
@@ -104,7 +104,7 @@ impl Style {
     }
 }
 
-fn sgr(text: &str) -> Option<Vec<u16>> {
+pub(crate) fn sgr(text: &str) -> Option<Vec<u16>> {
     if text.len() > 128 {
         return None;
     }
@@ -141,8 +141,8 @@ impl Artwork {
     // missing palette slots from its host defaults. Geometry is checked after
     // decoding markers, not by counting $1 as two printable cells.
     fn parse_source(input: &str, marked: bool) -> Result<Self, String> {
-        if input.len() > ART_MAX_BYTES {
-            return Err("Artwork exceeds 16 KiB.".into());
+        if input.len() > ART_MAX_ANSI_BYTES {
+            return Err("ANSI artwork exceeds 320 KiB.".into());
         }
         let mut art = Self::default();
         let mut style = Style::default();
@@ -152,7 +152,11 @@ impl Artwork {
             .replace("\r\n", "\n");
         let mut chars = normalized.chars().peekable();
         let mut line = String::new();
+        let mut newlines = 0;
         while let Some(ch) = chars.next() {
+            if art.ansi.len() > ART_MAX_ANSI_BYTES || !marked && art.plain.len() > ART_MAX_BYTES {
+                return Err("Artwork expansion exceeds the text/ANSI size limits.".into());
+            }
             let escape = match ch {
                 '\x1b' => chars.next(),
                 '\u{009b}' => Some('['),
@@ -210,6 +214,10 @@ impl Artwork {
                     }
                 }
             } else if ch == '\n' {
+                newlines += 1;
+                if newlines > ART_MAX_ROWS {
+                    return Err("Artwork supports at most 96 lines.".into());
+                }
                 let prefix = if marked {
                     String::new()
                 } else {
@@ -243,8 +251,8 @@ impl Artwork {
         if !marked && !style.prefix().is_empty() && !art.ansi.ends_with('\n') {
             art.ansi.push_str("\x1b[0m");
         }
-        if art.ansi.len() > ART_MAX_BYTES {
-            return Err("Normalized artwork exceeds 16 KiB.".into());
+        if art.ansi.len() > ART_MAX_ANSI_BYTES {
+            return Err("Normalized ANSI artwork exceeds 320 KiB.".into());
         }
         if !marked {
             art.check_size()?;
@@ -252,13 +260,13 @@ impl Artwork {
         Ok(art)
     }
     fn check_size(&self) -> Result<(), String> {
-        if self.ansi.len() > ART_MAX_BYTES
+        if self.ansi.len() > ART_MAX_ANSI_BYTES
             || self.plain.len() > ART_MAX_BYTES
             || self.plain.lines().count() > ART_MAX_ROWS
             || self.plain.lines().any(|s| s.width() > ART_MAX_COLUMNS)
         {
             return Err(
-                "Artwork supports 64 lines, 120 cells per line and 16 KiB after normalization."
+                "Artwork supports 96 lines, 160 cells per line, 16 KiB of text and 320 KiB of ANSI."
                     .into(),
             );
         }
@@ -293,7 +301,12 @@ pub(crate) fn file_art(path: &Path) -> Result<Artwork, String> {
     if !matches!(ext.as_str(), "txt" | "ans") {
         return Err("Choose a .txt or .ans artwork file.".into());
     }
-    let bytes = crate::typography_preset::read_private_with_limit(path, ART_MAX_BYTES as u64)?
+    let limit = if ext == "txt" {
+        ART_MAX_BYTES
+    } else {
+        ART_MAX_ANSI_BYTES
+    };
+    let bytes = crate::typography_preset::read_private_with_limit(path, limit as u64)?
         .ok_or("Artwork file no longer exists.")?;
     let input = String::from_utf8(bytes).map_err(
         |_| "Artwork must use UTF-8 or ASCII. Legacy CP437 ANSI files need conversion first.",
@@ -424,8 +437,8 @@ pub(crate) fn marked_art(
         } else {
             expanded.push(ch);
         }
-        if expanded.len() > ART_MAX_BYTES {
-            return Err("Expanded text logo exceeds 16 KiB.".into());
+        if expanded.len() > ART_MAX_ANSI_BYTES {
+            return Err("Expanded ANSI logo exceeds 320 KiB.".into());
         }
     }
     let mut art = Artwork::parse(&expanded)?;
@@ -485,8 +498,9 @@ pub(crate) fn snapshot_file(
     if !canonical.starts_with(&root) {
         return Err("Referenced artwork is outside the configuration directory. Import the artwork explicitly to embed it.".into());
     }
-    let bytes = crate::typography_preset::read_private_with_limit(&path, ART_MAX_BYTES as u64)?
-        .ok_or("Missing logo")?;
+    let bytes =
+        crate::typography_preset::read_private_with_limit(&path, ART_MAX_ANSI_BYTES as u64)?
+            .ok_or("Missing logo")?;
     let input = String::from_utf8(bytes).map_err(|_| "Referenced logo must use UTF-8 or ASCII.")?;
     let artwork = if kind == "file-raw" {
         Artwork::parse(&input)?
@@ -521,7 +535,12 @@ pub(crate) fn export_file(
     if art.filtered || !ansi && art.ansi.contains('\x1b') {
         return Err("Unsafe or mismatched artwork export.".into());
     }
-    if &crate::typography_preset::read_private_with_limit(path, ART_MAX_BYTES as u64)? != expected {
+    let limit = if ansi {
+        ART_MAX_ANSI_BYTES
+    } else {
+        ART_MAX_BYTES
+    } as u64;
+    if &crate::typography_preset::read_private_with_limit(path, limit)? != expected {
         return Err("Artwork changed on disk. Choose the file again before replacing it.".into());
     }
     if let Some(bytes) = expected {
@@ -533,12 +552,7 @@ pub(crate) fn export_file(
             bytes,
         )?;
     }
-    crate::typography_preset::write_checked_with_limit(
-        path,
-        contents.as_bytes(),
-        expected,
-        ART_MAX_BYTES as u64,
-    )
+    crate::typography_preset::write_checked_with_limit(path, contents.as_bytes(), expected, limit)
 }
 
 pub(crate) fn text_logo(
@@ -731,15 +745,25 @@ mod tests {
         assert!(art.expanded_tabs);
         art.validate().unwrap();
         for input in [
-            "x".repeat(121),
-            "中".repeat(61),
-            vec!["x"; 65].join("\n"),
+            "x".repeat(ART_MAX_COLUMNS + 1),
+            "中".repeat(ART_MAX_COLUMNS / 2 + 1),
+            vec!["x"; ART_MAX_ROWS + 1].join("\n"),
             "x".repeat(ART_MAX_BYTES + 1),
-            "\x1b[31m".repeat(4000),
+            "\x1b[31m".repeat(ART_MAX_ANSI_BYTES / 5 + 1),
+            format!("\x1b[38;2;255;255;255m{}", "\n".repeat(ART_MAX_ROWS + 1)),
         ] {
-            assert!(Artwork::parse(&input).is_err());
+            assert!(
+                Artwork::parse(&input).is_err(),
+                "accepted {} bytes",
+                input.len()
+            );
         }
         Artwork::parse(&vec!["x".repeat(120); 64].join("\n"))
+            .unwrap()
+            .validate()
+            .unwrap();
+        // A style reset after the final newline does not create another row.
+        Artwork::parse(&format!("{}\x1b[0m", "x\n".repeat(64)))
             .unwrap()
             .validate()
             .unwrap();

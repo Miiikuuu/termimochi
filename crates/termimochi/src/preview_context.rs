@@ -525,6 +525,14 @@ fn find_program(program: &str, project_directory: &Path) -> Option<PathBuf> {
 }
 
 pub(crate) fn run_bounded(command: &mut Command, deadline: Instant) -> Result<String, ProbeError> {
+    run_bounded_with_limit(command, deadline, OUTPUT_LIMIT)
+}
+
+pub(crate) fn run_bounded_with_limit(
+    command: &mut Command,
+    deadline: Instant,
+    output_limit: usize,
+) -> Result<String, ProbeError> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -538,7 +546,7 @@ pub(crate) fn run_bounded(command: &mut Command, deadline: Instant) -> Result<St
     thread::spawn(move || {
         let mut bytes = Vec::new();
         let result = stdout
-            .take((OUTPUT_LIMIT + 1) as u64)
+            .take((output_limit + 1) as u64)
             .read_to_end(&mut bytes)
             .map(|_| bytes);
         let _ = sender.send(result);
@@ -551,7 +559,7 @@ pub(crate) fn run_bounded(command: &mut Command, deadline: Instant) -> Result<St
         if output.as_ref().is_some_and(|result| {
             result
                 .as_ref()
-                .is_ok_and(|bytes| bytes.len() > OUTPUT_LIMIT)
+                .is_ok_and(|bytes| bytes.len() > output_limit)
         }) {
             let _ = child.kill();
             let _ = child.wait();

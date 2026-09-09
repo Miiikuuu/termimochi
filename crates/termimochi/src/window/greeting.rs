@@ -4,9 +4,13 @@ use crate::greeting::{
     GreetingPreset, GreetingSettings, Info, Logo, Opening, PRESET_NAME, Position,
 };
 use crate::greeting_official::{OfficialItem, OfficialPreset};
+mod art_preview;
 mod artwork;
 mod fastfetch;
 mod fields;
+mod image_import;
+mod startup;
+mod sync;
 
 pub(super) type OfficialKey = (Option<OfficialPreset>, String);
 type OfficialRow = (u16, gtk::Box, gtk::Switch, gtk::Button, gtk::Button);
@@ -56,10 +60,12 @@ pub(super) struct GreetingEditor {
     last_report: RefCell<Vec<String>>,
     fastfetch_target: RefCell<Option<crate::fastfetch_apply::Target>>,
     fastfetch_state: PathBuf,
+    sync: sync::SyncNotice,
     enabled: gtk::Switch,
     preset: gtk::DropDown,
     preset_note: gtk::Label,
     artwork_size: gtk::Label,
+    edit_image: gtk::Button,
     official_list: gtk::Box,
     official_rows: RefCell<Vec<OfficialRow>>,
     shown_official: Cell<Option<OfficialPreset>>,
@@ -75,6 +81,10 @@ pub(super) struct GreetingEditor {
     message: gtk::Entry,
     artwork: gtk::TextView,
     artwork_scroll: gtk::ScrolledWindow,
+    artwork_view: gtk::Stack,
+    artwork_card: gtk::Box,
+    pub artwork_preview: Rc<art_preview::ArtPreview>,
+    image_import_window: glib::WeakRef<gtk::Window>,
     list: gtk::Box,
     rows: Vec<(Info, gtk::Box, gtk::Switch, gtk::Button, gtk::Button)>,
     pub status: gtk::Label,
@@ -86,6 +96,7 @@ pub(super) struct GreetingEditor {
     pub invalid: Cell<bool>,
     updating: Cell<bool>,
     changed: RefCell<Option<Changed>>,
+    revision: Cell<u64>,
     dragging: Cell<Option<Info>>,
 }
 
@@ -148,6 +159,7 @@ impl GreetingEditor {
             ("Import Fastfetch Configuration…", "import-fastfetch"),
             ("Review & Apply…", "apply-fastfetch"),
             ("Restore Previous Configuration…", "restore-fastfetch"),
+            ("Terminal Startup…", "greeting-startup"),
         ] {
             config_menu.append(Some(label), Some(&format!("win.{action}")));
         }
@@ -158,6 +170,8 @@ impl GreetingEditor {
             .halign(gtk::Align::Start)
             .build();
         content.append(&config_button);
+        let sync = sync::SyncNotice::new();
+        content.append(&sync.root);
         let preset_note = gtk::Label::new(None);
         preset_note.set_xalign(0.0);
         preset_note.set_wrap(true);
@@ -177,7 +191,7 @@ impl GreetingEditor {
             &Logo::ALL.map(Logo::label),
             settings.logo.index(),
             "Greeting Artwork",
-            "Built-in artwork or your own text; no image files or commands.",
+            "Built-in artwork, text, or an image converted to colored characters. No commands are run.",
         );
         let position = layout_drop_down(
             &Position::ALL.map(Position::label),
@@ -215,11 +229,25 @@ impl GreetingEditor {
         let artwork_size = gtk::Label::new(None);
         artwork_size.set_xalign(0.0);
         artwork_size.add_css_class("dim-label");
-        artwork_size.set_tooltip_text(Some("Original character dimensions, not a scaled thumbnail. Wider artwork can be panned at a fixed preview width."));
-        content.append(&artwork_size);
+        artwork_size.set_tooltip_text(Some("Exported character dimensions. The thumbnail fits automatically; click to inspect at a larger size."));
+        let art_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let import_content = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+        import_content.append(&gtk::Image::from_icon_name("document-open-symbolic"));
+        let import_label = gtk::Label::new(Some("Import Artwork…"));
+        import_label.set_hexpand(true);
+        import_label.set_xalign(0.0);
+        import_content.append(&import_label);
+        let import_art = gtk::Button::builder()
+            .child(&import_content)
+            .action_name("win.import-greeting-art")
+            .css_classes(["artwork-import"])
+            .hexpand(true)
+            .build();
+        import_art.update_property(&[gtk::accessible::Property::Label("Import Artwork")]);
+        import_art.set_tooltip_text(Some("Choose PNG, JPG, WebP, TXT or ANSI artwork."));
+        art_actions.append(&import_art);
         let art_menu = gio::Menu::new();
         for (label, action) in [
-            ("Import Artwork…", "win.import-greeting-art"),
             ("Export Plain Text…", "win.export-greeting-txt"),
             ("Export ANSI…", "win.export-greeting-ans"),
             ("Edit as Plain Text", "win.edit-greeting-art-text"),
@@ -227,13 +255,26 @@ impl GreetingEditor {
             art_menu.append(Some(label), Some(action));
         }
         let art_files = gtk::MenuButton::builder()
-            .label("Artwork Files")
+            .icon_name("view-more-symbolic")
             .menu_model(&art_menu)
-            .halign(gtk::Align::Start)
+            .halign(gtk::Align::End)
             .build();
         art_files.add_css_class("flat");
-        art_files.set_tooltip_text(Some("Import UTF-8 .txt / .ans artwork, export the logo, or remove ANSI colors for text editing."));
-        content.append(&art_files);
+        art_files.add_css_class("artwork-more");
+        art_files.update_property(&[gtk::accessible::Property::Label(
+            "Artwork Export and Editing Options",
+        )]);
+        art_files.set_tooltip_text(Some(
+            "Export ANSI or plain text, or remove colors for manual text editing.",
+        ));
+        art_actions.append(&art_files);
+        content.append(&art_actions);
+        let edit_image = gtk::Button::builder()
+            .label("Edit Artwork…")
+            .action_name("win.edit-image-artwork")
+            .css_classes(["flat"])
+            .build();
+        content.append(&edit_image);
         let artwork = gtk::TextView::builder()
             .monospace(true)
             .wrap_mode(gtk::WrapMode::None)
@@ -245,7 +286,7 @@ impl GreetingEditor {
         artwork.buffer().set_enable_undo(false);
         artwork.buffer().set_text(&settings.custom_logo);
         artwork.update_property(&[gtk::accessible::Property::Label("Custom Greeting Artwork")]);
-        artwork.set_tooltip_text(Some("Up to 64 lines, 120 cells per line and 16 KiB. Plain text and emoji; terminal control sequences are rejected."));
+        artwork.set_tooltip_text(Some("Up to 96 lines, 160 cells per line and 16 KiB. Plain text and emoji; terminal control sequences are rejected."));
         let artwork_scroll = gtk::ScrolledWindow::builder()
             .min_content_height(160)
             .max_content_height(240)
@@ -253,7 +294,31 @@ impl GreetingEditor {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&artwork)
             .build();
-        content.append(&artwork_scroll);
+        let artwork_preview = art_preview::ArtPreview::new(false);
+        let artwork_view = gtk::Stack::builder()
+            .hhomogeneous(false)
+            .vhomogeneous(false)
+            .build();
+        artwork_view.add_named(&artwork_scroll, Some("text"));
+        artwork_view.add_named(&artwork_preview.viewport, Some("preview"));
+        let artwork_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let art_caption = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        artwork_size.set_hexpand(true);
+        art_caption.append(&artwork_size);
+        let enlarge = gtk::Button::from_icon_name("view-fullscreen-symbolic");
+        enlarge.add_css_class("flat");
+        enlarge.set_tooltip_text(Some("Enlarge artwork preview"));
+        enlarge.update_property(&[gtk::accessible::Property::Label("Enlarge Artwork Preview")]);
+        let weak = Rc::downgrade(&artwork_preview);
+        enlarge.connect_clicked(move |_| {
+            if let Some(preview) = weak.upgrade() {
+                preview.expand();
+            }
+        });
+        art_caption.append(&enlarge);
+        artwork_card.append(&art_caption);
+        artwork_card.append(&artwork_view);
+        content.append(&artwork_card);
         let columns = layout_drop_down(
             &["Follow Layout", "80 columns", "100 columns", "120 columns"],
             WIDTHS
@@ -349,6 +414,9 @@ impl GreetingEditor {
                 .hexpand(true)
                 .build();
             button.add_css_class("pill");
+            if action == "win.save-greeting" {
+                button.set_tooltip_text(Some("Save inside TermiMochi and restore on next launch. To change external Fastfetch, use Fastfetch Configuration → Review & Apply."));
+            }
             actions.append(&button);
         }
         content.append(&actions);
@@ -380,10 +448,12 @@ impl GreetingEditor {
             last_report: RefCell::new(Vec::new()),
             fastfetch_target: RefCell::new(None),
             fastfetch_state,
+            sync,
             enabled,
             preset,
             preset_note,
             artwork_size,
+            edit_image,
             official_list,
             official_rows: RefCell::new(Vec::new()),
             shown_official: Cell::new(None),
@@ -399,6 +469,10 @@ impl GreetingEditor {
             message,
             artwork,
             artwork_scroll,
+            artwork_view,
+            artwork_card,
+            artwork_preview,
+            image_import_window: glib::WeakRef::new(),
             list,
             rows,
             status,
@@ -410,6 +484,7 @@ impl GreetingEditor {
             invalid: Cell::new(false),
             updating: Cell::new(false),
             changed: RefCell::new(None),
+            revision: Cell::new(0),
             dragging: Cell::new(None),
         });
         this.refresh();
@@ -432,7 +507,26 @@ impl GreetingEditor {
             self.history.borrow_mut().commit(self.settings());
         }
     }
+    fn persist(&self) -> Result<(), String> {
+        self.finish();
+        if self.invalid.get() {
+            return Err("Fix the greeting fields before saving.".into());
+        }
+        let settings = self.settings();
+        self.store
+            .borrow_mut()
+            .as_mut()
+            .ok_or("The saved preset is unavailable. Export a separate preset instead.")?
+            .save(&GreetingPreset::new(settings.clone()))?;
+        *self.baseline.borrow_mut() = settings;
+        self.saved.set(true);
+        self.sync.save_failure.set_visible(false);
+        self.sync.refresh_visibility();
+        self.refresh_status();
+        Ok(())
+    }
     fn notify(&self) {
+        self.revision.set(self.revision.get().wrapping_add(1));
         if let Some(changed) = self.changed.borrow().as_ref() {
             changed();
         }
@@ -530,11 +624,9 @@ impl GreetingEditor {
             .as_ref()
             .is_some_and(|art| art.ansi.contains('\x1b'));
         self.artwork.set_editable(!colored);
-        self.artwork.set_tooltip_text(Some(if colored {"Colors are preserved. Artwork Files → Edit as Plain Text removes colors and enables editing; Undo restores them."}else{"UTF-8 artwork: up to 64 lines, 120 cells per line and 16 KiB."}));
+        self.artwork.set_tooltip_text(Some(if colored {"Colors are preserved. Artwork menu → Edit as Plain Text removes colors and enables editing; Undo restores them."}else{"UTF-8 artwork: up to 96 lines, 160 cells per line and 16 KiB."}));
         self.message.remove_css_class("error");
         self.artwork.remove_css_class("error");
-        self.artwork_scroll
-            .set_visible(settings.logo == Logo::Custom && settings.position != Position::Card);
         let mut previous: Option<&gtk::Box> = None;
         for (index, item) in settings.items.iter().enumerate() {
             let (_, row, toggle, up, down) = self
@@ -562,18 +654,51 @@ impl GreetingEditor {
         self.status.set_text(if self.dirty() {
             "Unsaved greeting changes"
         } else if self.saved.get() {
-            "Preset saved · restored on next launch"
+            "Preset saved in TermiMochi"
         } else if !self.settings.borrow().enabled {
             "Greeting is off · enable above to preview"
         } else {
             "Preview only · not saved"
         });
-        self.status.set_tooltip_text(Some("Read-only system snapshot. Fastfetch may format live values differently. Exporting does not enable a shell greeting."));
+        self.status.set_tooltip_text(Some("Save Preset remembers this design inside TermiMochi. Fastfetch Configuration → Review & Apply writes the external configuration and can run Fastfetch once in a new terminal. Shell startup stays unchanged."));
     }
     fn refresh_artwork_info(&self) {
         use unicode_width::UnicodeWidthStr;
         let settings = self.settings();
-        let art = settings.artwork();
+        self.edit_image
+            .set_label(if settings.editable_artwork.is_some() {
+                "Edit Artwork…"
+            } else {
+                "Reimport Original…"
+            });
+        self.edit_image.set_tooltip_text(Some(if settings.editable_artwork.is_some() {
+            "Continue editing the embedded original with your saved conversion settings."
+        } else {
+            "No editable source is saved. Choose the original image to create one; old conversion settings cannot be recovered."
+        }));
+        self.edit_image.set_visible(
+            settings.editable_artwork.is_some()
+                || (settings.logo == Logo::Custom && settings.custom_art.is_some())
+                || settings.imported_source.is_some(),
+        );
+        let rendered = if let Some(source) = &settings.imported_source {
+            crate::fastfetch_document::value(source)
+                .ok()
+                .and_then(|value| {
+                    crate::greeting_art::text_logo(
+                        &value["logo"],
+                        settings.source_logo.as_ref(),
+                        &mut Vec::new(),
+                    )
+                    .ok()
+                })
+        } else {
+            crate::greeting_art::Artwork::parse(&settings.artwork_ansi()).ok()
+        };
+        let art = rendered
+            .as_ref()
+            .map(|art| art.plain.as_str())
+            .unwrap_or("");
         let columns = art.lines().map(str::width).max().unwrap_or(0);
         self.artwork_size.set_text(&format!(
             "{} × {} cells{}",
@@ -589,6 +714,17 @@ impl GreetingEditor {
             }
         ));
         self.artwork_size.set_visible(!art.is_empty());
+        let editing = settings.imported_source.is_none()
+            && settings.logo == Logo::Custom
+            && self.artwork.is_editable();
+        self.artwork_card.set_visible(
+            !art.trim().is_empty() || (editing && settings.position != Position::Card),
+        );
+        self.artwork_scroll.set_visible(true);
+        self.artwork_view
+            .set_visible_child_name(if editing { "text" } else { "preview" });
+        self.artwork_preview
+            .set_art(rendered.filter(|art| !art.plain.trim().is_empty()));
     }
     fn refresh_official_fields(&self) {
         let settings = self.settings();
@@ -804,7 +940,11 @@ impl GreetingEditor {
         }
         let mut settings = self.settings();
         settings.enabled = self.enabled.is_active();
-        settings.logo = Logo::ALL[(self.logo.selected() as usize).min(Logo::ALL.len() - 1)];
+        let logo = Logo::ALL[(self.logo.selected() as usize).min(Logo::ALL.len() - 1)];
+        if settings.logo != logo {
+            settings.editable_artwork = None;
+        }
+        settings.logo = logo;
         settings.position = Position::ALL[self.position.selected().min(3) as usize];
         settings.preview_columns = WIDTHS[self.columns.selected().min(3) as usize];
         settings.opening = Opening::ALL[self.opening.selected().min(3) as usize];
@@ -816,6 +956,7 @@ impl GreetingEditor {
             .text(&buffer.start_iter(), &buffer.end_iter(), true)
             .into();
         if text != settings.custom_logo {
+            settings.editable_artwork = None;
             settings.custom_art = None;
             settings.custom_logo = text;
         }
@@ -851,11 +992,6 @@ impl GreetingEditor {
             }
             *self.settings.borrow_mut() = settings;
         }
-        self.artwork_scroll.set_visible(
-            self.settings.borrow().imported_source.is_none()
-                && self.settings.borrow().logo == Logo::Custom
-                && self.settings.borrow().position != Position::Card,
-        );
         self.replay.set_sensitive(
             self.settings.borrow().enabled && self.settings.borrow().opening != Opening::None,
         );
@@ -1185,7 +1321,7 @@ impl Workbench {
             let _ = sender.send(
                 serde_json::from_str(&requested.1)
                     .map_err(|e| e.to_string())
-                    .and_then(crate::greeting_official::render_config),
+                    .and_then(crate::greeting_official::render_native),
             );
         });
         let weak = Rc::downgrade(self);
@@ -1230,17 +1366,17 @@ impl Workbench {
         let facts = context.as_ref().map(|c| &c.greeting).unwrap_or(&fallback);
         let result = self.greeting_official_result.borrow();
         let text = match result.as_ref() {
-            Some(Ok(text)) => Some(text.as_str()),
-            Some(Err(_)) => {
-                Some("Native preview unavailable\r\nOpen Greeting > Compatibility for details.")
-            }
+            Some(Ok(output)) => Some(output.render(columns.clamp(12, 240) - 1)),
+            Some(Err(_)) => Some(
+                "Native preview unavailable\r\nOpen Greeting > Compatibility for details.".into(),
+            ),
             None => None,
         };
         let settings = self.greeting.settings();
         if !settings.needs_native() {
             return settings.render(facts, columns);
         }
-        settings.render_with_official(facts, columns, text)
+        settings.render_with_official(facts, columns, text.as_deref())
     }
     fn greeting_preview_text(&self) -> String {
         self.greeting_text_for_width(self.preview_terminal.column_count().max(12) as usize)
@@ -1504,24 +1640,18 @@ impl Workbench {
         self.feed_preview(PREVIEW_SHOW_CURSOR);
     }
     pub(super) fn save_greeting_preset(&self) {
-        self.greeting.finish();
-        let result = (|| {
-            if self.greeting.invalid.get() {
-                return Err("Fix the greeting fields before saving.".to_owned());
-            }
-            let settings = self.greeting.settings();
-            self.greeting
-                .store
-                .borrow_mut()
-                .as_mut()
-                .ok_or("The saved preset is unavailable. Export a separate preset instead.")?
-                .save(&GreetingPreset::new(settings.clone()))?;
-            *self.greeting.baseline.borrow_mut() = settings;
-            self.greeting.saved.set(true);
-            Ok(())
-        })();
+        let result = self.greeting.persist();
         match result {
-            Ok(()) => self.toast("Greeting preset saved. Shell startup files were not changed."),
+            Ok(()) => {
+                let toast = adw::Toast::builder()
+                    .title("Saved in TermiMochi. External Fastfetch is unchanged.")
+                    .button_label("Review & Apply…")
+                    .action_name("win.apply-fastfetch")
+                    .priority(adw::ToastPriority::High)
+                    .timeout(8)
+                    .build();
+                self.toast_overlay.add_toast(toast);
+            }
             Err(error) => self.toast(&error),
         }
         self.greeting.refresh_status();
@@ -1670,9 +1800,9 @@ impl Workbench {
     }
 
     fn confirm_fastfetch_export(self: &Rc<Self>, path: PathBuf, settings: GreetingSettings) {
-        let expected = match validate_fastfetch_path(&path)
-            .and_then(|()| typography_preset::read_private(&path))
-        {
+        let expected = match validate_fastfetch_path(&path).and_then(|()| {
+            typography_preset::read_private_with_limit(&path, crate::fastfetch_document::LIMIT)
+        }) {
             Ok(expected) => expected,
             Err(error) => {
                 self.toast(&error);
@@ -1735,10 +1865,13 @@ fn export_fastfetch(
     settings: &GreetingSettings,
     expected: &Option<Vec<u8>>,
 ) -> Result<(), String> {
-    use crate::typography_preset::{read_private, retain_backup, write_checked_with_limit};
+    use crate::fastfetch_document::LIMIT;
+    use crate::typography_preset::{
+        read_private_with_limit, retain_backup, write_checked_with_limit,
+    };
     validate_fastfetch_path(path)?;
     let bytes = settings.fastfetch_config()?.into_bytes();
-    if &read_private(path)? != expected {
+    if &read_private_with_limit(path, LIMIT)? != expected {
         return Err("The destination changed after confirmation. Nothing was overwritten.".into());
     }
     if let Some(before) = expected {
@@ -1750,11 +1883,11 @@ fn export_fastfetch(
             before,
         )?;
     }
-    write_checked_with_limit(path, &bytes, expected, 65536)
+    write_checked_with_limit(path, &bytes, expected, LIMIT)
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     #[test]
@@ -1803,7 +1936,7 @@ mod tests {
         assert!(export_fastfetch(&alias, &settings, &None).is_err());
     }
 
-    pub(super) fn settle() {
+    pub(in crate::window) fn settle() {
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_millis(300) {
             while glib::MainContext::default().pending() {
@@ -1835,7 +1968,7 @@ mod tests {
             .emit_clicked();
         settle();
     }
-    pub(super) fn controller(window: &gtk::Window) -> Rc<Workbench> {
+    pub(in crate::window) fn controller(window: &gtk::Window) -> Rc<Workbench> {
         unsafe {
             window
                 .data::<Rc<Workbench>>("termimochi-workbench")
@@ -1966,6 +2099,99 @@ mod tests {
         let window = app.active_window().unwrap();
         assert_eq!(controller(&window).greeting.settings(), custom);
         assert!(custom.official_preset.is_none());
+        window.destroy();
+    }
+
+    #[test]
+    #[ignore = "requires GTK/VTE, system Fastfetch and Bubblewrap; run separately"]
+    fn imported_greeting_fields_stay_on_their_rows_after_resize_and_scroll() {
+        adw::init().unwrap();
+        gio::resources_register_include!("termimochi.gresource").unwrap();
+        gtk::IconTheme::for_display(&gdk::Display::default().unwrap())
+            .add_resource_path(&format!("{}/icons", crate::RESOURCE_BASE));
+        let app = adw::Application::builder()
+            .application_id("io.github.miiikuuu.termimochi.GreetingLayoutTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(typography_preset::PRESET_NAME);
+        let art = (0..28)
+            .map(|row| format!("\x1b[38;2;12;134;56mART{row:02}{}\x1b[0m", ".".repeat(51)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let modules = (0..20).map(|row| serde_json::json!({"type":"os", "key":format!("FIELD{row:02}"), "format":format!("value{row:02}")})).collect::<Vec<_>>();
+        let mut source = serde_json::json!({"logo":{"type":"data-raw","source":art,"padding":{"left":0,"right":3,"top":0},"printRemaining":true},"modules":modules});
+        let mut settings = GreetingSettings::starter();
+        settings.imported_source = Some(source.to_string());
+        settings.enabled = true;
+        settings.official_preset = None;
+        settings.official_items.clear();
+        settings.preview_columns = 80;
+        DocumentStore::<GreetingPreset>::open(root.path().join(PRESET_NAME))
+            .unwrap()
+            .save(&GreetingPreset::new(settings.clone()))
+            .unwrap();
+        present_with_preset(&app, None, path);
+        let window = app.active_window().unwrap();
+        window.set_default_size(1320, 850);
+        let this = controller(&window);
+        gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+        wait_official(&this);
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while this.preview_loading.get() {
+            assert!(std::time::Instant::now() < deadline);
+            settle();
+        }
+        for position in ["left", "right", "top", "left"] {
+            source["logo"]["position"] = serde_json::json!(position);
+            settings.imported_source = Some(source.to_string());
+            this.greeting.replace(settings.clone(), true);
+            wait_official(&this);
+            for width_index in [1, 2, 3, 1] {
+                this.greeting.columns.set_selected(width_index);
+                settle();
+                let terminal = &this.preview_terminal;
+                let columns = i64::from(WIDTHS[width_index as usize]);
+                assert_eq!(terminal.column_count(), columns);
+                let snapshot = || terminal.text_format(vte::Format::Text).unwrap().to_string();
+                let text = snapshot();
+                let lines: Vec<_> = text.lines().collect();
+                let first = lines
+                    .iter()
+                    .position(|l| l.contains("FIELD00"))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "fields visible: text={text:?}, cursor={:?}",
+                            terminal.cursor_position()
+                        )
+                    });
+                for row in 0..20 {
+                    assert!(
+                        lines[first + row].contains(&format!("FIELD{row:02}: value{row:02}")),
+                        "position={position}, cols={columns}, row={row}, text={text:?}"
+                    );
+                    if position != "top" {
+                        assert_eq!(first, 0);
+                        assert!(lines[row].contains(&format!("ART{row:02}")), "{text:?}");
+                        assert_eq!(
+                            lines[row].find(&format!("FIELD{row:02}")),
+                            Some(if position == "left" { 59 } else { 0 })
+                        );
+                    }
+                }
+                if position == "top" {
+                    assert!(first >= 28);
+                }
+                let scroll = this.preview_terminal_viewport.vadjustment();
+                scroll.set_value((scroll.upper() - scroll.page_size()).max(0.0));
+                settle();
+                scroll.set_value(0.0);
+                window.set_default_size(if width_index == 2 { 1180 } else { 1320 }, 790);
+                settle();
+                assert_eq!(snapshot(), text, "scroll/resize must not relocate fields");
+            }
+        }
         window.destroy();
     }
 

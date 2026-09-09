@@ -314,7 +314,7 @@ and Ctrl+S on Layout persist all eight fields to
 `layout.termimochi-layout.json` beside the typography preset; startup restores
 it without marking the palette as modified. Open/export use the same suffix.
 `document_store.rs` validates versioned documents before use, bounds input to
-1 MiB, rejects symlinks/hard links and foreign destinations, detects external
+1 MiB by default (24 MiB for Greeting/Workspace embedded image sources), rejects symlinks/hard links and foreign destinations, detects external
 edits and writes atomically with private backups.
 
 `layout_apply.rs` only writes six global Ptyxis keys: `cursor-shape`,
@@ -388,7 +388,7 @@ app icon (letter/punctuation texture with a negative-space terminal chevron and 
 upstream Ubuntu/Arch/Debian/Fedora/Linux Mint artwork. The upstream MIT license
 and provenance are also compiled into GResources. Fastfetch `$1`…`$9` palette
 markers and `$$` escapes are decoded without changing geometry; user Custom text
-does not use that substitution. Custom artwork is limited to 64 lines, 120 cells
+does not use that substitution. Custom artwork is limited to 96 lines, 160 cells
 per line and 16 KiB, with the same terminal-control and bidi protections.
 Minimal card suppresses
 art without deleting the selected/custom logo. GTK DragSource/DropTarget on the
@@ -479,7 +479,8 @@ modules, user-selected image paths and network-enabled examples cannot enter
 this execution path. Fields run through `/usr/bin/fastfetch` in `/usr/bin/bwrap` with a
 read-only root, private temporary directory and PID namespace, no network, cleared
 environment and no unsandboxed fallback. The shared concurrent-pipe helper limits
-stdout to 32 KiB and runtime to 2.2 seconds, kills/reaps timeouts, and reports failures.
+stdout to 352 KiB (320 KiB artwork plus 32 KiB information) and runtime to 2.2
+seconds, kills/reaps timeouts, and reports failures.
 Module SGR output is sanitized before grapheme-aware clipping and composition
 with the bundled logo. Desktop/terminal detection and read-only disk flags are
 sandbox observations, explicitly disclosed in the UI; module detection errors
@@ -500,7 +501,7 @@ Unstyled custom designs retain the lightweight snapshot path. Native rendering
 requires system Fastfetch 2.x >= 2.57 and Bubblewrap; a failed version/dependency
 check never falls back to executing the imported file or an unsandboxed process.
 
-`fastfetch_document.rs` uses jsonc-parser's lossless CST. It enforces 64 KiB,
+`fastfetch_document.rs` uses jsonc-parser's lossless CST. It enforces 512 KiB,
 32 nesting levels, 128 modules, strict JSON syntax except comments/trailing
 commas, unique object keys and bounded ASCII module type names. Batch field
 edits modify only selected scalar properties, retaining comments, whitespace,
@@ -513,8 +514,25 @@ paths and unsupported display/general options are omitted and reported, while
 export/apply retains them. Imported layout is read-only rather than pretending
 that designer layout controls can represent arbitrary upstream configurations.
 
-`greeting_art.rs` bounds UTF-8 TXT/ANS logos to 16 KiB, 64 rows and 120 terminal
-cells per row. An SGR whitelist retains 16/256/RGB foreground/background colors,
+`greeting_official/layout.rs` resolves native Fastfetch's relative cursor moves
+and horizontal positioning into a bounded 240-column / 256-row static grid.
+Simply deleting those moves puts module text below or inside the already-painted
+logo. The worker now caches typed drawing operations, replayed at the current
+preview width (including right-aligned logos) without launching another process
+on resize. Grapheme cells and compact reviewed SGR state preserve wide glyphs,
+color and transparent padding; overflow clips instead of wrapping into fields.
+Only text, CRLF and SGR leave the compositor. Imported artwork still cannot
+introduce cursor controls, and native OSC/DCS, erasure and mode changes are not
+forwarded to VTE. GUI regression coverage checks actual VTE rows at 80/100/120
+columns, left/right/top artwork, scrolling and window resize at 1x/2x.
+Custom designer exports also derive their 1-based value-column stop from the
+edited labels' cell widths, including icons and separators, so long labels are
+not overwritten by values. Existing imported files are not silently rewritten.
+
+`greeting_art.rs` bounds visible UTF-8 text to 16 KiB, 96 rows and 160 terminal
+cells per row, with a separate 320 KiB input/normalized ANSI budget for per-cell
+image colors. Incremental expansion checks prevent newlines/styles from growing
+beyond these limits. An SGR whitelist retains 16/256/RGB foreground/background colors,
 bold/dim, italic, underline, reverse and strike. OSC/DCS/APC/C1 controls, cursor
 movement, erasure, blink/conceal and bidi controls are removed with a notice;
 this deliberately is not an ANSI screen emulator. Tabs expand at 8-cell stops,
@@ -540,6 +558,84 @@ native built-in logo export runs on a bounded worker without system modules.
 Tests cover encoding, widths, controls, snapshots, aliases/FIFOs, conflicts,
 multiline color, actual Fastfetch projection, GTK cancel/undo and restart.
 
+`greeting_image.rs` converts local PNG/JPEG/WebP into that same `Artwork` type.
+Only these three `image` codecs are enabled; SVG, GIF, APNG, animated WebP and
+native image-display protocols are explicitly deferred. Reads are bounded to
+16 MiB and reject non-regular files, leaf symlinks/hardlinks and file races.
+Magic bytes select the decoder. RIFF chunk bounds are checked before WebP
+metadata reads. Before pixel decoding, dimensions are limited to 8192 per side,
+16 million pixels and 64 MiB of decoded pixel data; decoder allocation limits
+also apply where supported (not a total process-memory guarantee).
+EXIF orientation is honored, alpha is premultiplied before resampling, and the
+decoded snapshot is reduced to a maximum 1024-pixel side for repeated conversions.
+The grid preserves source aspect using the current VTE cell ratio, within
+160 columns, 96 rows and 15360 cells for ASCII; Detail/Half blocks keep the
+120-column, 64-row, 3072-cell budget. The default ANSI Detail mode samples 8×8
+subcells and fits procedural quadrant, eighth-block and diagonal masks by
+weighted RGB error with transparency penalties. Common shapes win ties, and
+inverse transparency cannot accidentally draw the terminal default foreground.
+Half blocks still encode two vertical samples per cell. ASCII samples 4×4
+subcells, combines Sobel/non-maximum-suppression/connected hysteresis contours
+with tonal fill, suppresses neutral paper noise and strengthens pastel ink.
+The selected mode chooses balanced, contours-only or tone-only output. Cropping,
+outer-margin trim, exposure, contrast, saturation and smoothing precede rendering.
+See [image-conversion.md](image-conversion.md) for independent implementation
+details, limitations and public algorithm references.
+This is intentionally a stylized foreground-only rendition; only Detail/Half
+blocks aim to preserve source RGB colors. Invisible RGB cannot bleed into edges.
+Fully transparent images are rejected; partial alpha uses the captured terminal
+background. Every generated result passes the existing SGR/geometry validator.
+
+`window/greeting/image_import.rs` owns a cancelable modal with a read-only VTE
+preview, maximum-width/style/density controls and one coalescing worker. A
+same-size Original/Converted switch uses a premultiplied RGBA thumbnail from the
+already decoded snapshot; no repeated file reads or terminal graphics protocol
+are introduced. The Import Artwork action is a visible,
+labeled button, separate from the secondary Export / Edit menu. The
+ASCII width defaults to 64 and is remembered separately from symbol width.
+An independently scrolling sidebar contains four adjustment recipes, color and
+structure modes, tone sliders and a crop expander. Reset retains width and style;
+manual edits mark the recipe Custom. The original-color reference follows the
+same crop and generation as converted artwork. `greeting_image/source.rs` retains
+the bounded original image and a versioned conversion recipe beside final ANSI.
+Canonical base64 serialization omits the original path; image bytes are shared
+with Arc across Undo/Redo. All numeric recipe fields validate before use, and
+full decoding happens only in the bounded image worker. Source metadata is not
+stripped, so sharing a preset/workspace also shares that data. External Fastfetch
+exports never include the source or recipe. Edit Artwork restores controls and
+captured cell/color parameters; replacement with unrelated artwork or plain text
+detaches the source. Legacy images offer an explicit reimport rather than a
+fabricated reconstruction. Source, recipe and output commit in one history step.
+`greeting_image/background.rs` adds opt-in color-key removal before tone edits
+and resampling. Automatic mode requires a near-uniform opaque original border;
+manual mode uses validated HEX or a pixel picked from the original-color crop.
+Bounded iterative four-connected selection preserves enclosed same-color regions
+by default; global removal is explicit. Tolerance and smoothstep softness only
+reduce alpha, with matte decontamination and premultiplied RGB bounds. This is
+not semantic segmentation. No-match/ambiguous detection disables acceptance;
+invalid controls invalidate pending generations, and blank output is rejected.
+The Picture picker accounts for centered Contain letterboxing in logical pixels;
+Esc cancels picking before closing the dialog. Recipes preserve removal controls,
+while Reset clears them. Source bytes remain untouched and no image recipe is saved.
+Fit preview adjusts the VTE font only, based on viewport allocation changes;
+it never reruns conversion or changes exported geometry. Full-size inspection
+remains scrollable, and both reference/converted views use the same canvas.
+The saved-status message explicitly distinguishes in-app presets from applying
+Fastfetch. A high-priority save toast offers the existing review action; opening
+or canceling that review never writes the external config. The
+worker decodes once; generation IDs ignore stale results and a bounded output
+channel prevents accumulating converted drafts. Apply stays disabled while the
+current request is pending or invalid. Closing drops the channels. Accepting
+rechecks the captured Greeting settings and validates both Fastfetch and preset
+budgets before one undoable replacement. Only sanitized ANSI text is persisted,
+never source pixels/paths. Existing imported fields/comments remain intact.
+Native Fastfetch output allows 320 KiB of art plus 32 KiB of information; other
+preview subprocesses retain their smaller output bounds. Fastfetch exports and
+rollback receipts use the enlarged document budget consistently. Tests generate
+PNG/JPEG/WebP, EXIF, APNG and malformed fixtures in memory, cover alpha/aspect/
+resource limits and large portable round trips, and exercise cancel/coalescing/
+stale edits/undo/save/reopen with real GTK/VTE and sandboxed Fastfetch at 1x/2x.
+
 `window/greeting/fastfetch.rs` exposes Load Current, Import, Review & Apply and
 Restore Previous. The collapsed Compatibility report distinguishes runtime,
 offline detection, Pango missing/private-use fallback glyphs and retained-but-
@@ -548,6 +644,36 @@ Preview Checks. Full read-only Before/After panes show the explicit destination;
 Cancel is initially focused, and both the draft and destination bytes are
 rechecked when accepting. The standard path follows the GLib/XDG config directory,
 preferring config.jsonc over config.json. Shell startup files are never targets.
+
+The separate `greeting_startup.rs` opt-in is the only Greeting action allowed to
+edit `.bashrc`. `window/greeting/startup.rs` presents a default-off switch and
+an explicit review of its exact managed block, config path and execution risk.
+Portable documents cannot restore this authority. Checked writes retain backups,
+reject concurrent changes/aliases/read-only targets and check the applied config
+again before enabling. Removal recognizes the exact versioned block, preserves
+outside edits, and refuses modified or duplicate markers. Existing unmanaged
+Fastfetch/Neofetch references block enabling to avoid double output. The Bash
+guard skips non-interactive/non-TTY, SSH, tmux and shell-parent sessions, and
+uses a non-exported once-per-shell flag. Configuration paths are single-quoted
+with embedded quotes escaped; no imported shell code becomes part of the hook.
+Fastfetch itself can execute retained config commands after this explicit opt-in.
+
+Successful apply (including an unchanged target) also persists the accepted
+Greeting via `DocumentStore`, advancing its baseline only after a checked local
+save. A local conflict cannot undo the external apply or be mistaken for complete
+success: a persistent notice offers Retry Save. Cancel and failed external apply
+never save the preset. Save Preset itself remains local-only.
+
+`window/greeting/sync.rs` coalesces read-only comparisons on startup, refocus and
+Greeting edits. Bounded reads and JSONC comparison run off GTK, with at most one
+worker per window and stale-result rejection. Explicitly loaded targets take
+precedence over the local last-apply receipt and the default path. Receipt
+discovery never restores a portable preset's write authority; applying still
+requires explicit review. Comparison ignores comments, formatting and `$schema`,
+and accepts the designer's adaptive stacked export. Load Applied reads fresh,
+rechecks the file and draft after confirmation, loads without executing imported
+modules, then saves the local preset. It never writes external Fastfetch. Unsaved
+or invalid drafts require confirmation even if a workspace was saved earlier.
 
 `fastfetch_apply.rs` writes private backups and a checked durable rollback receipt
 under `state_directory()/fastfetch-state`. Apply prepares rollback before an
@@ -558,6 +684,30 @@ bytes, then restores the exact original or removes only the exact newly created
 config. All writes reject symlinks, hard links, readonly files and detected
 concurrent changes. Unsupported imported settings may execute later when the
 user invokes Fastfetch externally; the review dialog explicitly discloses this.
+
+`fastfetch_run.rs` implements the separate post-apply action. The review checkbox
+defaults on for designer configurations and off for imported documents. Only a
+successful apply may launch; unchanged configurations can be explicitly reviewed
+and run again. Restore never launches. The target is rechecked before opening a
+new Ptyxis window. A fixed bash wrapper passes the absolute config path as `$1`,
+never interpolates it into shell code, clears BASH_ENV/ENV and skips shell startup
+files. It runs system Fastfetch once, shows failure status and waits for Enter.
+The external run intentionally uses normal host detection and may execute retained
+imported commands after opt-in; it is not the restricted in-app preview renderer.
+No commands are injected into existing tabs, no startup hooks are installed and
+launch failure cannot roll back an otherwise successful configuration write.
+GTK apply tests record launch requests without touching the user's terminal;
+opt-in real launcher tests use temporary configs, an isolated X display and a
+private D-Bus session.
+
+`window/greeting/art_preview.rs` renders artwork in a read-only VTE thumbnail,
+with the active palette and typography. Width/height-driven font fitting and
+centering preserve the entire character grid without changing the stored ANSI.
+The plain text editor remains separate; imported text snapshots and colored
+custom artwork use the thumbnail. Clicking expands a read-only window with Fit
+and full-size scrolling. Every queued VTE frame clears/homes before feeding, so
+old generations cannot leave remnants. A full-width import button and compact
+overflow menu keep the toolbar within the editor column.
 
 `greeting_field_editor_import_review_apply_restore_and_invalid_input` is a separate
 opt-in GTK test for popover lifecycle, live output, undo/redo, invalid drafts,

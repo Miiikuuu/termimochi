@@ -6,6 +6,8 @@ use std::{
     process::Command,
     time::{Duration, Instant},
 };
+mod layout;
+pub(crate) use layout::NativeOutput;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -186,7 +188,11 @@ pub(crate) fn render(
 }
 
 /// Only call with a generated designer config or a filtered imported projection.
-pub(crate) fn render_config(mut config: Value) -> Result<String, String> {
+pub(crate) fn render_config(config: Value) -> Result<String, String> {
+    render_native(config).map(|output| output.render(240))
+}
+
+pub(crate) fn render_native(mut config: Value) -> Result<NativeOutput, String> {
     config["display"]["pipe"] = json!(false);
     config["display"]["hideCursor"] = json!(false);
     config["display"]["disableLinewrap"] = json!(false);
@@ -287,12 +293,13 @@ pub(crate) fn render_config(mut config: Value) -> Result<String, String> {
             command.env(key, value);
         }
     }
-    let output = crate::preview_context::run_bounded(
+    let output = crate::preview_context::run_bounded_with_limit(
         &mut command,
         Instant::now() + Duration::from_millis(2200),
+        crate::greeting::ART_MAX_ANSI_BYTES + 32 * 1024,
     )
     .map_err(|e| format!("Native preview unavailable ({e:?}). No unsandboxed fallback was run."))?;
-    Ok(crate::starship_import::terminal_safe_ansi(&output))
+    Ok(NativeOutput::parse(&output))
 }
 
 #[cfg(test)]

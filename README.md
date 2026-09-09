@@ -81,20 +81,69 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Use **Preview Source → Reset Preview Session** to return to command scenarios.
   Official shapes retain their original character geometry (Ubuntu is 43 × 20
   cells); palette markers are decoded and recolored with the selected ANSI accent.
-  Custom art supports **64 lines × 120 cells, up to 16 KiB**, including CJK,
+  Custom art supports **96 lines × 160 cells, up to 16 KiB**, including CJK,
   emoji and kaomoji, with bounded grapheme-aware clipping
   and a stacked fallback in narrow previews. Text controls and invalid artwork
   are rejected, with independent Undo/Redo and unsaved-change protection.
-- **Artwork Files → Import Artwork…** accepts UTF-8/ASCII `.txt` and `.ans`
-  logos. ANSI imports retain 16/256/RGB colors and supported text styles; cursor
+- The **Import Artwork…** button in Greeting accepts **PNG / JPG / WebP** images
+  and UTF-8/ASCII `.txt` / `.ans` logos. Images open a live conversion draft:
+  start with **ANSI Detail** at 64 columns for recognizable color areas and corners,
+  or choose **ASCII** / **Half blocks**. Adjust **Max columns**, optionally invert
+  ASCII density, and toggle **Original / Converted** at the same display size.
+  ASCII starts at **64 columns**, independently supports **160 × 96 cells**,
+  and remembers its width when switching styles. **Fit preview** scales only
+  the display, not the generated text; turn it off to inspect full-size glyphs.
+  The independently scrolling editor offers **Balanced / Illustration / Line Art /
+  Photo** recipes, exposure, contrast, saturation, noise smoothing, color modes,
+  ASCII structure/edge sensitivity, manual percentage crops and outer-margin trim.
+  **Background → Remove background** adds automatic or picked solid-color
+  removal, tolerance and edge softness. Edge-connected removal protects enclosed
+  details by default; this is not AI removal of complex photo backgrounds.
+  **Reset adjustments** keeps the character mode and width. Original shows the
+  same crop without tone edits. Recipes are conversion drafts, not saved source
+  images: reimport the original to adjust them after closing. See the
+  [image conversion guide](docs/image-conversion.md) for usage and algorithm references.
+  Click **Use Artwork** to replace only the logo;
+  Cancel leaves the greeting unchanged and Undo restores the previous artwork.
+  The artwork toolbar keeps **Import Artwork…** readable at narrow widths, with
+  export/text editing in the adjacent **⋮** menu. Colored artwork has a fitted
+  ANSI thumbnail; click it or the expand icon for a larger **Artwork Preview**.
+  Turn **Fit** off there to inspect full-size characters with scrolling. Plain
+  custom text remains editable, and thumbnail scaling never changes exports.
+  The aspect ratio follows the current terminal cell proportions. ANSI Detail
+  and Half blocks approximate source RGB colors unless adjustments are enabled; ASCII strengthens pastel ink contrast
+  and thin contours for readability. Transparent cells remain empty and partial alpha blends
+  with the current terminal background. Conversion runs in the background.
+  Images are limited to 16 MiB, 8192 px per side and 16 megapixels. Detail/Half
+  blocks fit within 120 columns, 64 rows and 3072 cells; ASCII has a separate
+  15360-cell budget. The actual fitted grid is shown, including width reductions
+  for extreme aspect ratios. Wide exports need a sufficiently wide terminal.
+  Photo orientation is honored.
+  **Edit Artwork…** reopens the embedded original image and saved conversion
+  settings, even after moving or deleting the original file. **Use Artwork**
+  commits one undoable change; Cancel keeps the previous source and result.
+  Presets/workspaces include the original image bytes (including any original
+  metadata), but not its filesystem path. Keep this in mind when sharing them.
+  Fastfetch/TXT/ANSI exports contain only the rendered artwork, never source
+  images or recipes. Existing artwork without a source offers **Reimport
+  Original…**; old conversion settings cannot be reconstructed from ANSI alone.
+  **Save Preset** remembers it inside TermiMochi for next launch; it does not apply
+  anything externally. Its confirmation offers **Review & Apply…**, also available
+  under **Fastfetch Configuration**, to back up and update Fastfetch only after
+  explicit confirmation. Run `fastfetch` again to see the result; startup files
+  remain unchanged. **Export Fastfetch Configuration…**
+  embeds the same colored artwork in `config.jsonc` without changing shell startup.
+  ANSI imports retain 16/256/RGB colors and supported text styles; cursor
   movement, screen clearing, clipboard/title commands, links and unsupported
   controls are filtered and reported in **Compatibility**. Tabs expand to
   8-column stops. Legacy CP437 artwork needs conversion to UTF-8 first.
   Colored imports show a read-only plain-text editor; **Edit as Plain Text**
-  removes colors for manual editing, with Undo to restore them. **Export Plain
+  removes colors for manual editing, with Undo to restore them. **Export / Edit → Export Plain
   Text… / Export ANSI…** exports only the logo, not machine information.
   Overwrites require confirmation, retain a backup and reject external changes.
-  PNG/SVG conversion and Kitty/Sixel image logos are not supported yet.
+  Plain text is limited to 16 KiB; ANSI artwork has a separate 320 KiB color-data
+  budget with the same visible geometry limits. SVG conversion, Kitty/Sixel image
+  logos and GIF/animated PNG/WebP are not supported yet; export a still image first.
 - Click a system field's name to edit its **label, inline icon, name/content
   colors and display format** in a compact popover. CPU/GPU summaries, memory
   and disk percentages/bars, and date/time formats share the same native
@@ -128,9 +177,31 @@ that looks balanced elsewhere can therefore become almost unreadable.
   TermiMochi; backups and the checked rollback record live under
   `XDG_STATE_HOME/termimochi/fastfetch-state`. Restore also checks for external
   edits and retains a recovery copy. Imported unsupported settings remain in
-  the applied file and can run when **you** invoke Fastfetch; review them first.
-  Loading, saving a TermiMochi preset and applying a Fastfetch file are separate
-  actions. None edits `.bashrc` or enables automatic shell startup.
+  the applied file and can run when Fastfetch is invoked; review them first.
+  **Run Fastfetch in a new terminal after applying** opens a new **Ptyxis** window
+  and executes the applied config once. It is on by default for designer configs
+  and off for imported configs, which may contain commands or network modules.
+  Press Enter in the result window to close it. The run is outside the offline
+  preview sandbox and uses Ptyxis's configured appearance, not an unsaved app
+  theme. Missing launch tools do not undo a successful config apply. Cancel,
+  failed/conflicting apply, Save Preset and Restore do not launch a terminal.
+  A successful apply also saves the current Greeting preset for the next launch.
+  If that local save fails, a persistent notice reports the partial success;
+  conflicting presets are never overwritten. Startup and window refocus compare
+  the preview with the last applied file (or the default Fastfetch config).
+  **Load Applied** loads and saves that version locally, with confirmation before
+  replacing unsaved edits. These checks do not execute imported commands or
+  silently replace drafts. **Save Preset** alone still changes only TermiMochi.
+  None of these actions edits `.bashrc` or enables automatic shell startup.
+- **Fastfetch Configuration → Terminal Startup…** is a separate, default-off
+  opt-in for new local Bash terminals. It shows the exact managed block and
+  `.bashrc` destination before enabling, keeps a backup, and rejects aliases,
+  read-only files, concurrent changes and pre-existing Fastfetch/Neofetch
+  references. Disabling removes only the unchanged TermiMochi block and preserves
+  other edits. It skips SSH, tmux, nested shells and non-interactive output, and
+  runs at most once per shell. The selected applied config may execute commands
+  or network modules automatically; the confirmation explicitly warns about this.
+  Other shells are not configured. Portable presets cannot enable this setting.
 - Greeting width can follow Layout or use an exact **80 / 100 / 120 columns**,
   without changing the Layout document. Pan wider grids with Shift+wheel.
   A short, once-per-window hint appears when the preview is too wide: drag
@@ -164,7 +235,8 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Existing destinations require an explicit **Back Up & Replace** confirmation;
   private backups are kept in `termimochi-backups` beside the export. Symlinks,
   hard links and concurrent external changes are rejected. Choosing your active
-  Fastfetch config changes future Fastfetch runs, but `.bashrc` is never modified.
+  Fastfetch config changes future Fastfetch runs; Review & Apply can also run it
+  once immediately. `.bashrc` is never modified.
   Existing workspaces without a Greeting section load with it disabled; older
   eight-field presets preserve their order and add GPU/Disk switched off.
 - Optional point-to-edit in Live Preview: enable **Inspect** (off by default)
@@ -264,8 +336,8 @@ isolated temporary cache and no network. Only reviewed built-in modules and
 declarative options are passed through; custom commands, unreviewed modules,
 command overrides and right prompts are skipped and reported. If Starship or
 Bubblewrap is unavailable, the app reports the limitation and uses a basic
-context prompt; it never runs an unsandboxed fallback. Shell startup files are
-not read or executed. Designer still exports a separate complete configuration,
+context prompt; it never runs an unsandboxed fallback. The prompt preview does
+not read or execute shell startup files. Designer still exports a separate complete configuration,
 not a merge of the imported file. Nerd Font symbols need a font with those glyphs;
 importing preserves symbols but does not silently change your font.
 
@@ -351,6 +423,25 @@ paths and embedded bytes, shared desktop icons, bundled licenses, and palette
 copies. Private action icons are embedded only; no fixed resource count is used.
 CI also runs the isolated installer, a GUI smoke test, crate packaging and tests
 of the unpacked packages, plus a separate RustSec dependency audit.
+
+For the full opt-in native/GUI regression matrix, start a **dedicated Xvfb**
+display, then run:
+
+```bash
+Xvfb :91 -screen 0 2880x1900x24 -nolisten tcp -noreset
+# In another terminal:
+python3 scripts/test-regression.py --display :91 --scale 1 --scale 2
+```
+
+This requires Fastfetch, Bubblewrap, Ptyxis, `dbus-run-session`, `xwininfo`,
+and the X11 libraries used by the pointer driver. Each case uses a separate
+process, private D-Bus session and temporary XDG directories; the terminal-launch
+test opens Ptyxis on the test display only. The runner pins one test build,
+enforces per-case timeouts and writes logs plus `results.json` under `/tmp`.
+Use `--filter extreme_settings` for the cross-module extreme-value/rapid-switch
+test. Ordinary tests additionally cover a 672-case artwork/layout matrix and
+1,024 seeded terminal-control streams. These checks supplement, not replace,
+manual testing on real desktop compositors.
 
 ## Repository structure
 

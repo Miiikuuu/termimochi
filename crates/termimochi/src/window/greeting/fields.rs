@@ -368,9 +368,7 @@ impl GreetingEditor {
         let imported = settings.imported_source.is_some();
         self.imported_list.set_visible(imported);
         self.appearance_group.set_visible(!imported);
-        self.artwork_size.set_visible(!imported);
         if imported {
-            self.artwork_scroll.set_visible(false);
             self.preset_note
                 .set_text("Imported JSONC · original layout preserved");
         }
@@ -609,6 +607,20 @@ mod tests {
         inspector.popover.popdown();
 
         this.request_fastfetch_apply();
+        crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow_mut().clear());
+        let run = gtk::Window::list_toplevels()
+            .into_iter()
+            .flat_map(|w| descendants(&w))
+            .find_map(|w| {
+                w.downcast::<gtk::CheckButton>().ok().filter(|w| {
+                    w.label().as_deref() == Some("Run Fastfetch in a new terminal after applying")
+                })
+            })
+            .unwrap();
+        assert!(
+            !run.is_active(),
+            "Imported commands must never opt into automatic execution"
+        );
         respond("Cancel");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), source);
         assert!(!this.greeting.fastfetch_state.exists());
@@ -621,6 +633,7 @@ mod tests {
         respond("Back Up & Apply");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), edited);
         assert!(!sentinel.exists());
+        assert!(crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().is_empty()));
         this.save_greeting_preset();
         let saved = this.greeting.settings();
         let workspace = root.path().join("fields.termimochi.json");

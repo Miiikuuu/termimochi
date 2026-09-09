@@ -20,14 +20,37 @@ fn plain_report_line(line: &str) -> String {
 
 impl Workbench {
     pub(in crate::window) fn load_fastfetch_path(self: &Rc<Self>, path: PathBuf) {
+        self.load_fastfetch(path, false);
+    }
+
+    pub(super) fn load_applied_fastfetch_path(self: &Rc<Self>, path: PathBuf) {
+        self.load_fastfetch(path, true);
+    }
+
+    fn load_fastfetch(self: &Rc<Self>, path: PathBuf, save: bool) {
         let result = fastfetch_apply::Target::open(path).and_then(|target| {
             let source = target.source()?;
             fastfetch_document::parse(&source)?;
             Ok((target, source))
         });
+        let snapshot = self.greeting.settings();
+        let invalid = self.greeting.invalid.get();
+        let revision = self.greeting.revision.get();
         match result {
-            Ok((target, source)) => self.confirm_greeting_replace(move |this| {
+            Ok((target, source)) => self.confirm_fastfetch_load(save, move |this| {
+                if this.greeting.settings() != snapshot || this.greeting.invalid.get() != invalid || this.greeting.revision.get() != revision {
+                    this.toast("Greeting changed while confirming. Load the configuration again.");
+                    return;
+                }
+                if let Err(error) = target.check() {
+                    this.toast(&error);
+                    this.schedule_fastfetch_sync();
+                    return;
+                }
                 let mut settings = this.greeting.settings();
+                let same_logo = settings.fastfetch_config().ok().and_then(|s| fastfetch_document::value(&s).ok()).map(|v| v["logo"].clone())
+                    == fastfetch_document::value(&source).ok().map(|v| v["logo"].clone());
+                if !same_logo { settings.editable_artwork = None; }
                 settings.enabled = true;
                 settings.official_preset = None;
                 settings.official_items.clear();
@@ -40,10 +63,59 @@ impl Workbench {
                 *this.greeting.fastfetch_target.borrow_mut() = Some(target);
                 this.greeting.replace(settings, true);
                 this.greeting_module_button.set_active(true);
-                this.toast("Fastfetch loaded for editing; nothing was applied. Comments and unsupported settings are retained. Imported commands are never run in preview.");
+                if save {
+                    match this.greeting.persist() {
+                        Ok(()) => this.toast("Applied configuration loaded and saved in TermiMochi. Fastfetch and shell startup are unchanged."),
+                        Err(error) => {
+                            this.greeting.sync.save_failed("Loaded; preset not saved.", &error);
+                            this.toast(&format!("Loaded for preview, but preset could not be saved: {error}"));
+                        }
+                    }
+                    this.refresh_history_actions();
+                } else {
+                    this.toast("Fastfetch loaded for editing; nothing was applied. Comments and unsupported settings are retained. Imported commands are never run in preview.");
+                }
+                this.schedule_fastfetch_sync();
             }),
             Err(error) => self.toast(&error),
         }
+    }
+
+    fn confirm_fastfetch_load(
+        self: &Rc<Self>,
+        save: bool,
+        action: impl FnOnce(Rc<Self>) + 'static,
+    ) {
+        // A saved workspace is not permission to replace the current draft and
+        // persist a different Greeting. Always confirm dirty / invalid edits.
+        if !self.greeting.dirty() {
+            action(self.clone());
+            return;
+        }
+        let dialog = gtk::AlertDialog::builder()
+            .message("Replace unsaved greeting changes?")
+            .detail(if save {
+                "Load Applied replaces this draft and saves the loaded version in TermiMochi. Save your current preset or workspace first to keep it. Fastfetch itself is not changed."
+            } else {
+                "Save Preset or Save Workspace first to keep this greeting. Loading does not apply the configuration."
+            })
+            .buttons(["Cancel", "Replace Changes"])
+            .cancel_button(0)
+            .default_button(0)
+            .modal(true)
+            .build();
+        let weak = Rc::downgrade(self);
+        dialog.choose(
+            Some(&self.window()),
+            gio::Cancellable::NONE,
+            move |result| {
+                if result == Ok(1)
+                    && let Some(this) = weak.upgrade()
+                {
+                    action(this);
+                }
+            },
+        );
     }
     pub(in crate::window) fn choose_fastfetch_import(self: &Rc<Self>) {
         let dialog = Self::greeting_dialog("Import Fastfetch Configuration", "*.json*");
@@ -91,7 +163,13 @@ impl Workbench {
             .borrow()
             .clone()
             .map(Ok)
-            .unwrap_or_else(|| fastfetch_apply::Target::open(fastfetch_apply::default_path()));
+            .unwrap_or_else(|| {
+                fastfetch_apply::last_path(&self.greeting.fastfetch_state).and_then(|path| {
+                    fastfetch_apply::Target::open(
+                        path.unwrap_or_else(fastfetch_apply::default_path),
+                    )
+                })
+            });
         let target = match target.and_then(|target| target.check().map(|()| target)) {
             Ok(target) => target,
             Err(error) => {
@@ -99,27 +177,62 @@ impl Workbench {
                 return;
             }
         };
-        if target.expected.as_deref() == Some(source.as_bytes()) {
-            self.toast("Fastfetch configuration is already up to date.");
-            return;
-        }
         let before = target
             .expected
             .as_ref()
             .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
         let weak = Rc::downgrade(self);
-        self.review_fastfetch("Review Fastfetch Changes", &target.path.clone(), before.as_deref(), Some(&source.clone()), "Back Up & Apply", move || {
-            let Some(this)=weak.upgrade() else {return;};
-            if this.greeting.invalid.get() || this.greeting.settings()!=snapshot {this.toast("Greeting changed while reviewing. Review it again before applying.");return;}
-            let mut target = target;
-            match fastfetch_apply::apply(&mut target,&source,&this.greeting.fastfetch_state) {
-                Ok(_) => {
-                    *this.greeting.fastfetch_target.borrow_mut()=Some(target);
-                    this.toast("Fastfetch configuration applied with rollback protection. Future Fastfetch runs will use it; shell startup and the saved Greeting preset are unchanged.");
+        self.review_fastfetch(
+            "Review Fastfetch Changes",
+            &target.path.clone(),
+            before.as_deref(),
+            Some(&source.clone()),
+            "Back Up & Apply",
+            move |run_after| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                if this.greeting.invalid.get() || this.greeting.settings() != snapshot {
+                    this.toast(
+                        "Greeting changed while reviewing. Review it again before applying.",
+                    );
+                    return;
                 }
-                Err(error)=>this.toast(&error),
-            }
-        });
+                let mut target = target;
+                match fastfetch_apply::apply(&mut target, &source, &this.greeting.fastfetch_state) {
+                    Ok(_) => {
+                        *this.greeting.fastfetch_target.borrow_mut() = Some(target.clone());
+                        let saved = this.greeting.persist();
+                        if let Err(error) = &saved {
+                            this.greeting
+                                .sync
+                                .save_failed("Fastfetch applied; preset not saved.", error);
+                        }
+                        let mut message = match saved {
+                            Ok(()) => "Fastfetch applied and Greeting preset saved in TermiMochi."
+                                .to_owned(),
+                            Err(error) => format!(
+                                "Fastfetch applied, but Greeting preset could not be saved: {error}"
+                            ),
+                        };
+                        if run_after {
+                            match crate::fastfetch_run::launch(&target) {
+                                Ok(()) => message.push_str(
+                                    " Opening a new terminal; press Enter there to close.",
+                                ),
+                                Err(error) => {
+                                    message.push_str(&format!(" Automatic launch failed: {error}"))
+                                }
+                            }
+                        }
+                        this.toast(&message);
+                        this.refresh_history_actions();
+                        this.schedule_fastfetch_sync();
+                    }
+                    Err(error) => this.toast(&error),
+                }
+            },
+        );
     }
     pub(in crate::window) fn request_fastfetch_restore(self: &Rc<Self>) {
         let plan = match fastfetch_apply::prepare_restore(&self.greeting.fastfetch_state) {
@@ -139,12 +252,13 @@ impl Workbench {
             .as_ref()
             .map(|b| String::from_utf8_lossy(b).into_owned());
         let weak = Rc::downgrade(self);
-        self.review_fastfetch("Restore Fastfetch Configuration", &plan.target.path.clone(), current.as_deref(), previous.as_deref(), "Restore Configuration", move || {
+        self.review_fastfetch("Restore Fastfetch Configuration", &plan.target.path.clone(), current.as_deref(), previous.as_deref(), "Restore Configuration", move |_| {
             let Some(this)=weak.upgrade() else {return;};
             match fastfetch_apply::restore(&plan,&this.greeting.fastfetch_state) {
                 Ok(())=>{
                     *this.greeting.fastfetch_target.borrow_mut()=Some(fastfetch_apply::Target{path:plan.target.path,expected:plan.before.clone()});
                     this.toast(if plan.before.is_some(){"Previous Fastfetch configuration restored. A recovery copy was retained; the preview draft and shell startup are unchanged."}else{"Removed only the Fastfetch config created by TermiMochi. A recovery copy was retained; shell startup is unchanged."});
+                    this.schedule_fastfetch_sync();
                 },
                 Err(error)=>this.toast(&error),
             }
@@ -157,7 +271,7 @@ impl Workbench {
         before: Option<&str>,
         after: Option<&str>,
         action: &str,
-        accept: impl FnOnce() + 'static,
+        accept: impl FnOnce(bool) + 'static,
     ) {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
         content.set_margin_top(20);
@@ -177,8 +291,18 @@ impl Workbench {
             .wrap(true)
             .build();
         content.append(&path_label);
-        let note=gtk::Label::builder().label("Review both versions. Existing content is backed up and external changes block replacement. Unsupported imported settings remain in the file and may run on your next Fastfetch invocation. TermiMochi does not run this file or edit shell startup.").wrap(true).xalign(0.0).max_width_chars(95).css_classes(["dim-label"]).build();
+        let note=gtk::Label::builder().label("Existing content is backed up; external changes block replacement. Imported settings may include commands or network modules. Running Fastfetch executes this configuration outside the preview sandbox. Shell startup files remain unchanged.").wrap(true).xalign(0.0).max_width_chars(95).css_classes(["dim-label"]).build();
         content.append(&note);
+        if action == "Back Up & Apply" {
+            let save_note = gtk::Label::builder()
+                .label(
+                    "Applying also saves this Greeting preset in TermiMochi for the next launch.",
+                )
+                .wrap(true)
+                .xalign(0.0)
+                .build();
+            content.append(&save_note);
+        }
         let versions = gtk::Box::new(gtk::Orientation::Horizontal, 14);
         versions.set_vexpand(true);
         for (label, text) in [("Before", before), ("After", after)] {
@@ -217,6 +341,16 @@ impl Workbench {
             versions.append(&pane);
         }
         content.append(&versions);
+        let run_after = if action == "Back Up & Apply" {
+            let run =
+                gtk::CheckButton::with_label("Run Fastfetch in a new terminal after applying");
+            run.set_active(self.greeting.settings().imported_source.is_none());
+            run.set_tooltip_text(Some("Uses a new Ptyxis window and runs this configuration once. Imported configurations default to off because they may contain commands or network modules. No shell startup hooks are added."));
+            content.append(&run);
+            Some(run)
+        } else {
+            None
+        };
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         buttons.set_halign(gtk::Align::End);
         let cancel = gtk::Button::with_label("Cancel");
@@ -247,7 +381,7 @@ impl Workbench {
                 if let Some(dialog) = weak.upgrade() {
                     dialog.destroy();
                 }
-                accept();
+                accept(run_after.as_ref().is_some_and(|run| run.is_active()));
             }
         });
         dialog.present();
@@ -279,6 +413,7 @@ impl Workbench {
                 )),
                 Some(Ok(output)) => {
                     let failures: Vec<_> = output
+                        .render(240)
                         .lines()
                         .filter(|line| {
                             line.contains("Unknown ")

@@ -119,8 +119,8 @@ button(False)
 if mode == "double":
     button(True)
     button(False)
-if mode == "click_escape":
-    keycode = x11.XKeysymToKeycode(d, 0xFF1B)
+if mode in ("click_escape", "click_enter"):
+    keycode = x11.XKeysymToKeycode(d, 0xFF1B if mode == "click_escape" else 0xFF0D)
     xtst.XTestFakeKeyEvent(d, keycode, 1, 0)
     xtst.XTestFakeKeyEvent(d, keycode, 0, 0)
     x11.XFlush(d)

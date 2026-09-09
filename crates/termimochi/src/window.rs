@@ -19,6 +19,8 @@ mod documents;
 mod greeting;
 mod preview_hint;
 mod preview_scroll;
+#[cfg(test)]
+mod stress_tests;
 
 use crate::{
     color_picker::{ColorPicker, ColorSwatch, scroll_parent_vertically},
@@ -326,7 +328,8 @@ struct Workbench {
     greeting_redraw_pending: Cell<bool>,
     greeting_motion: greeting::GreetingMotion,
     greeting_official_key: RefCell<Option<greeting::OfficialKey>>,
-    greeting_official_result: RefCell<Option<Result<String, String>>>,
+    greeting_official_result:
+        RefCell<Option<Result<crate::greeting_official::NativeOutput, String>>>,
     greeting_official_loading: Cell<bool>,
     save_action: gio::SimpleAction,
     undo_action: gio::SimpleAction,
@@ -1097,6 +1100,7 @@ fn present_with_preset(
     if let Some(path) = initial_workspace {
         workbench.open_workspace_path(&path);
     }
+    workbench.schedule_fastfetch_sync();
     // The window owns the controller. The controller only keeps a weak window
     // reference, so closing the window releases the complete object graph.
     unsafe {
@@ -3793,6 +3797,8 @@ impl Workbench {
             ("export-greeting-txt", 5),
             ("export-greeting-ans", 6),
             ("edit-greeting-art-text", 7),
+            ("edit-image-artwork", 8),
+            ("greeting-startup", 9),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let weak = Rc::downgrade(this);
@@ -3806,7 +3812,9 @@ impl Workbench {
                         4 => this.choose_greeting_art_import(),
                         5 => this.choose_greeting_art_export(false),
                         6 => this.choose_greeting_art_export(true),
-                        _ => this.edit_greeting_art_text(),
+                        7 => this.edit_greeting_art_text(),
+                        8 => this.edit_image_artwork(),
+                        _ => this.show_greeting_startup(),
                     }
                 }
             });
@@ -3987,6 +3995,7 @@ impl Workbench {
                 return;
             }
             this.refresh_history_actions();
+            this.schedule_fastfetch_sync();
             this.ensure_official_greeting_preview();
             this.schedule_diagnostics();
             if !this.greeting_redraw_pending.replace(true) {
@@ -4001,6 +4010,16 @@ impl Workbench {
                 });
             }
         });
+
+        let weak = Rc::downgrade(this);
+        this.window().connect_is_active_notify(move |window| {
+            if window.is_active()
+                && let Some(this) = weak.upgrade()
+            {
+                this.schedule_fastfetch_sync();
+            }
+        });
+        Workbench::connect_fastfetch_sync(this);
 
         let weak = Rc::downgrade(this);
         this.prompt_module_button.connect_toggled(move |button| {
@@ -5834,6 +5853,12 @@ impl Workbench {
             Some(&foreground_rgba),
             Some(&background_rgba),
             &terminal_palette_refs,
+        );
+        self.greeting.artwork_preview.set_theme(
+            &self.typography_settings(),
+            foreground_rgba,
+            background_rgba,
+            terminal_palette.clone(),
         );
         self.preview_terminal.set_color_cursor(Some(&cursor_rgba));
         self.preview_terminal

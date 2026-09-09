@@ -60,6 +60,7 @@ impl Workspace {
 
 impl Document for Workspace {
     const SUFFIX: &'static str = ".termimochi.json";
+    const MAX_BYTES: u64 = crate::greeting_image::source::DOCUMENT_LIMIT;
     fn validate(&self) -> Result<(), String> {
         if self.kind != "termimochi-workspace" || self.version != 1 {
             return Err("Unsupported TermiMochi workspace.".into());
@@ -114,6 +115,63 @@ mod tests {
         assert_eq!(reopened.starship.as_deref(), Some(source));
         assert!(!root.path().join("must-not-run").exists());
     }
+    #[test]
+    fn hostile_numeric_settings_fail_before_any_document_write() {
+        let palette =
+            PtyxisPalette::from_text(include_str!("../resources/themes/fog-paper.palette"))
+                .unwrap();
+        let workspace = Workspace::new(
+            &palette,
+            Variant::Light,
+            TypographySettings::default(),
+            LayoutSettings::default(),
+            PromptSettings::default(),
+            None,
+            true,
+        );
+        let root = tempfile::tempdir().unwrap();
+        let saved = root.path().join("saved.termimochi.json");
+        DocumentStore::open(saved.clone())
+            .unwrap()
+            .save(&workspace)
+            .unwrap();
+        let before = std::fs::read(&saved).unwrap();
+        let reference = serde_json::to_value(&workspace).unwrap();
+        let imported = root.path().join("invalid.termimochi.json");
+        for pointer in [
+            "/layout/columns",
+            "/layout/rows",
+            "/layout/content_padding",
+            "/layout/window_spacing",
+            "/typography/size",
+            "/typography/line_height",
+            "/typography/cell_width",
+            "/greeting/gap",
+            "/greeting/accent",
+            "/greeting/preview_columns",
+        ] {
+            for invalid in [
+                serde_json::json!(-1),
+                serde_json::json!(u64::MAX),
+                serde_json::json!(1e100),
+                serde_json::Value::Null,
+                serde_json::json!("NaN"),
+                serde_json::json!([]),
+                serde_json::json!({}),
+            ] {
+                let mut value = reference.clone();
+                *value.pointer_mut(pointer).unwrap() = invalid;
+                let bytes = serde_json::to_vec(&value).unwrap();
+                assert!(decode::<Workspace>(&bytes).is_err(), "accepted {pointer}");
+                std::fs::write(&imported, &bytes).unwrap();
+                assert!(DocumentStore::<Workspace>::open(imported.clone()).is_err());
+                assert_eq!(std::fs::read(&imported).unwrap(), bytes);
+                assert_eq!(std::fs::read(&saved).unwrap(), before);
+            }
+        }
+        assert!(!root.path().join("termimochi-backups").exists());
+    }
+
     #[test]
     fn whole_document_validation_rejects_invalid_nested_values_and_versions() {
         let palette =

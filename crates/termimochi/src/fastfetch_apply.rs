@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 const RECEIPT: &str = "last-fastfetch-apply.json";
-// Two 64 KiB byte arrays, including pretty-printed JSON expansion.
-const RECEIPT_LIMIT: u64 = 2 * 1024 * 1024;
+// Two bounded byte arrays, including worst-case pretty-printed JSON expansion.
+const RECEIPT_LIMIT: u64 = LIMIT * 32;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Target {
@@ -73,6 +73,27 @@ struct Receipt {
     before: Option<Vec<u8>>,
     after: Vec<u8>,
     restored: bool,
+}
+
+/// Read-only discovery, never permission to overwrite a previously applied file.
+/// Restored receipts still identify the configuration the user was working on.
+pub(crate) fn last_path(state: &Path) -> Result<Option<PathBuf>, String> {
+    let Some(bytes) = read_private_with_limit(&state.join(RECEIPT), RECEIPT_LIMIT)? else {
+        return Ok(None);
+    };
+    let receipt: Receipt = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("Invalid Fastfetch rollback record: {e}"))?;
+    if receipt.version != 1
+        || receipt.after.len() as u64 > LIMIT
+        || receipt
+            .before
+            .as_ref()
+            .is_some_and(|b| b.len() as u64 > LIMIT)
+    {
+        return Err("Invalid Fastfetch rollback record.".into());
+    }
+    validate_path(&receipt.path)?;
+    Ok(Some(receipt.path))
 }
 
 pub(crate) fn apply(
@@ -201,6 +222,36 @@ pub(crate) fn restore(plan: &RestorePlan, state: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discovery_is_read_only_and_validates_receipts_including_restored_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state");
+        assert_eq!(last_path(&state).unwrap(), None);
+        assert!(!state.exists());
+        let path = root.path().join("custom.fastfetch.jsonc");
+        std::fs::write(&path, "// before\n{}").unwrap();
+        let mut target = Target::open(path.clone()).unwrap();
+        apply(&mut target, "{\"modules\":[\"os\"]}", &state).unwrap();
+        let bytes = std::fs::read(state.join(RECEIPT)).unwrap();
+        assert_eq!(last_path(&state).unwrap(), Some(path.clone()));
+        assert_eq!(std::fs::read(state.join(RECEIPT)).unwrap(), bytes);
+        restore(&prepare_restore(&state).unwrap(), &state).unwrap();
+        assert_eq!(last_path(&state).unwrap(), Some(path.clone()));
+        // Deleted targets remain discoverable, so the UI can report the loss.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(last_path(&state).unwrap(), Some(path));
+        let mut receipt: Receipt = serde_json::from_slice(&bytes).unwrap();
+        for invalid in [
+            PathBuf::from("relative/config.jsonc"),
+            root.path().join(".bashrc"),
+        ] {
+            receipt.path = invalid;
+            std::fs::write(state.join(RECEIPT), serde_json::to_vec(&receipt).unwrap()).unwrap();
+            assert!(last_path(&state).is_err());
+        }
+        std::fs::write(state.join(RECEIPT), "broken").unwrap();
+        assert!(last_path(&state).is_err());
+    }
     #[test]
     fn failed_second_apply_keeps_the_previous_restore_available() {
         use std::os::unix::fs::PermissionsExt;

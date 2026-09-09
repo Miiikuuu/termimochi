@@ -10,21 +10,22 @@ const LIMIT: u64 = 1024 * 1024;
 
 pub(crate) trait Document: Serialize + DeserializeOwned + Clone {
     const SUFFIX: &'static str;
+    const MAX_BYTES: u64 = LIMIT;
     fn validate(&self) -> Result<(), String>;
 }
 
 pub(crate) fn encode<T: Document>(document: &T) -> Result<Vec<u8>, String> {
     document.validate()?;
     let bytes = serde_json::to_vec_pretty(document).map_err(|error| error.to_string())?;
-    if bytes.len() as u64 > LIMIT {
-        return Err("Document exceeds 1 MiB.".into());
+    if bytes.len() as u64 > T::MAX_BYTES {
+        return Err(format!("Document exceeds {} KiB.", T::MAX_BYTES / 1024));
     }
     Ok(bytes)
 }
 
 pub(crate) fn decode<T: Document>(bytes: &[u8]) -> Result<T, String> {
-    if bytes.len() as u64 > LIMIT {
-        return Err("Document exceeds 1 MiB.".into());
+    if bytes.len() as u64 > T::MAX_BYTES {
+        return Err(format!("Document exceeds {} KiB.", T::MAX_BYTES / 1024));
     }
     let document: T = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     document.validate()?;
@@ -39,7 +40,7 @@ pub(crate) struct DocumentStore<T: Document> {
 
 impl<T: Document> DocumentStore<T> {
     pub fn open(path: PathBuf) -> Result<Self, String> {
-        let expected = read_private_with_limit(&path, LIMIT)?;
+        let expected = read_private_with_limit(&path, T::MAX_BYTES)?;
         if let Some(bytes) = &expected {
             decode::<T>(bytes)?;
         }
@@ -62,7 +63,7 @@ impl<T: Document> DocumentStore<T> {
             ));
         }
         let bytes = encode(document)?;
-        if read_private_with_limit(&self.path, LIMIT)? != self.expected {
+        if read_private_with_limit(&self.path, T::MAX_BYTES)? != self.expected {
             return Err(
                 "The document changed outside this window. Reopen it or save a separate copy."
                     .into(),
@@ -81,7 +82,7 @@ impl<T: Document> DocumentStore<T> {
                 before,
             )?;
         }
-        write_checked_with_limit(&self.path, &bytes, &self.expected, LIMIT)?;
+        write_checked_with_limit(&self.path, &bytes, &self.expected, T::MAX_BYTES)?;
         self.expected = Some(bytes);
         Ok(())
     }

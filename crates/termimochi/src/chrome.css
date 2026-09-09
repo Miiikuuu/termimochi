@@ -133,6 +133,23 @@
   border-color: transparent;
 }
 
+.editor-workspace button.artwork-import {
+  min-height: 34px;
+  padding: 4px 12px;
+  border: none;
+  border-radius: 10px;
+  color: @editor_fg;
+  background: @editor_field;
+  box-shadow: none;
+  font-weight: 600;
+}
+.editor-workspace button.artwork-import:hover {
+  background: @editor_hover;
+}
+.editor-workspace button.artwork-import:active { background: #dce2e6; }
+.editor-workspace menubutton.artwork-more > button { min-width: 32px; min-height: 34px; padding: 4px; border-radius: 10px; }
+.artwork-thumbnail { border-radius: 12px; }
+
 .editor-workspace .layout-card,
 .editor-workspace .prompt-properties { background: transparent; }
 .editor-workspace .prompt-starter-row,

@@ -12,9 +12,11 @@ pub(crate) const PRESET_NAME: &str = "greeting.termimochi-greeting.json";
 const KEY_WIDTH: usize = 10;
 const MOCHI: &str = include_str!("../resources/termimochi-ascii.txt");
 const TERMINAL: &str = " .------------.\n |  >_        |\n |            |\n '------------'";
-pub(crate) const ART_MAX_ROWS: usize = 64;
-pub(crate) const ART_MAX_COLUMNS: usize = 120;
+pub(crate) const ART_MAX_ROWS: usize = 96;
+pub(crate) const ART_MAX_COLUMNS: usize = 160;
 pub(crate) const ART_MAX_BYTES: usize = 16 * 1024;
+// Truecolor escape sequences need more space than the visible character grid.
+pub(crate) const ART_MAX_ANSI_BYTES: usize = 320 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -178,6 +180,8 @@ pub(crate) struct GreetingSettings {
     pub custom_logo: String,
     #[serde(default)]
     pub custom_art: Option<crate::greeting_art::Artwork>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editable_artwork: Option<crate::greeting_image::source::EditableArtwork>,
     #[serde(default)]
     pub source_logo: Option<crate::greeting_art::LogoSnapshot>,
     pub position: Position,
@@ -229,6 +233,7 @@ impl Default for GreetingSettings {
             logo: Logo::Mochi,
             custom_logo: "(づ｡◕‿‿◕｡)づ".into(),
             custom_art: None,
+            editable_artwork: None,
             source_logo: None,
             position: Position::Left,
             accent: 6,
@@ -261,6 +266,9 @@ impl GreetingSettings {
         settings
     }
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(source) = &self.editable_artwork {
+            source.options()?;
+        }
         let imported = self
             .imported_source
             .as_deref()
@@ -314,7 +322,7 @@ impl GreetingSettings {
                 .chars()
                 .any(|ch| ch != '\n' && unsafe_char(ch))
         {
-            return Err("Custom artwork supports 64 lines, 120 cells per line and 16 KiB. Terminal controls are not allowed.".into());
+            return Err("Custom artwork supports 96 lines, 160 cells per line and 16 KiB. Terminal controls are not allowed.".into());
         }
         if self.items.len() != Info::ALL.len()
             || Info::ALL
@@ -365,6 +373,7 @@ impl GreetingSettings {
         plain
     }
     pub fn use_official(&mut self, preset: OfficialPreset) {
+        self.editable_artwork = None;
         self.imported_source = None;
         self.source_logo = None;
         self.field_styles
@@ -479,6 +488,7 @@ impl GreetingSettings {
             return Err("Artwork contains no visible text.".into());
         }
         let mut next = self.clone();
+        next.editable_artwork = None;
         if let Some(source) = &self.imported_source {
             let edited = crate::fastfetch_document::replace_logo_art(source, &art)?;
             next.source_logo = Some(crate::greeting_art::LogoSnapshot {
@@ -719,7 +729,20 @@ impl GreetingSettings {
             json!("https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json");
         config["logo"] = logo;
         if self.official_preset.is_none() {
-            config["display"] = json!({"separator":": ","key":{"width":KEY_WIDTH}});
+            // Fastfetch's key width is a 1-based absolute output column.
+            // A fixed ten-column stop overwrites edited labels such as
+            // "+ Processor" (and even the separator after "Disk (/)").
+            let key_width = modules
+                .iter()
+                .map(|module| {
+                    let label = module["key"].as_str().unwrap_or("").replace("{{", "{");
+                    let suffix = if module["type"] == "disk" { 4 } else { 0 };
+                    label.width() + suffix + ": ".width() + 1
+                })
+                .max()
+                .unwrap_or(0)
+                .max(KEY_WIDTH + 1);
+            config["display"] = json!({"separator":": ","key":{"width":key_width}});
         }
         config["display"]["brightColor"] = json!(false);
         config["display"]["color"] = json!({"keys":self.color_code().to_string()});
@@ -988,6 +1011,7 @@ impl GreetingPreset {
     }
 }
 impl Document for GreetingPreset {
+    const MAX_BYTES: u64 = crate::greeting_image::source::DOCUMENT_LIMIT;
     const SUFFIX: &'static str = ".termimochi-greeting.json";
     fn validate(&self) -> Result<(), String> {
         if self.kind != "termimochi-greeting" || self.version != 1 {
@@ -1108,6 +1132,91 @@ mod tests {
     }
 
     #[test]
+    fn extreme_artwork_layout_matrix_is_bounded_and_invalid_settings_are_rejected() {
+        let context = GreetingContext::default();
+        let mut settings = GreetingSettings {
+            enabled: true,
+            logo: Logo::Custom,
+            ..Default::default()
+        };
+        for art in [
+            String::new(),
+            "中🙂e\u{301}".repeat(16),
+            vec!["x".repeat(160); 96].join("\n"),
+        ] {
+            settings.custom_logo = art;
+            for position in Position::ALL {
+                settings.position = position;
+                for gap in [0, 8] {
+                    settings.gap = gap;
+                    for message in [String::new(), "中🙂".repeat(80)] {
+                        settings.message = message;
+                        settings.validate().unwrap();
+                        for columns in [
+                            0,
+                            1,
+                            11,
+                            12,
+                            20,
+                            39,
+                            40,
+                            79,
+                            80,
+                            100,
+                            120,
+                            160,
+                            240,
+                            usize::MAX,
+                        ] {
+                            let output = settings.render(&context, columns);
+                            assert_eq!(crate::starship_import::terminal_safe_ansi(&output), output);
+                            for line in output.lines() {
+                                assert!(
+                                    clip_ansi(line, usize::MAX).1 < columns.clamp(12, 240),
+                                    "position={position:?}, gap={gap}, columns={columns}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for gap in [9, u8::MAX] {
+            settings.gap = gap;
+            assert!(settings.validate().is_err());
+            assert!(settings.render(&context, 80).is_empty());
+            assert!(settings.fastfetch_config().is_err());
+        }
+    }
+
+    #[test]
+    fn custom_key_columns_leave_room_for_edited_unicode_labels() {
+        let mut settings = GreetingSettings {
+            enabled: true,
+            ..Default::default()
+        };
+        let index = Info::ALL
+            .iter()
+            .position(|kind| *kind == Info::Cpu)
+            .unwrap();
+        for label in ["Processor", "处理器 Processor", "{CPU}"] {
+            settings.field_styles.insert(
+                settings.style_id(index),
+                FieldStyle {
+                    label: Some(label.into()),
+                    icon: Some("+".into()),
+                    ..Default::default()
+                },
+            );
+            let value: serde_json::Value =
+                serde_json::from_str(&settings.fastfetch_config().unwrap()).unwrap();
+            let column = value["display"]["key"]["width"].as_u64().unwrap() as usize;
+            assert!(column > format!("+ {label}: ").width());
+            assert!(column > "Disk (/): ".width());
+        }
+    }
+
+    #[test]
     fn full_size_artwork_and_larger_custom_documents_preserve_geometry() {
         let mut settings = GreetingSettings {
             enabled: true,
@@ -1131,8 +1240,8 @@ mod tests {
         settings.validate().unwrap();
         assert_eq!(settings.artwork().lines().count(), 64);
         for invalid in [
-            "x".repeat(121),
-            "x\n".repeat(65),
+            "x".repeat(ART_MAX_COLUMNS + 1),
+            "x\n".repeat(ART_MAX_ROWS + 1),
             "\x1b]52;c;bad\x07".into(),
             "x".repeat(ART_MAX_BYTES + 1),
         ] {
@@ -1444,7 +1553,7 @@ mod tests {
             enabled: true,
             ..Default::default()
         };
-        settings.custom_logo = "中".repeat(61);
+        settings.custom_logo = "中".repeat(ART_MAX_COLUMNS / 2 + 1);
         assert!(settings.validate().is_err());
         settings.custom_logo = "safe".into();
         for item in &mut settings.items {

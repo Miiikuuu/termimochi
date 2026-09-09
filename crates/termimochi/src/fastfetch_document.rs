@@ -7,7 +7,7 @@ use jsonc_parser::{
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
-pub(crate) const LIMIT: u64 = 64 * 1024;
+pub(crate) const LIMIT: u64 = 512 * 1024;
 pub(crate) const MAX_MODULES: usize = 128;
 
 fn options() -> ParseOptions {
@@ -26,7 +26,7 @@ fn options() -> ParseOptions {
 // escaped string contents are not structural tokens.
 fn preflight(text: &str) -> Result<(), String> {
     if text.len() as u64 > LIMIT {
-        return Err("Fastfetch configuration exceeds 64 KiB.".into());
+        return Err("Fastfetch configuration exceeds 512 KiB.".into());
     }
     let mut chars = text.chars().peekable();
     let mut string = false;
