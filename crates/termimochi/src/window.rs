@@ -15,8 +15,10 @@ use termimochi_core::{
 };
 use vte::prelude::*;
 
+mod color_targets;
 mod documents;
 mod greeting;
+mod output_bar;
 mod preview_hint;
 mod preview_scroll;
 #[cfg(test)]
@@ -317,11 +319,9 @@ struct Workbench {
     toast_overlay: adw::ToastOverlay,
     brand_title: gtk::Label,
     save_button: gtk::MenuButton,
+    output_bar: output_bar::OutputBar,
+    color_targets: color_targets::ColorTargets,
     open_button: gtk::Button,
-    save_menu: gio::Menu,
-    typography_save_menu: gio::Menu,
-    layout_save_menu: gio::Menu,
-    greeting_save_menu: gio::Menu,
     greeting: Rc<greeting::GreetingEditor>,
     greeting_module_button: gtk::ToggleButton,
     greeting_preview: Cell<bool>,
@@ -423,7 +423,6 @@ struct Workbench {
     prompt_import_panel: gtk::Box,
     prompt_design_panel: gtk::Box,
     prompt_import_status: gtk::Label,
-    prompt_export_button: gtk::MenuButton,
     starship_editor: Rc<StarshipEditor>,
     copy_generation: Cell<u64>,
     copy_loading: Cell<bool>,
@@ -723,86 +722,9 @@ fn present_with_preset(
     variant_switch.append(&light_button);
     variant_switch.append(&dark_button);
 
-    let save_menu = gio::Menu::new();
-    let save_section = gio::Menu::new();
-    let save_item = gio::MenuItem::new(Some("Save"), Some("win.save"));
-    set_menu_verb_icon(&save_item, "termimochi-save-symbolic");
-    save_section.append_item(&save_item);
-    let save_as_item = gio::MenuItem::new(Some("Save As…"), Some("win.save-as"));
-    set_menu_verb_icon(&save_as_item, "document-save-as-symbolic");
-    save_section.append_item(&save_as_item);
-    save_menu.append_section(None, &save_section);
-
-    let export_menu = gio::Menu::new();
-    for format in ExportFormat::ALL {
-        export_menu.append(
-            Some(&format!("{}…", format.display_name())),
-            Some(&format!("win.export-{}", format.as_str())),
-        );
-    }
-    let export_section = gio::Menu::new();
-    let export_item = gio::MenuItem::new_submenu(Some("Export Current Variant"), &export_menu);
-    set_menu_verb_icon(&export_item, "document-send-symbolic");
-    export_section.append_item(&export_item);
-    save_menu.append_section(None, &export_section);
-
-    let typography_save_menu = gio::Menu::new();
-    typography_save_menu.append(Some("Save Typography Preset"), Some("win.save-typography"));
-    typography_save_menu.append(Some("Export Preset…"), Some("win.export-typography"));
-    typography_save_menu.append(Some("Reload Saved Preset…"), Some("win.reload-typography"));
-    let typography_deploy_menu = gio::Menu::new();
-    typography_deploy_menu.append(Some("Apply to Ptyxis…"), Some("win.apply-typography"));
-    typography_deploy_menu.append(
-        Some("Restore Previous Typography…"),
-        Some("win.restore-typography"),
-    );
-    typography_save_menu.append_section(None, &typography_deploy_menu);
-
-    let layout_save_menu = gio::Menu::new();
-    for (label, action) in [
-        ("Save Layout Preset", "save-layout"),
-        ("Export Layout Preset…", "export-layout"),
-        ("Reload Saved Layout…", "reload-layout"),
-        ("Apply Layout to Ptyxis…", "apply-layout"),
-        ("Restore Previous Layout…", "restore-layout"),
-    ] {
-        layout_save_menu.append(Some(label), Some(&format!("win.{action}")));
-    }
-    let workspace_menu = gio::Menu::new();
-    workspace_menu.append(Some("Open Workspace…"), Some("win.open-workspace"));
-    workspace_menu.append(Some("Save Workspace"), Some("win.save-workspace"));
-    workspace_menu.append(Some("Save Workspace As…"), Some("win.save-workspace-as"));
-    let greeting_save_menu = gio::Menu::new();
-    for (label, action) in [
-        ("Save Greeting Preset", "save-greeting"),
-        ("Export Greeting Preset…", "export-greeting"),
-        ("Reload Saved Greeting…", "reload-greeting"),
-        ("Export Fastfetch Configuration…", "export-fastfetch"),
-        ("Export Logo as TXT…", "export-greeting-txt"),
-        ("Export Logo as ANSI…", "export-greeting-ans"),
-        (
-            "Load Current Fastfetch Configuration",
-            "load-current-fastfetch",
-        ),
-        ("Import Fastfetch Configuration…", "import-fastfetch"),
-        ("Review & Apply Fastfetch…", "apply-fastfetch"),
-        ("Restore Previous Fastfetch…", "restore-fastfetch"),
-    ] {
-        greeting_save_menu.append(Some(label), Some(&format!("win.{action}")));
-    }
-    for menu in [
-        &save_menu,
-        &typography_save_menu,
-        &layout_save_menu,
-        &greeting_save_menu,
-    ] {
-        menu.append_section(Some("Complete Setup"), &workspace_menu);
-    }
-
     let save_button = gtk::MenuButton::builder()
-        .icon_name("termimochi-save-symbolic")
-        .tooltip_text("Save and export options")
-        .menu_model(&save_menu)
+        .label("Save")
+        .tooltip_text("Save a preset or workspace")
         .always_show_arrow(false)
         .css_classes(["tool-menu", "save-menu"])
         .build();
@@ -810,47 +732,20 @@ fn present_with_preset(
         popover.add_css_class("save-popover");
     }
     save_button.update_property(&[
-        gtk::accessible::Property::Label("Save and Export"),
-        gtk::accessible::Property::Description(
-            "Save or export the current module, or open and save a complete workspace",
-        ),
+        gtk::accessible::Property::Label("Save"),
+        gtk::accessible::Property::Description("Save the current preset or a complete workspace"),
     ]);
 
-    let deployment_menu = gio::Menu::new();
-    let install_item = gio::MenuItem::new(Some("Install to Ptyxis…"), Some("win.install-ptyxis"));
-    set_menu_verb_icon(&install_item, "system-software-install-symbolic");
-    deployment_menu.append_item(&install_item);
-    let rollback_item = gio::MenuItem::new(
-        Some("Roll Back Last Installation…"),
-        Some("win.rollback-ptyxis"),
-    );
-    set_menu_verb_icon(&rollback_item, "document-revert-symbolic");
-    deployment_menu.append_item(&rollback_item);
-    let more_button = gtk::MenuButton::builder()
-        .icon_name("view-more-symbolic")
-        .tooltip_text("More Actions: Install and Roll Back")
-        .menu_model(&deployment_menu)
-        .css_classes(["tool-menu", "overflow-menu"])
-        .build();
-    more_button.update_property(&[
-        gtk::accessible::Property::Label("More Actions"),
-        gtk::accessible::Property::Description("Install or roll back a Ptyxis theme"),
-    ]);
-
-    // Give the brand a quiet, dedicated left edge. File/history/output actions
-    // form one compact cluster on the right, with infrequent deployment work
-    // remaining in the overflow menu.
+    // Brand and history stay separate from contextual output actions.
     let header_actions = gtk::Box::new(gtk::Orientation::Horizontal, 3);
     header_actions.set_valign(gtk::Align::Center);
     header_actions.add_css_class("header-actions");
     header_actions.append(&open_button);
     header_actions.append(&history_controls);
-    header_actions.append(&save_button);
-    header_actions.append(&more_button);
+    // Output actions live in the fixed editor bar, not the global header.
     header_bar.pack_end(&header_actions);
 
     toolbar_view.add_top_bar(&header_bar);
-    toolbar_view.set_content(Some(&toast_overlay));
     window.set_content(Some(&toolbar_view));
 
     let main_paned = gtk::Paned::builder()
@@ -859,7 +754,7 @@ fn present_with_preset(
         .wide_handle(false)
         .build();
     main_paned.add_css_class("workbench-split");
-    toast_overlay.set_child(Some(&main_paned));
+    toolbar_view.set_content(Some(&main_paned));
 
     let preview = build_preview(&variant_switch, &initial_typography, &main_paned);
     let editor = build_editor();
@@ -875,8 +770,13 @@ fn present_with_preset(
         &prompt.root,
         &greeting.root,
     );
-    main_paned.set_start_child(Some(&editor_workspace.root));
-    main_paned.set_end_child(Some(&preview.root));
+    let output_bar = output_bar::OutputBar::new(&save_button);
+    let editor_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    editor_column.append(&editor_workspace.root);
+    editor_column.append(&output_bar.root);
+    main_paned.set_start_child(Some(&editor_column));
+    toast_overlay.set_child(Some(&preview.root));
+    main_paned.set_end_child(Some(&toast_overlay));
     main_paned.set_resize_start_child(false);
     main_paned.set_shrink_start_child(false);
     main_paned.set_shrink_end_child(false);
@@ -905,11 +805,8 @@ fn present_with_preset(
         toast_overlay,
         brand_title: brand_name,
         save_button,
+        output_bar,
         open_button: open_button.clone(),
-        save_menu,
-        typography_save_menu,
-        layout_save_menu,
-        greeting_save_menu,
         greeting_module_button: editor_workspace.greeting_button.clone(),
         greeting_preview: Cell::new(greeting.settings().enabled),
         greeting_redraw_pending: Cell::new(false),
@@ -934,6 +831,7 @@ fn present_with_preset(
         selected_color_key: RefCell::new("Foreground".to_owned()),
         selected_color_title: editor.selected_color_title,
         color_picker: editor.color_picker,
+        color_targets: editor.color_targets,
         terminal_css_provider,
         preview_content: preview.content,
         terminal_title: preview.terminal_title,
@@ -1010,7 +908,6 @@ fn present_with_preset(
         prompt_import_panel: prompt.import_panel,
         prompt_design_panel: prompt.design_panel,
         prompt_import_status: prompt.import_status,
-        prompt_export_button: prompt.export_button,
         starship_editor: prompt.copy_editor,
         copy_generation: Cell::new(0),
         copy_loading: Cell::new(false),
@@ -1152,6 +1049,7 @@ struct EditorWidgets {
     controls: BTreeMap<String, ColorControl>,
     selected_color_title: gtk::Label,
     color_picker: ColorPicker,
+    color_targets: color_targets::ColorTargets,
 }
 
 struct TypographyWidgets {
@@ -1184,7 +1082,6 @@ struct PromptWidgets {
     import_panel: gtk::Box,
     design_panel: gtk::Box,
     import_status: gtk::Label,
-    export_button: gtk::MenuButton,
     copy_editor: Rc<StarshipEditor>,
     preset_label: gtk::Label,
     preset_popover: gtk::Popover,
@@ -1349,6 +1246,8 @@ fn build_editor() -> EditorWidgets {
     identity.append(&identity_label);
     identity.append(&name_entry);
     content.append(&identity);
+    let color_targets = color_targets::ColorTargets::new();
+    content.append(&color_targets.root);
 
     let mut controls = BTreeMap::new();
 
@@ -1436,6 +1335,7 @@ fn build_editor() -> EditorWidgets {
         controls,
         selected_color_title,
         color_picker,
+        color_targets,
     }
 }
 
@@ -1550,23 +1450,7 @@ fn build_typography_editor(
     }
     content.append(&typography_fields);
 
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    actions.set_margin_top(12);
-    let save = gtk::Button::with_label("Save Preset");
-    save.set_action_name(Some("win.save-typography"));
-    save.add_css_class("pill");
-    save.set_tooltip_text(Some(
-        "Remember these font settings for the next launch · Ctrl+S",
-    ));
-    let apply = gtk::Button::with_label("Apply to Ptyxis…");
-    apply.set_action_name(Some("win.apply-typography"));
-    apply.add_css_class("pill");
-    apply.set_tooltip_text(Some(
-        "Review the target and changes before applying; creates a restorable backup",
-    ));
-    actions.append(&save);
-    actions.append(&apply);
-    content.append(&actions);
+    // Saving and applying remain in the fixed output bar.
     let status = gtk::Label::new(Some("Preview only · not saved"));
     status.set_xalign(0.0);
     status.set_wrap(true);
@@ -1698,17 +1582,7 @@ fn build_layout_editor(defaults: &LayoutSettings) -> LayoutWidgets {
         ],
     ));
 
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    for (label, action) in [
-        ("Save Preset", "win.save-layout"),
-        ("Apply to Ptyxis…", "win.apply-layout"),
-    ] {
-        let button = gtk::Button::with_label(label);
-        button.add_css_class("pill");
-        button.set_action_name(Some(action));
-        actions.append(&button);
-    }
-    content.append(&actions);
+    // Saving and applying remain in the fixed output bar.
     let status = gtk::Label::new(Some("Preview only · not saved"));
     status.set_xalign(0.0);
     status.set_wrap(true);
@@ -1770,43 +1644,12 @@ fn build_prompt_editor(settings: &PromptSettings) -> PromptWidgets {
     heading.add_css_class("prompt-title");
     heading.set_hexpand(true);
 
-    let export_icon = gtk::Image::builder()
-        .icon_name("termimochi-save-symbolic")
-        .pixel_size(14)
-        .accessible_role(gtk::AccessibleRole::Presentation)
-        .build();
-    let export_label = gtk::Label::new(Some("Save"));
-    let export_content = gtk::Box::new(gtk::Orientation::Horizontal, 5);
-    export_content.append(&export_icon);
-    export_content.append(&export_label);
-    let prompt_save_menu = gio::Menu::new();
-    prompt_save_menu.append(Some("Save Changes…"), Some("win.save-starship"));
-    prompt_save_menu.append(Some("Save As…"), Some("win.export-starship"));
-    prompt_save_menu.append(
-        Some("Restore Previous Version…"),
-        Some("win.restore-starship"),
-    );
-    prompt_save_menu.append(Some("Reload from Disk…"), Some("win.reload-starship"));
-    let export_button = gtk::MenuButton::builder()
-        .child(&export_content)
-        .menu_model(&prompt_save_menu)
-        .always_show_arrow(false)
-        .tooltip_text("Save changes, save as, or restore a backup")
-        .css_classes(["prompt-export"])
-        .build();
-    export_button.update_property(&[
-        gtk::accessible::Property::Label("Save Starship configuration"),
-        gtk::accessible::Property::Description(
-            "Save with confirmation and backup, save as, or restore a previous version. Shell startup files are never changed",
-        ),
-    ]);
-
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     header.set_hexpand(true);
     header.set_valign(gtk::Align::Center);
     header.add_css_class("prompt-header");
     header.append(&heading);
-    header.append(&export_button);
+    // Starship output actions use the same fixed bar as other modules.
     content.append(&header);
 
     let source_selector = gtk::DropDown::from_strings(&["Your Starship", "Designer"]);
@@ -1848,7 +1691,6 @@ fn build_prompt_editor(settings: &PromptSettings) -> PromptWidgets {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
     content.set_visible(false);
     page.append(&content);
-    export_button.set_visible(false);
 
     let preset_label = gtk::Label::new(Some(
         settings
@@ -2151,7 +1993,6 @@ fn build_prompt_editor(settings: &PromptSettings) -> PromptWidgets {
         import_panel,
         design_panel: content,
         import_status,
-        export_button,
         copy_editor,
         preset_label,
         preset_popover,
@@ -3322,6 +3163,7 @@ impl Workbench {
 
     fn refresh_history_actions(&self) {
         self.refresh_prompt_save_actions();
+        self.refresh_output_bar();
         self.refresh_workspace_title();
         self.greeting.refresh_status();
         if !self.greeting.invalid.get()
@@ -3940,6 +3782,7 @@ impl Workbench {
     }
 
     fn connect_signals(this: &Rc<Self>) {
+        Self::connect_color_targets(this);
         let weak = Rc::downgrade(this);
         this.window().connect_close_request(move |_| {
             let Some(this) = weak.upgrade() else {
@@ -3958,6 +3801,8 @@ impl Workbench {
             if let Some(this) = weak.upgrade() {
                 if !button.is_active() {
                     this.settle_active_edit();
+                } else {
+                    this.refresh_color_targets(false);
                 }
                 this.refresh_history_actions();
             }
@@ -4466,6 +4311,7 @@ impl Workbench {
             let weak = Rc::downgrade(this);
             control.swatch.button().connect_clicked(move |_| {
                 if let Some(this) = weak.upgrade() {
+                    this.color_targets.reset_scope();
                     this.select_color(&key);
                 }
             });
@@ -4612,6 +4458,7 @@ impl Workbench {
         self.greeting.refresh_status();
         self.refresh_prompt_controls();
         self.refresh_preview();
+        self.refresh_color_targets(false);
         self.refresh_deployment();
         self.refresh_history_actions();
     }
@@ -4814,7 +4661,6 @@ impl Workbench {
         self.prompt_design_panel.set_visible(designer);
         self.prompt_import_panel.set_visible(!designer && !loaded);
         self.starship_editor.root.set_visible(loaded);
-        self.prompt_export_button.set_visible(designer || loaded);
         self.refresh_prompt_save_actions();
     }
 
@@ -4852,7 +4698,6 @@ impl Workbench {
         }
         // Keep the menu available even for invalid fields: Reload and Restore
         // are recovery actions. Individual write actions stay disabled.
-        self.prompt_export_button.set_sensitive(true);
         if self.greeting_module_button.is_active() {
             self.save_action.set_enabled(!self.greeting.invalid.get());
             if self.greeting.dirty() {
@@ -5773,7 +5618,10 @@ impl Workbench {
     fn inspect_preview_target(&self, target: PreviewTarget) {
         let module = match target {
             PreviewTarget::Ansi(_) => EditorModule::Palette,
-            PreviewTarget::Greeting => EditorModule::Greeting,
+            PreviewTarget::GreetingArtwork
+            | PreviewTarget::GreetingMessage
+            | PreviewTarget::GreetingFields
+            | PreviewTarget::GreetingField(_) => EditorModule::Greeting,
             PreviewTarget::Typography => EditorModule::Typography,
             PreviewTarget::Cursor | PreviewTarget::Padding | PreviewTarget::TabBar => {
                 EditorModule::Layout
@@ -5795,8 +5643,12 @@ impl Workbench {
         gio::prelude::ActionGroupExt::activate_action(&self.window(), module.action_name(), None);
         self.navigating_preview.set(false);
         let focus: Option<gtk::Widget> = match target {
-            PreviewTarget::Greeting => Some(self.greeting.root.clone().upcast()),
+            PreviewTarget::GreetingArtwork
+            | PreviewTarget::GreetingMessage
+            | PreviewTarget::GreetingFields
+            | PreviewTarget::GreetingField(_) => self.greeting.inspection_control(target),
             PreviewTarget::Ansi(index) => {
+                self.color_targets.reset_scope();
                 self.select_color(&format!("Color{index}"));
                 Some(self.color_picker.inspection_field().upcast())
             }
@@ -5818,6 +5670,29 @@ impl Workbench {
             // Focus scrolls the editor to the selected field; restore focus to
             // VTE afterwards so point-to-edit doesn't interrupt scratch input.
             widget.grab_focus();
+            // A newly switched Stack page is allocated on the next frame.
+            // Explicitly reveal the target then: restoring VTE focus below can
+            // otherwise cancel GTK's deferred focus-scroll request.
+            widget.add_tick_callback(|widget, _| {
+                if let Some(scroll) = widget
+                    .ancestor(gtk::ScrolledWindow::static_type())
+                    .and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok())
+                    && let Some(rect) = widget.compute_bounds(&scroll)
+                {
+                    let adjustment = scroll.vadjustment();
+                    let value = adjustment.value();
+                    let top = value + f64::from(rect.y()) - 12.0;
+                    let bottom = value + f64::from(rect.y() + rect.height()) + 12.0;
+                    if top < value {
+                        adjustment.set_value(top.max(adjustment.lower()));
+                    } else if bottom > value + adjustment.page_size() {
+                        adjustment.set_value((bottom - adjustment.page_size()).min(
+                            (adjustment.upper() - adjustment.page_size()).max(adjustment.lower()),
+                        ));
+                    }
+                }
+                glib::ControlFlow::Break
+            });
             glib::timeout_add_local_once(Duration::from_millis(1100), move || {
                 widget.remove_css_class("preview-inspected")
             });
@@ -8268,9 +8143,9 @@ mod tests {
             this.starship_editor.undo();
             settle();
         }
-        this.prompt_export_button.popup();
+        this.output_bar.more_button().popup();
         capture("save-menu");
-        this.prompt_export_button.popdown();
+        this.output_bar.more_button().popdown();
         this.prompt_source_selector.set_selected(1);
         capture("designer");
         let designer_original = this.prompt_settings.borrow().clone();
@@ -8438,6 +8313,10 @@ mod tests {
         if std::env::var_os("TERMIMOCHI_POINTER_TEST").is_some() {
             window.set_title(Some("TermiMochi point-to-edit test"));
             let pointer = |mode: &str| {
+                // The canvas now scrolls independently; this specimen targets
+                // its first row, not the caret-following viewport at the end.
+                this.preview_terminal_viewport.vadjustment().set_value(0.0);
+                settle();
                 let native = terminal.native().unwrap();
                 let (dx, dy) = native.surface_transform();
                 let native = native.dynamic_cast::<gtk::Widget>().unwrap();
@@ -8708,9 +8587,13 @@ mod tests {
         this.inspect_preview_target(PreviewTarget::Prompt);
         settle();
         assert_eq!(this.prompt_source_selector.selected(), 0);
+        assert!(this.output_bar.root.is_visible());
         assert_eq!(
-            this.prompt_export_button.is_visible(),
-            this.starship_editor.draft.borrow().is_some()
+            this.window()
+                .lookup_action("save-starship")
+                .unwrap()
+                .is_enabled(),
+            this.starship_editor.draft.borrow().is_some() && !this.starship_editor.invalid()
         );
         assert_eq!(this.preview_input.borrow().text(), "local input");
         assert_eq!(
@@ -8928,12 +8811,12 @@ mod tests {
                     .is_enabled()
             );
             assert!(
-                this.prompt_export_button.is_sensitive(),
+                this.output_bar.more_button().is_sensitive(),
                 "recovery menu remains accessible"
             );
             this.undo_edit();
             assert!(!editor.invalid());
-            assert!(this.prompt_export_button.is_sensitive());
+            assert!(this.output_bar.more_button().is_sensitive());
             editor.color.set_rgba(&gdk::RGBA::parse("#123456").unwrap());
             editor.bold.set_active(false);
             editor.version.set_selected(2);

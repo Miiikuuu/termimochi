@@ -1,11 +1,47 @@
 # Image conversion workbench
 
-TermiMochi converts a bounded local PNG, JPEG or WebP into portable text and ANSI
+TermiMochi converts a bounded local PNG, JPEG, WebP or static SVG into portable text and ANSI
 colors. The conversion editor has an independently scrolling adjustment sidebar
 and a fixed preview area. No cloud service, GPU renderer or additional converter
 installation is required.
 
+## SVG import
+
+Use **Import Artwork…** with an `.svg` file. Static vector shapes, gradients,
+local `#id` reuse, clipping, masks, filters and text go through the same Original /
+Converted editor, crop, background removal and character modes as raster images.
+The original SVG bytes and recipe are embedded in editable presets/workspaces;
+deleting or moving the file does not prevent **Edit Artwork…**. Text uses fonts
+from `/usr/share/fonts` and `/usr/local/share/fonts`, with a DejaVu Sans default.
+Convert text to paths in your SVG editor for consistent results on other machines.
+
+The [resvg renderer](https://docs.rs/resvg/0.48.1/resvg/) is built into TermiMochi.
+SVG is rasterized onto a transparent canvas with a 1024-pixel longest side,
+including upscaling small vector viewports, preserving premultiplied alpha and
+aspect ratio. The existing character-grid limits still apply: SVG import does
+not enable original-image terminal protocols or make character output lossless.
+
+Sources must be UTF-8, at most 2 MiB, use the standard SVG namespace, and stay
+within 10,000 XML nodes / 64 nesting levels. Natural dimensions use the raster
+decoder's existing 8192-pixel / 16-megapixel bound. SVGZ, embedded/linked raster
+images, scripts, animation, foreign HTML, DTD/entity declarations, external
+references, CSS escapes/at-rules and stylesheet processing instructions are
+rejected with an error; they are not silently fetched or executed.
+
+Rendering happens in a separate copy of the application executable, before GTK
+initialization, under Bubblewrap and `prlimit`: no network, no home/project
+mounts, read-only runtime/fonts/input, private temporary storage, 1 GiB address
+space, 3 CPU seconds, a 5-second parent deadline and a 6 MiB response limit.
+Both [usvg image resolvers](https://docs.rs/usvg/0.48.1/usvg/struct.ImageHrefResolver.html)
+are disabled as a second barrier to external and embedded resources. A failed,
+oversized or timed-out render leaves Apply disabled; no unsandboxed fallback is
+used. Raster imports do not require this subprocess.
+
 ## Using the editor
+
+Mouse-wheel and touchpad scrolling over adjustment controls moves the sidebar,
+including when a numeric input has focus. It never changes a parameter. Use
+clicks, slider dragging or the keyboard to edit values.
 
 Start at **48 or 64 columns**, then choose a character mode:
 

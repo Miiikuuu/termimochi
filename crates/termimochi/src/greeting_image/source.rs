@@ -41,17 +41,23 @@ impl SourceImage {
         if bytes.len() as u64 > FILE_LIMIT || bytes.is_empty() {
             return Err("Editable image must be nonempty and at most 16 MiB.".into());
         }
-        if !matches!(
-            image::guess_format(&bytes),
-            Ok(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP)
-        ) {
-            return Err("Editable sources support PNG, JPG and WebP only.".into());
+        let svg = super::svg::looks_like_svg(&bytes);
+        if svg && bytes.len() > super::svg::SVG_LIMIT {
+            return Err("Editable SVG sources are limited to 2 MiB.".into());
+        }
+        if !svg
+            && !matches!(
+                image::guess_format(&bytes),
+                Ok(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP)
+            )
+        {
+            return Err("Editable sources support PNG, JPG, WebP and SVG only.".into());
         }
         Ok(Self(Arc::new(bytes)))
     }
     pub fn read(path: &Path) -> Result<Self, String> {
         if !is_image(path) {
-            return Err("Choose the original PNG, JPG or WebP image.".into());
+            return Err("Choose the original PNG, JPG, WebP or SVG image.".into());
         }
         Self::new(
             crate::typography_preset::read_private_with_limit(path, FILE_LIMIT)?

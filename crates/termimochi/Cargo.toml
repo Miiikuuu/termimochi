@@ -26,6 +26,8 @@ toml = "1.1.5"
 toml_edit = "0.25"
 tempfile = "3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts"] }
+roxmltree = "0.21.1"
 
 [dev-dependencies]
 png = "0.18.1"

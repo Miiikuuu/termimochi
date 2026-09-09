@@ -70,15 +70,15 @@ impl Workbench {
             "Images / Text / ANSI Artwork"
         }));
         let suffixes: &[&str] = if image_only {
-            &["png", "jpg", "jpeg", "webp"]
+            &["png", "jpg", "jpeg", "webp", "svg"]
         } else {
-            &["png", "jpg", "jpeg", "webp", "txt", "ans"]
+            &["png", "jpg", "jpeg", "webp", "svg", "txt", "ans"]
         };
         for suffix in suffixes {
             filter.add_suffix(suffix);
             filter.add_suffix(&suffix.to_ascii_uppercase());
         }
-        for mime in ["image/png", "image/jpeg", "image/webp"] {
+        for mime in ["image/png", "image/jpeg", "image/webp", "image/svg+xml"] {
             filter.add_mime_type(mime);
         }
         let filters = gio::ListStore::new::<gtk::FileFilter>();
@@ -115,7 +115,7 @@ impl Workbench {
                             return;
                         }
                         if image_only {
-                            this.toast("Choose the original PNG, JPG or WebP image, not a text/ANSI export.");
+                            this.toast("Choose the original PNG, JPG, WebP or SVG image, not a text/ANSI export.");
                             return;
                         }
                         match greeting_art::file_art(&path) {

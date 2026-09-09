@@ -37,6 +37,13 @@ pub(crate) const APPLICATION_ID: &str = "io.github.miiikuuu.termimochi";
 pub(crate) const RESOURCE_BASE: &str = "/io/github/miiikuuu/termimochi";
 
 fn main() -> gtk::glib::ExitCode {
+    // The private SVG child never initializes GTK, D-Bus or user documents.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == greeting_image::svg::WORKER_ARG)
+    {
+        return greeting_image::svg::worker_entry();
+    }
     gio::resources_register_include!("termimochi.gresource")
         .expect("TermiMochi resources must be embedded in the application");
 

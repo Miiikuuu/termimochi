@@ -7,9 +7,19 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs::File, io::Read};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+mod inspect;
 
 pub(crate) const PRESET_NAME: &str = "greeting.termimochi-greeting.json";
 const KEY_WIDTH: usize = 10;
+/// Semantic pieces share the exact renderer used for the visible transcript.
+/// Native output without module provenance deliberately targets the field list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GreetingPart {
+    Artwork,
+    Message,
+    Fields,
+    Field(Info),
+}
 const MOCHI: &str = include_str!("../resources/termimochi-ascii.txt");
 const TERMINAL: &str = " .------------.\n |  >_        |\n |            |\n '------------'";
 pub(crate) const ART_MAX_ROWS: usize = 96;
@@ -535,28 +545,44 @@ impl GreetingSettings {
 
     /// Bounded output with grapheme-aware cell sizing. Narrow terminals stack
     /// the artwork above the information; this does not mutate the saved layout.
+    #[cfg(test)]
     pub fn render(&self, context: &GreetingContext, columns: usize) -> String {
         self.render_with_official(context, columns, None)
     }
+    #[cfg(test)]
     pub fn render_with_official(
         &self,
         context: &GreetingContext,
         columns: usize,
         official: Option<&str>,
     ) -> String {
+        self.render_parts(context, columns, official)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+    pub fn render_parts(
+        &self,
+        context: &GreetingContext,
+        columns: usize,
+        official: Option<&str>,
+    ) -> Vec<(String, GreetingPart)> {
         if !self.enabled || self.validate().is_err() {
-            return String::new();
+            return Vec::new();
         }
         if self.imported_source.is_some() {
-            return format!(
-                "{}\x1b[0m\r\n\r\n",
-                official
-                    .unwrap_or("Reading imported configuration…")
-                    .split("\r\n")
-                    .map(|line| clip_ansi(line, columns.clamp(12, 240).saturating_sub(1)).0)
-                    .collect::<Vec<_>>()
-                    .join("\r\n")
-                    .trim_end()
+            return inspect::imported_parts(
+                format!(
+                    "{}\x1b[0m\r\n\r\n",
+                    official
+                        .unwrap_or("Reading imported configuration…")
+                        .split("\r\n")
+                        .map(|line| clip_ansi(line, columns.clamp(12, 240).saturating_sub(1)).0)
+                        .collect::<Vec<_>>()
+                        .join("\r\n")
+                        .trim_end()
+                ),
+                self.source_logo.as_ref().map(|s| s.artwork.plain.as_str()),
             );
         }
         let width = columns.clamp(12, 240).saturating_sub(1);
@@ -573,19 +599,23 @@ impl GreetingSettings {
         } else {
             width
         };
-        let mut info = Vec::<(String, usize)>::new();
+        let mut info = Vec::<(String, usize, GreetingPart)>::new();
         if !self.message.is_empty() {
             let text = clip(&self.message, info_width);
             let cells = text.width();
-            info.push((self.colored(&text), cells));
+            info.push((self.colored(&text), cells, GreetingPart::Message));
             if self.position == Position::Card {
-                info.push((self.colored(&"─".repeat(cells)), cells));
+                info.push((
+                    self.colored(&"─".repeat(cells)),
+                    cells,
+                    GreetingPart::Message,
+                ));
             }
         }
         if self.needs_native() {
             for line in official.unwrap_or("Rendering native fields…").split("\r\n") {
                 let (text, cells) = clip_ansi(line, info_width);
-                info.push((text, cells));
+                info.push((text, cells, GreetingPart::Fields));
             }
             // Fastfetch already ends its modules with LF; do not add that as
             // an extra empty data row alongside the logo.
@@ -600,43 +630,60 @@ impl GreetingSettings {
                     info.push((
                         format!("{}{value}", self.colored(&label)),
                         KEY_WIDTH + value.width(),
+                        GreetingPart::Field(item.kind),
                     ));
                 }
             }
         }
         let mut lines = Vec::new();
         if side {
-            let info_cells = info.iter().map(|(_, cells)| *cells).max().unwrap_or(0);
+            let info_cells = info.iter().map(|(_, cells, _)| *cells).max().unwrap_or(0);
             for index in 0..logo.len().max(info.len()) {
                 let art = logo.get(index).copied().unwrap_or("");
-                let (text, cells) = info.get(index).cloned().unwrap_or_default();
-                lines.push(if self.position == Position::Left {
-                    format!(
-                        "{}{}{text}",
-                        clip_ansi(colored_logo.get(index).copied().unwrap_or(""), logo_width).0,
-                        " ".repeat(logo_width - art.width() + gap)
-                    )
+                let (text, cells, part) =
+                    info.get(index)
+                        .cloned()
+                        .unwrap_or((String::new(), 0, GreetingPart::Fields));
+                let art_text =
+                    clip_ansi(colored_logo.get(index).copied().unwrap_or(""), logo_width).0;
+                if self.position == Position::Left {
+                    lines.push((art_text, GreetingPart::Artwork));
+                    lines.push((
+                        format!("{}{text}", " ".repeat(logo_width - art.width() + gap)),
+                        part,
+                    ));
                 } else {
-                    format!(
-                        "{text}{}{}",
-                        " ".repeat(info_cells - cells + gap),
-                        clip_ansi(colored_logo.get(index).copied().unwrap_or(""), logo_width).0
-                    )
-                });
+                    lines.push((text, part));
+                    lines.push((
+                        format!("{}{art_text}", " ".repeat(info_cells - cells + gap)),
+                        GreetingPart::Artwork,
+                    ));
+                }
+                lines.push(("\r\n".into(), GreetingPart::Fields));
             }
         } else {
             for line in colored_logo.into_iter().take(logo.len()) {
-                lines.push(clip_ansi(line, width).0);
+                lines.push((
+                    format!("{}\r\n", clip_ansi(line, width).0),
+                    GreetingPart::Artwork,
+                ));
             }
             if !lines.is_empty() && !info.is_empty() {
-                lines.push(String::new());
+                lines.push(("\r\n".into(), GreetingPart::Fields));
             }
-            lines.extend(info.into_iter().map(|(text, _)| text));
+            lines.extend(
+                info.into_iter()
+                    .map(|(text, _, part)| (format!("{text}\r\n"), part)),
+            );
         }
         if lines.is_empty() {
-            return String::new();
+            return Vec::new();
         }
-        format!("{}\x1b[0m\r\n\r\n", lines.join("\r\n"))
+        // Keep reset before the final line ending, byte-for-byte like render().
+        let last = &mut lines.last_mut().unwrap().0;
+        last.truncate(last.len() - 2);
+        lines.push(("\x1b[0m\r\n\r\n".into(), GreetingPart::Fields));
+        lines
     }
 
     /// Designer output contains reviewed built-ins and literal artwork only.

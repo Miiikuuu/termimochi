@@ -27,22 +27,22 @@ that looks balanced elsewhere can therefore become almost unreadable.
   the right-side Live Preview and diagnostics remain mounted.
 - Live VTE typography controls for installed monospace families, point size,
   weight, line height and cell width, with fallback-safe Nerd icon checks.
-- Typography presets: **Save Preset** (or `Ctrl+S` on Typography) remembers
+- Typography presets: **Save → Save Typography Preset** (or `Ctrl+S` on Typography) remembers
   all five font settings for the next launch. Open and export portable
   `.termimochi-font.json` files; typography edits have their own Undo/Redo.
-  **Apply to Ptyxis** confirms the app-wide font and target-profile spacing,
+  The bottom bar's **Apply…** confirms the app-wide font and target-profile spacing,
   saves a private backup, and blocks external-change conflicts. The Typography
-  save menu offers **Restore Previous Typography**. Saving alone never applies.
+  **⋮** menu offers **Restore Previous Typography**. Saving alone never applies.
 - Live layout controls for content padding, rows and columns, cursor behavior,
   tab and scrollbar chrome, and preview-window spacing.
-- Layout presets: **Save Preset** (`Ctrl+S` on Layout) restores all eight
+- Layout presets: **Save → Save Layout Preset** (`Ctrl+S` on Layout) restores all eight
   settings next launch, with independent Undo/Redo and portable
-  `.termimochi-layout.json` import/export. **Apply to Ptyxis** backs up and
+  `.termimochi-layout.json` import/export. The bottom bar's **Apply…** backs up and
   applies global cursor, scrollbar and new-window grid settings; exact padding,
-  tab bar and preview-window spacing remain preview-only. The save menu offers
+  tab bar and preview-window spacing remain preview-only. The **⋮** menu offers
   **Restore Previous Layout**. Remembered window sizing is disabled only after
   explicit Apply confirmation, so the chosen grid can take effect.
-- Complete setups: the top save menu's **Complete Setup → Save Workspace**
+- Complete setups: the bottom bar's **Save → Save Workspace**
   stores colors, typography, layout, greetings, Designer modules and imported Starship
   text in one `.termimochi.json` file. Use **Open Workspace…** (or launch
   `termimochi my-setup.termimochi.json`) to restore it. Opening never applies
@@ -85,7 +85,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   emoji and kaomoji, with bounded grapheme-aware clipping
   and a stacked fallback in narrow previews. Text controls and invalid artwork
   are rejected, with independent Undo/Redo and unsaved-change protection.
-- The **Import Artwork…** button in Greeting accepts **PNG / JPG / WebP** images
+- The **Import Artwork…** button in Greeting accepts **PNG / JPG / WebP / SVG** images
   and UTF-8/ASCII `.txt` / `.ans` logos. Images open a live conversion draft:
   start with **ANSI Detail** at 64 columns for recognizable color areas and corners,
   or choose **ASCII** / **Half blocks**. Adjust **Max columns**, optionally invert
@@ -129,7 +129,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Original…**; old conversion settings cannot be reconstructed from ANSI alone.
   **Save Preset** remembers it inside TermiMochi for next launch; it does not apply
   anything externally. Its confirmation offers **Review & Apply…**, also available
-  under **Fastfetch Configuration**, to back up and update Fastfetch only after
+  as **Apply…** in the fixed bottom bar, to back up and update Fastfetch only after
   explicit confirmation. Run `fastfetch` again to see the result; startup files
   remain unchanged. **Export Fastfetch Configuration…**
   embeds the same colored artwork in `config.jsonc` without changing shell startup.
@@ -142,8 +142,13 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Text… / Export ANSI…** exports only the logo, not machine information.
   Overwrites require confirmation, retain a backup and reject external changes.
   Plain text is limited to 16 KiB; ANSI artwork has a separate 320 KiB color-data
-  budget with the same visible geometry limits. SVG conversion, Kitty/Sixel image
-  logos and GIF/animated PNG/WebP are not supported yet; export a still image first.
+  budget with the same visible geometry limits. Static SVG shapes, gradients,
+  clipping, masks and text are rasterized locally before character conversion.
+  SVG sources are limited to 2 MiB; linked/embedded images, scripts, animation,
+  DTDs and external resources are rejected. Text uses system fonts; convert text
+  to paths for portable results. SVG rendering requires Bubblewrap and `prlimit`
+  and runs with time/memory limits, without an unsandboxed fallback.
+  Kitty/Sixel image logos and GIF/animated PNG/WebP remain unsupported.
 - Click a system field's name to edit its **label, inline icon, name/content
   colors and display format** in a compact popover. CPU/GPU summaries, memory
   and disk percentages/bars, and date/time formats share the same native
@@ -152,7 +157,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   **Compatibility** expands only when needed: it reports unavailable native
   rendering, offline detection differences, missing icon glyphs and imported
   settings that are retained but not simulated.
-- **Fastfetch Configuration → Load Current** reads the standard user
+- **Bottom bar ⋮ → Sources → Load Current Configuration** reads the standard user
   `fastfetch/config.jsonc` (or existing `config.json`); **Import…** selects another
   `config.jsonc`, `config.json` or `.fastfetch.jsonc` file. Imports retain JSONC
   comments, formatting, duplicate module types and unrecognized options.
@@ -193,7 +198,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   replacing unsaved edits. These checks do not execute imported commands or
   silently replace drafts. **Save Preset** alone still changes only TermiMochi.
   None of these actions edits `.bashrc` or enables automatic shell startup.
-- **Fastfetch Configuration → Terminal Startup…** is a separate, default-off
+- **Bottom bar ⋮ → Terminal Startup…** is a separate, default-off
   opt-in for new local Bash terminals. It shows the exact managed block and
   `.bashrc` destination before enabling, keeps a backup, and rejects aliases,
   read-only files, concurrent changes and pre-existing Fastfetch/Neofetch
@@ -218,7 +223,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Optional **Fade in / Line by line / Shimmer** openings can be replayed with
   the play button. Motion is **preview only**, respects system reduced motion,
   and never changes terminal text; Fastfetch exports remain static.
-- **Save Preset** (`Ctrl+S` on Greeting) restores the greeting next launch.
+- **Save → Save Greeting Preset** (`Ctrl+S` on Greeting) restores the greeting next launch.
   Import/export `.termimochi-greeting.json` presets, or **Export Fastfetch…** to
   `config.jsonc` or a separate `.fastfetch.jsonc` file. Basic, unstyled custom preview
   needs no Fastfetch installation; field overrides, official presets and imports
@@ -243,6 +248,10 @@ that looks balanced elsewhere can therefore become almost unreadable.
   for a hover highlight and a named destination before clicking. Colored output selects its ANSI slot,
   ordinary text for Typography, a prompt for Prompt, or the cursor/padding/tab
   title for Layout. Designer prompt parts select their own accent controls.
+  Greeting artwork, welcome messages and basic fields reveal their corresponding
+  controls. Official/native fields reveal the field list; imported artwork is
+  identified only when its retained source matches one complete visible rectangle.
+  Ambiguous native content stays at the field-list level instead of guessing.
   Inspection preserves the scene and local input; dragging and double-clicking
   still select text normally. Blank/unrecognized areas do not navigate or
   implicitly select Background. Turn Inspect off, or press Escape in the
@@ -291,6 +300,23 @@ that looks balanced elsewhere can therefore become almost unreadable.
 - Kitty, Ghostty, WezTerm and Alacritty exports for the active variant.
 - Human-readable and JSON CLI output.
 
+## Editor organization
+
+The activity rail switches properties without replacing the terminal preview.
+The fixed bottom bar keeps **Save**, the current module's **Apply… / Install… /
+Export…**, and **⋮** accessible while properties scroll. **Save** stores presets
+or a complete workspace; external changes still require the existing review and
+backup flow. Secondary imports, exports, reloads and restores live under **⋮**.
+Prompt's Save menu stores workspaces; its existing `Ctrl+S` shortcut continues
+to review Starship changes (or export Designer), matching its primary action.
+
+Palette's target selector can locate **Prompt Designer** segment colors and
+simple **Greeting** accent/text colors in the shared terminal palette. Editing
+a shared slot changes every element referencing it; **Edit source…** opens the
+module that owns its binding. Imported Starship RGB styles and Fastfetch
+per-field overrides remain in their source editors, without lossy conversion.
+Artwork adjustments remain in Edit Artwork.
+
 ## Requirements
 
 - Rust 1.92 or newer.
@@ -301,6 +327,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
 - Optional: Starship and Bubblewrap (`bwrap`) for safe existing-prompt previews.
 - Optional: Fastfetch to use exported greetings; system Fastfetch and Bubblewrap
   are required for live official-preset preview. Custom-design preview works without them.
+- Optional: Bubblewrap and `prlimit` (util-linux) for sandboxed static SVG import.
 
 Ubuntu/Debian development packages:
 
@@ -433,10 +460,10 @@ Xvfb :91 -screen 0 2880x1900x24 -nolisten tcp -noreset
 python3 scripts/test-regression.py --display :91 --scale 1 --scale 2
 ```
 
-This requires Fastfetch, Bubblewrap, Ptyxis, `dbus-run-session`, `xwininfo`,
+This requires Fastfetch, Bubblewrap, `prlimit`, Ptyxis, `dbus-run-session`, `xwininfo`,
 and the X11 libraries used by the pointer driver. Each case uses a separate
 process, private D-Bus session and temporary XDG directories; the terminal-launch
-test opens Ptyxis on the test display only. The runner pins one test build,
+test opens Ptyxis on the test display only. The runner pins the test and SVG-worker builds,
 enforces per-case timeouts and writes logs plus `results.json` under `/tmp`.
 Use `--filter extreme_settings` for the cross-module extreme-value/rapid-switch
 test. Ordinary tests additionally cover a 672-case artwork/layout matrix and

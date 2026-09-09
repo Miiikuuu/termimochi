@@ -282,32 +282,15 @@ impl Workbench {
     }
 
     pub(super) fn refresh_editor_menus(&self) {
-        let (menu, label, tooltip) = if self.greeting_module_button.is_active() {
-            (
-                &self.greeting_save_menu,
-                "Open Greeting Preset",
-                "Open a greeting preset  Ctrl+O",
-            )
+        let (label, tooltip) = if self.greeting_module_button.is_active() {
+            ("Open Greeting Preset", "Open a greeting preset  Ctrl+O")
         } else if self.layout_module_button.is_active() {
-            (
-                &self.layout_save_menu,
-                "Open Layout Preset",
-                "Open a layout preset  Ctrl+O",
-            )
+            ("Open Layout Preset", "Open a layout preset  Ctrl+O")
         } else if self.typography_module_button.is_active() {
-            (
-                &self.typography_save_menu,
-                "Open Typography Preset",
-                "Open a typography preset  Ctrl+O",
-            )
+            ("Open Typography Preset", "Open a typography preset  Ctrl+O")
         } else {
-            (
-                &self.save_menu,
-                "Open Theme",
-                "Open a Ptyxis .palette file  Ctrl+O",
-            )
+            ("Open Theme", "Open a Ptyxis .palette file  Ctrl+O")
         };
-        self.save_button.set_menu_model(Some(menu));
         self.open_button.set_tooltip_text(Some(tooltip));
         self.open_button
             .update_property(&[gtk::accessible::Property::Label(label)]);
@@ -643,8 +626,11 @@ mod tests {
         assert!(!this.layout_dirty());
         assert!(!this.undo_action.is_enabled());
         assert_eq!(
-            this.save_button.menu_model(),
-            Some(this.layout_save_menu.clone().upcast())
+            this.save_button
+                .menu_model()
+                .unwrap()
+                .item_attribute_value(0, "label", None),
+            Some("Save Layout Preset".to_variant())
         );
         this.content_padding_input.set_value(17.0);
         this.column_count_input.set_value(93.0);

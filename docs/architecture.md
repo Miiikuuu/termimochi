@@ -75,6 +75,15 @@ GDK_BACKEND=x11 GTK_A11Y=none \
   --ignored --test-threads=1
 ```
 
+`window/output_bar.rs` owns one persistent contextual output area below the
+left inspector: preset/workspace Save, the module's reviewed Apply/Install or
+Export, and secondary commands. Module bodies no longer repeat these actions.
+The preview owns transient toasts so they cannot cover the left output bar.
+`window/color_targets.rs` resolves Designer prompt tones and simple Greeting
+roles to existing palette slots, including VTE's bold-to-bright mapping. It
+reuses palette history; independent imported styles are preserved and routed
+to their source editor rather than approximated. See [workbench design](workbench-design.md).
+
 The desktop crate owns only presentation and file interaction. Every edit is
 written to the in-memory core model, after which the preview and diagnostics
 are recomputed. A narrow Activity Rail switches only the left module stack
@@ -540,6 +549,16 @@ CRLF/BOM normalize, and style state resets/reopens at line boundaries for safe
 composition. Serialized ANSI/plain pairs are revalidated on load. GTK edits
 plain text only; removing imported styles is explicit and undoable.
 
+Static SVG sources share the editable image-source envelope and conversion UI.
+`greeting_image/svg.rs` preflights XML in a disposable renderer process, then uses
+resvg with both image resolvers disabled. The private executable entry point runs
+before GTK initialization. Bubblewrap mounts only runtime/font directories, the
+executable and captured input, without network or home/project access; prlimit
+and the bounded parent pipe reader enforce memory/CPU/time/output limits.
+Premultiplied RGBA is returned at a maximum 1024-pixel longest side and reused
+by the existing conversion worker. Only final character art enters Fastfetch
+exports. See `image-conversion.md` for supported SVG features and explicit limits.
+
 Fastfetch `data` and `file` decode `$1`–`$9` and `$$`; raw types keep dollars
 literal. Sanitized marker text and explicit safe color slots are passed as `data`
 so native host-default colors (including unset slots) are preserved, not guessed.
@@ -558,9 +577,10 @@ native built-in logo export runs on a bounded worker without system modules.
 Tests cover encoding, widths, controls, snapshots, aliases/FIFOs, conflicts,
 multiline color, actual Fastfetch projection, GTK cancel/undo and restart.
 
-`greeting_image.rs` converts local PNG/JPEG/WebP into that same `Artwork` type.
-Only these three `image` codecs are enabled; SVG, GIF, APNG, animated WebP and
-native image-display protocols are explicitly deferred. Reads are bounded to
+`greeting_image.rs` converts local PNG/JPEG/WebP and static SVG into that same `Artwork` type.
+Only these three raster `image` codecs are enabled; SVG uses the isolated renderer
+described below. GIF, APNG, animated WebP and native image-display protocols remain
+deferred. Reads are bounded to
 16 MiB and reject non-regular files, leaf symlinks/hardlinks and file races.
 Magic bytes select the decoder. RIFF chunk bounds are checked before WebP
 metadata reads. Before pixel decoding, dimensions are limited to 8192 per side,

@@ -103,7 +103,7 @@ impl Workbench {
         if let Some(source) = before.editable_artwork.clone() {
             self.open_image_source(before, None, Some(source));
         } else {
-            self.toast("This artwork has no editable source. Reimport its original PNG, JPG or WebP; previous conversion settings cannot be recovered.");
+            self.toast("This artwork has no editable source. Reimport its original PNG, JPG, WebP or SVG; previous conversion settings cannot be recovered.");
             self.choose_original_image();
         }
     }
@@ -151,6 +151,18 @@ impl Workbench {
         let controls = gtk::Box::new(gtk::Orientation::Vertical, 16);
         controls.add_css_class("editor-workspace");
         controls.set_margin_end(8);
+        // Capture before Scale/SpinButton/DropDown can treat the wheel as an
+        // edit. Route it to the sidebar even when a parameter has focus.
+        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
+        wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let source = controls.downgrade();
+        wheel.connect_scroll(move |event, _, dy| {
+            if let Some(source) = source.upgrade() {
+                scroll_parent_vertically(&source, dy, event.unit());
+            }
+            glib::Propagation::Stop
+        });
+        controls.add_controller(wheel);
         let sidebar = gtk::ScrolledWindow::builder()
             .child(&controls)
             .hexpand(false)
@@ -1001,12 +1013,16 @@ impl ImageImport {
                     removal_note
                 ));
                 self.result_status.replace(self.status.text().to_string());
+                self.status.set_tooltip_text((image.format == "SVG").then_some(
+                    "Static SVG rasterized locally at up to 1024 pixels. SVG text uses system fonts; convert text to paths for portable results."
+                ));
                 self.display_grid.set((image.columns, image.rows));
                 self.artwork.replace(Some(image.artwork));
                 self.render_preview();
                 self.apply.set_sensitive(image.removal.issue.is_none());
             }
             Err(error) => {
+                self.status.set_tooltip_text(None);
                 self.artwork.borrow_mut().take();
                 self.apply.set_sensitive(false);
                 self.terminal.reset(true, true);
@@ -1117,6 +1133,122 @@ mod tests {
     use super::super::tests::{controller, descendants, feed, respond, settle, wait_official};
     use super::*;
 
+    #[test]
+    #[ignore = "requires GTK/VTE and X11 pointer driver; wheel must scroll, never edit"]
+    fn image_import_wheel_preserves_parameters_and_click_still_edits() {
+        use super::super::tests::pointer;
+        adw::init().unwrap();
+        gio::resources_register_include!("termimochi.gresource").unwrap();
+        let app = adw::Application::builder()
+            .application_id("io.github.miiikuuu.termimochi.ImageWheelTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("image.png");
+        image::RgbaImage::from_fn(40, 40, |x, y| {
+            if (8..32).contains(&x) && (8..32).contains(&y) {
+                image::Rgba([20, 100, 160, 255])
+            } else {
+                image::Rgba([255; 4])
+            }
+        })
+        .save(&source)
+        .unwrap();
+        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        let window = app.active_window().unwrap();
+        let this = controller(&window);
+        let (dialog, draft) = draft(&this, &source);
+        dialog.set_title(Some("TermiMochi point-to-edit test"));
+        dialog.set_default_size(900, 680);
+        ready(&draft);
+        draft.style.set_selected(1);
+        draft.remove_background.set_active(true);
+        for expander in descendants(dialog.upcast_ref())
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Expander>().ok())
+        {
+            expander.set_expanded(true);
+        }
+        ready(&draft);
+        let sidebar = draft
+            .columns
+            .ancestor(gtk::ScrolledWindow::static_type())
+            .unwrap()
+            .downcast::<gtk::ScrolledWindow>()
+            .unwrap();
+        let adjustment = sidebar.vadjustment();
+        let widgets: Vec<gtk::Widget> = vec![
+            draft.columns.clone().upcast(),
+            draft.style.clone().upcast(),
+            draft.preset.clone().upcast(),
+            draft.tolerance.clone().upcast(),
+            draft.softness.clone().upcast(),
+            draft.exposure.clone().upcast(),
+            draft.contrast.clone().upcast(),
+            draft.saturation.clone().upcast(),
+            draft.smoothing.clone().upcast(),
+            draft.edges.clone().upcast(),
+            draft.crop[0].clone().upcast(),
+        ];
+        let reveal = |widget: &gtk::Widget| {
+            let rect = widget.compute_bounds(&sidebar).unwrap();
+            adjustment.set_value(
+                (adjustment.value() + f64::from(rect.y()) - 80.0)
+                    .clamp(0.0, adjustment.upper() - adjustment.page_size()),
+            );
+            settle();
+        };
+        for widget in &widgets {
+            reveal(widget);
+            widget.grab_focus();
+            settle();
+            let before = (
+                draft.adjustments(),
+                draft.columns.value(),
+                draft.style.selected(),
+                draft.preset.selected(),
+            );
+            let scroll = adjustment.value();
+            pointer(
+                &dialog,
+                widget,
+                if scroll > 10.0 {
+                    "scroll_up"
+                } else {
+                    "scroll_down"
+                },
+            );
+            assert_eq!(
+                (
+                    draft.adjustments(),
+                    draft.columns.value(),
+                    draft.style.selected(),
+                    draft.preset.selected()
+                ),
+                before,
+                "wheel changed {}",
+                widget.type_().name()
+            );
+            assert_ne!(adjustment.value(), scroll, "wheel did not scroll sidebar");
+        }
+        // Direct clicks on the slider remain edits; routing does not disable it.
+        draft.exposure.set_value(-2.0);
+        draft.exposure.grab_focus();
+        settle();
+        reveal(draft.exposure.upcast_ref());
+        let trough = descendants(draft.exposure.upcast_ref())
+            .into_iter()
+            .find(|w| w.css_name() == "trough")
+            .unwrap();
+        capture(&dialog, "TERMIMOCHI_WHEEL_SCREENSHOT");
+        pointer(&dialog, &trough, "click");
+        assert_ne!(draft.exposure.value(), -2.0);
+        dialog.close();
+        settle();
+        window.destroy();
+    }
+
     fn active_art(settings: &GreetingSettings) -> Option<Artwork> {
         if settings.imported_source.is_some() {
             settings
@@ -1143,6 +1275,16 @@ mod tests {
     #[test]
     #[ignore = "requires GTK/VTE; embedded source, local temporary presets only"]
     fn editable_artwork_restores_all_controls_after_restart_and_source_deletion() {
+        editable_source_roundtrip(false);
+    }
+
+    #[test]
+    #[ignore = "requires GTK/VTE and built SVG helper; isolated SVG source, edits, cancel, undo, restart and workspace"]
+    fn svg_editable_artwork_restores_after_restart_and_source_deletion() {
+        editable_source_roundtrip(true);
+    }
+
+    fn editable_source_roundtrip(svg: bool) {
         adw::init().unwrap();
         gio::resources_register_include!("termimochi.gresource").unwrap();
         let app = adw::Application::builder()
@@ -1152,21 +1294,34 @@ mod tests {
         app.register(None::<&gio::Cancellable>).unwrap();
         let root = tempfile::tempdir().unwrap();
         let preset = root.path().join(typography_preset::PRESET_NAME);
-        let source = root.path().join("original.png");
-        image::RgbaImage::from_fn(160, 120, |x, y| {
-            if !(30..130).contains(&x) || !(20..100).contains(&y) {
-                image::Rgba([255; 4])
-            } else {
-                image::Rgba([(x * 2) as u8, (y * 2) as u8, 80, 255])
-            }
-        })
-        .save(&source)
-        .unwrap();
+        let source = root
+            .path()
+            .join(if svg { "original.svg" } else { "original.png" });
+        if svg {
+            std::fs::write(&source, r##"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120"><defs><linearGradient id="g"><stop stop-color="#0d936d"/><stop offset="1" stop-color="#ac3388"/></linearGradient></defs><rect width="160" height="120" fill="white"/><path d="M30 20H130V100H30Z" fill="url(#g)"/><circle cx="65" cy="60" r="15" fill="#ffd166"/></svg>"##).unwrap();
+        } else {
+            image::RgbaImage::from_fn(160, 120, |x, y| {
+                if !(30..130).contains(&x) || !(20..100).contains(&y) {
+                    image::Rgba([255; 4])
+                } else {
+                    image::Rgba([(x * 2) as u8, (y * 2) as u8, 80, 255])
+                }
+            })
+            .save(&source)
+            .unwrap();
+        }
         present_with_preset(&app, None, preset.clone());
         let window = app.active_window().unwrap();
         let this = controller(&window);
         let (_, preview) = draft(&this, &source);
         ready(&preview);
+        if svg {
+            assert!(preview.status.text().contains("SVG"));
+            capture(
+                &preview.window.upgrade().unwrap(),
+                "TERMIMOCHI_SVG_PREVIEW_SCREENSHOT",
+            );
+        }
         let options = Options {
             columns: 88,
             style: Style::Ascii,

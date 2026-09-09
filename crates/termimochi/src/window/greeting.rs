@@ -101,6 +101,48 @@ pub(super) struct GreetingEditor {
 }
 
 impl GreetingEditor {
+    pub(super) fn inspection_control(&self, target: PreviewTarget) -> Option<gtk::Widget> {
+        fn first_control(root: &gtk::Widget) -> Option<gtk::Widget> {
+            if !root.is_visible() || !root.is_sensitive() {
+                return None;
+            }
+            if root.is_focusable() {
+                return Some(root.clone());
+            }
+            let mut child = root.first_child();
+            while let Some(widget) = child {
+                if let Some(control) = first_control(&widget) {
+                    return Some(control);
+                }
+                child = widget.next_sibling();
+            }
+            None
+        }
+        match target {
+            PreviewTarget::GreetingArtwork => {
+                if self.edit_image.is_visible() && self.edit_image.is_sensitive() {
+                    Some(self.edit_image.clone().upcast())
+                } else if self.artwork.is_editable()
+                    && self.artwork_view.visible_child_name().as_deref() == Some("text")
+                {
+                    Some(self.artwork.clone().upcast())
+                } else {
+                    Some(self.logo.clone().upcast())
+                }
+            }
+            PreviewTarget::GreetingMessage => Some(self.message.clone().upcast()),
+            PreviewTarget::GreetingField(kind) => self
+                .rows
+                .iter()
+                .find(|(k, ..)| *k == kind)
+                .and_then(|(_, row, ..)| first_control(row.upcast_ref())),
+            PreviewTarget::GreetingFields => [&self.imported_list, &self.official_list, &self.list]
+                .into_iter()
+                .find_map(|list| first_control(list.upcast_ref()))
+                .or_else(|| Some(self.preset.clone().upcast())),
+            _ => Some(self.preset.clone().upcast()),
+        }
+    }
     pub fn new(path: PathBuf) -> Rc<Self> {
         let fastfetch_state = path
             .parent()
@@ -153,23 +195,7 @@ impl GreetingEditor {
             "TermiMochi and five reviewed Fastfetch presets. Full native fields, editable formats and undoable switching.",
         );
         content.append(&layout_row("Preset", &preset));
-        let config_menu = gio::Menu::new();
-        for (label, action) in [
-            ("Load Current Configuration", "load-current-fastfetch"),
-            ("Import Fastfetch Configuration…", "import-fastfetch"),
-            ("Review & Apply…", "apply-fastfetch"),
-            ("Restore Previous Configuration…", "restore-fastfetch"),
-            ("Terminal Startup…", "greeting-startup"),
-        ] {
-            config_menu.append(Some(label), Some(&format!("win.{action}")));
-        }
-        let config_button = gtk::MenuButton::builder()
-            .label("Fastfetch Configuration")
-            .menu_model(&config_menu)
-            .has_frame(false)
-            .halign(gtk::Align::Start)
-            .build();
-        content.append(&config_button);
+        // Configuration commands are collected in the fixed output bar.
         let sync = sync::SyncNotice::new();
         content.append(&sync.root);
         let preset_note = gtk::Label::new(None);
@@ -244,7 +270,7 @@ impl GreetingEditor {
             .hexpand(true)
             .build();
         import_art.update_property(&[gtk::accessible::Property::Label("Import Artwork")]);
-        import_art.set_tooltip_text(Some("Choose PNG, JPG, WebP, TXT or ANSI artwork."));
+        import_art.set_tooltip_text(Some("Choose PNG, JPG, WebP, SVG, TXT or ANSI artwork."));
         art_actions.append(&import_art);
         let art_menu = gio::Menu::new();
         for (label, action) in [
@@ -403,34 +429,13 @@ impl GreetingEditor {
             .expanded(false)
             .build();
         content.append(&compatibility);
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        for (label, action) in [
-            ("Save Preset", "win.save-greeting"),
-            ("Export Fastfetch…", "win.export-fastfetch"),
-        ] {
-            let button = gtk::Button::builder()
-                .label(label)
-                .action_name(action)
-                .hexpand(true)
-                .build();
-            button.add_css_class("pill");
-            if action == "win.save-greeting" {
-                button.set_tooltip_text(Some("Save inside TermiMochi and restore on next launch. To change external Fastfetch, use Fastfetch Configuration → Review & Apply."));
-            }
-            actions.append(&button);
-        }
-        content.append(&actions);
+        // Save/export actions are collected in the fixed output bar.
         let status = gtk::Label::new(None);
         status.set_xalign(0.0);
         status.set_wrap(true);
         status.add_css_class("dim-label");
         content.append(&status);
-        let refresh = gtk::Button::builder()
-            .label("Refresh System Snapshot")
-            .action_name("win.refresh-preview-folder")
-            .build();
-        refresh.add_css_class("flat");
-        content.append(&refresh);
+        // Snapshot refresh is available in the output bar's More menu.
         let root = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .min_content_width(330)
@@ -660,7 +665,7 @@ impl GreetingEditor {
         } else {
             "Preview only · not saved"
         });
-        self.status.set_tooltip_text(Some("Save Preset remembers this design inside TermiMochi. Fastfetch Configuration → Review & Apply writes the external configuration and can run Fastfetch once in a new terminal. Shell startup stays unchanged."));
+        self.status.set_tooltip_text(Some("Save remembers this design inside TermiMochi. Apply in the bottom bar reviews and updates external Fastfetch and can run it once in a new terminal. Shell startup stays unchanged."));
     }
     fn refresh_artwork_info(&self) {
         use unicode_width::UnicodeWidthStr;
@@ -1361,6 +1366,15 @@ impl Workbench {
         });
     }
     pub(super) fn greeting_text_for_width(&self, columns: usize) -> String {
+        self.greeting_parts_for_width(columns)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+    fn greeting_parts_for_width(
+        &self,
+        columns: usize,
+    ) -> Vec<(String, crate::greeting::GreetingPart)> {
         let context = self.current_preview_context.borrow();
         let fallback = crate::greeting::GreetingContext::default();
         let facts = context.as_ref().map(|c| &c.greeting).unwrap_or(&fallback);
@@ -1373,10 +1387,7 @@ impl Workbench {
             None => None,
         };
         let settings = self.greeting.settings();
-        if !settings.needs_native() {
-            return settings.render(facts, columns);
-        }
-        settings.render_with_official(facts, columns, text.as_deref())
+        settings.render_parts(facts, columns, text.as_deref())
     }
     fn greeting_preview_text(&self) -> String {
         self.greeting_text_for_width(self.preview_terminal.column_count().max(12) as usize)
@@ -1588,8 +1599,18 @@ impl Workbench {
         self.preview_selector.set_visible(false);
         self.prompt_preview_selector.set_visible(false);
         self.prompt_compare_selector.set_visible(false);
-        let text = self.greeting_preview_text();
-        self.feed_scoped_preview(&text, Some(PreviewTarget::Greeting));
+        for (text, part) in
+            self.greeting_parts_for_width(self.preview_terminal.column_count().max(12) as usize)
+        {
+            use crate::greeting::GreetingPart;
+            let target = match part {
+                GreetingPart::Artwork => PreviewTarget::GreetingArtwork,
+                GreetingPart::Message => PreviewTarget::GreetingMessage,
+                GreetingPart::Fields => PreviewTarget::GreetingFields,
+                GreetingPart::Field(kind) => PreviewTarget::GreetingField(kind),
+            };
+            self.feed_scoped_preview(&text, Some(target));
+        }
         let context = self.current_preview_context.borrow();
         let designed = self.preview_prompt_source.get() == 1;
         let prompt = if designed {
@@ -1631,11 +1652,31 @@ impl Workbench {
         };
         let input = self.preview_input.borrow();
         for line in input.submitted() {
-            self.feed_scoped_preview(&prompt, Some(PreviewTarget::Prompt));
+            if designed {
+                self.feed_designed_prompt(
+                    &self.prompt_settings.borrow(),
+                    &context
+                        .as_ref()
+                        .map(CurrentPreviewContext::as_prompt_context)
+                        .unwrap_or(prompt_preview_contexts()[0]),
+                );
+            } else {
+                self.feed_scoped_preview(&prompt, Some(PreviewTarget::PromptCopy));
+            }
             self.feed_preview(line.as_bytes());
             self.feed_preview(b"\r\n");
         }
-        self.feed_scoped_preview(&prompt, Some(PreviewTarget::Prompt));
+        if designed {
+            self.feed_designed_prompt(
+                &self.prompt_settings.borrow(),
+                &context
+                    .as_ref()
+                    .map(CurrentPreviewContext::as_prompt_context)
+                    .unwrap_or(prompt_preview_contexts()[0]),
+            );
+        } else {
+            self.feed_scoped_preview(&prompt, Some(PreviewTarget::PromptCopy));
+        }
         self.feed_preview(input.text().as_bytes());
         self.feed_preview(PREVIEW_SHOW_CURSOR);
     }
@@ -1891,6 +1932,132 @@ pub(super) mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires GTK/VTE; semantic Greeting navigation across layouts without changing the scene"]
+    fn greeting_inspect_artwork_message_fields_and_prompt_preserve_scene() {
+        adw::init().unwrap();
+        gio::resources_register_include!("termimochi.gresource").unwrap();
+        let app = adw::Application::builder()
+            .application_id("io.github.miiikuuu.termimochi.GreetingInspectTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        let window = app.active_window().unwrap();
+        let this = controller(&window);
+        settle();
+        while this.preview_loading.get() {
+            settle();
+        }
+        let terminal = &this.preview_terminal;
+        for position in Position::ALL {
+            let mut settings = GreetingSettings {
+                enabled: true,
+                logo: Logo::Custom,
+                custom_logo: "LOGO\n中🙂".into(),
+                message: "Hello Inspect".into(),
+                position,
+                preview_columns: 80,
+                ..Default::default()
+            };
+            settings
+                .items
+                .iter_mut()
+                .for_each(|i| i.enabled = i.kind == Info::Os);
+            this.greeting.replace(settings.clone(), true);
+            this.greeting_module_button.set_active(true);
+            settle();
+            this.preview_scroll.start();
+            settle();
+            let transcript = feed(&this);
+            for target in [
+                PreviewTarget::GreetingArtwork,
+                PreviewTarget::GreetingMessage,
+                PreviewTarget::GreetingField(Info::Os),
+            ] {
+                if position == Position::Card && target == PreviewTarget::GreetingArtwork {
+                    continue; // Minimal card deliberately omits the logo.
+                }
+                this.preview_scroll.start();
+                settle();
+                assert!(
+                    this.preview_feed
+                        .borrow()
+                        .iter()
+                        .any(|c| c.scope == Some(target)),
+                    "missing scope {target:?}"
+                );
+                // Resolve actual VTE cells, including Unicode and stacked layouts.
+                let (top, fraction) = preview_visible_origin(terminal).unwrap();
+                let native = terminal.native().unwrap();
+                let (dx, dy) = native.surface_transform();
+                let native = native.dynamic_cast::<gtk::Widget>().unwrap();
+                let mut found = false;
+                for row in top..=terminal.cursor_position().1 {
+                    for col in 0..terminal.column_count() {
+                        let point = terminal
+                            .compute_point(
+                                &native,
+                                &gtk::graphene::Point::new(
+                                    (col as f32 + 0.5) * terminal.char_width() as f32,
+                                    ((row - top) as f32 - fraction as f32 + 0.5)
+                                        * terminal.char_height() as f32,
+                                ),
+                            )
+                            .unwrap();
+                        if this
+                            .preview_target_at(f64::from(point.x()) + dx, f64::from(point.y()) + dy)
+                            == Some(target)
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if found {
+                        break;
+                    }
+                }
+                assert!(
+                    found,
+                    "no real VTE hit for {position:?} {target:?}; top={top}, cursor={:?}, canvas={:?}, text={:?}",
+                    terminal.cursor_position(),
+                    terminal.compute_bounds(&this.preview_terminal_viewport),
+                    terminal.text_format(vte::Format::Text)
+                );
+                this.typography_module_button.set_active(true);
+                settle();
+                this.inspect_preview_target(target);
+                settle();
+                assert!(this.greeting_module_button.is_active());
+                let widget = this.greeting.inspection_control(target).unwrap();
+                assert!(widget.has_css_class("preview-inspected"));
+                let bounds = widget.compute_bounds(&this.greeting.root).unwrap();
+                assert!(
+                    bounds.y() >= -1.0
+                        && bounds.y() + bounds.height() <= this.greeting.root.height() as f32 + 1.0,
+                    "target not revealed: {target:?} {bounds:?}"
+                );
+                assert_eq!(this.greeting.settings(), settings);
+                assert_eq!(feed(&this), transcript);
+            }
+        }
+        // Designer prompt in Greeting must not navigate into Your Starship.
+        this.preview_prompt_source.set(1);
+        this.redraw_preview_contents();
+        settle();
+        assert!(this.preview_feed.borrow().iter().any(|c| matches!(
+            c.scope,
+            Some(PreviewTarget::PromptSegment(_) | PreviewTarget::PromptCharacter)
+        )));
+        let transcript = feed(&this);
+        this.inspect_preview_target(PreviewTarget::PromptCharacter);
+        settle();
+        assert_eq!(this.prompt_source_selector.selected(), 1);
+        assert_eq!(feed(&this), transcript);
+        window.destroy();
+    }
+
+    #[test]
     fn export_standard_config_backup_conflicts_and_unsafe_destinations() {
         let root = tempfile::tempdir().unwrap();
         let settings = GreetingSettings {
@@ -1945,7 +2112,7 @@ pub(super) mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    pub(super) fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+    pub(in crate::window) fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
         let mut result = vec![widget.clone()];
         let mut child = widget.first_child();
         while let Some(current) = child {
@@ -1983,6 +2150,34 @@ pub(super) mod tests {
             .iter()
             .map(|c| c.text.as_str())
             .collect()
+    }
+
+    pub(super) fn pointer(window: &gtk::Window, widget: &gtk::Widget, mode: &str) {
+        let rect = widget.compute_bounds(window).unwrap();
+        let (dx, dy) = window.surface_transform();
+        let scale = f64::from(window.scale_factor());
+        let x = (f64::from(rect.x() + rect.width() * 0.5) + dx) * scale;
+        let y = (f64::from(rect.y() + rect.height() * 0.5) + dy) * scale;
+        let mut child = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../scripts/preview-pointer-driver.py"
+            ))
+            .args([mode, &(x as i32).to_string(), &(y as i32).to_string(), "2"])
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("pointer timeout");
+            }
+            settle();
+        }
+        assert!(child.wait().unwrap().success());
+        settle();
+        settle();
     }
 
     pub(super) fn wait_official(this: &Workbench) {
@@ -2434,8 +2629,11 @@ pub(super) mod tests {
         assert!(this.greeting_module_button.is_active());
         assert!(!this.greeting.dirty());
         assert_eq!(
-            this.save_button.menu_model(),
-            Some(this.greeting_save_menu.clone().upcast())
+            this.save_button
+                .menu_model()
+                .unwrap()
+                .item_attribute_value(0, "label", None),
+            Some("Save Greeting Preset".to_variant())
         );
         this.greeting.enabled.set_active(true);
         this.greeting.message.set_text("Hello 你好 🦀");
@@ -2619,7 +2817,7 @@ pub(super) mod tests {
             assert_eq!(this.preview_terminal, terminal);
             assert!(feed(&this).contains("Hello 你好 🦀"));
         }
-        this.inspect_preview_target(PreviewTarget::Greeting);
+        this.inspect_preview_target(PreviewTarget::GreetingFields);
         assert!(this.greeting_module_button.is_active());
         this.greeting.message.set_text("Do not lose me");
         window.close();

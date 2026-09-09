@@ -1,4 +1,4 @@
-//! Local, bounded PNG/JPEG/WebP decoding into portable, reviewed ANSI artwork.
+//! Local, bounded PNG/JPEG/WebP/SVG decoding into portable, reviewed ANSI artwork.
 //! Editable sources are portable snapshots; external exports contain only ANSI.
 use crate::{
     greeting::{ART_MAX_COLUMNS, ART_MAX_ROWS},
@@ -10,6 +10,7 @@ use std::{fmt::Write, io::Cursor, path::Path};
 mod background;
 mod processing;
 pub(crate) mod source;
+pub(crate) mod svg;
 mod symbols;
 pub(crate) use background::{Removal, RemovalReport, straight_color};
 pub(crate) use processing::{Adjustments, Ink, Structure};
@@ -62,7 +63,7 @@ pub(crate) fn is_image(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
         .is_some_and(|ext| {
-            ["png", "jpg", "jpeg", "webp"]
+            ["png", "jpg", "jpeg", "webp", "svg"]
                 .iter()
                 .any(|name| ext.eq_ignore_ascii_case(name))
         })
@@ -72,7 +73,7 @@ pub(crate) fn is_image(path: &Path) -> bool {
 pub(crate) fn load(path: &Path) -> Result<DecodedImage, String> {
     if !is_image(path) {
         return Err(
-            "Choose PNG, JPG or WebP. SVG, GIF and image-display protocols are not supported yet."
+            "Choose PNG, JPG, WebP or SVG. GIF and image-display protocols are not supported yet."
                 .into(),
         );
     }
@@ -106,8 +107,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<DecodedImage, String> {
     if bytes.len() as u64 > FILE_LIMIT {
         return Err("Image exceeds 16 MiB.".into());
     }
+    if svg::looks_like_svg(bytes) {
+        return svg::decode(bytes);
+    }
     let format = image::guess_format(bytes)
-        .map_err(|_| "Not a supported image. Choose PNG, JPG or WebP.")?;
+        .map_err(|_| "Not a supported image. Choose PNG, JPG, WebP or SVG.")?;
     let cursor = Cursor::new(bytes);
     let error = |e: image::ImageError| format!("Image could not be decoded: {e}");
     let animated = "Animated images are not supported yet. Export a still PNG, JPG or WebP first.";
@@ -148,7 +152,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<DecodedImage, String> {
             }
             decode_pixels(decoder, "WebP")
         }
-        _ => Err("Choose PNG, JPG or WebP. SVG and animated images are not supported yet.".into()),
+        _ => Err("Choose PNG, JPG, WebP or SVG. Animated images are not supported yet.".into()),
     }
 }
 
@@ -703,7 +707,7 @@ pub(crate) mod tests {
     fn bad_files_oversized_headers_and_unsupported_formats_fail_without_panics() {
         for bytes in [
             b"".as_slice(),
-            b"<svg xmlns='http://www.w3.org/2000/svg'/>",
+            b"<svg",
             b"GIF89a",
             b"\x89PNG\r\n\x1a\n",
             b"RIFF\xff\xff\xff\xffWEBPVP8L\xff\xff\xff\xff",

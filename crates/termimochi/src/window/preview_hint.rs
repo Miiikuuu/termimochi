@@ -208,12 +208,13 @@ mod tests {
         };
         let paned = this
             .toast_overlay
-            .child()
+            .ancestor(gtk::Paned::static_type())
             .unwrap()
             .downcast::<gtk::Paned>()
             .unwrap();
-        let revealer = paned
-            .end_child()
+        let revealer = this
+            .toast_overlay
+            .child()
             .unwrap()
             .last_child()
             .unwrap()
