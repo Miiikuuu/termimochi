@@ -107,7 +107,7 @@ impl TypographyTarget {
         Self::for_uuid(&uuid)
     }
 
-    fn for_uuid(uuid: &str) -> Result<Self, String> {
+    pub(crate) fn for_uuid(uuid: &str) -> Result<Self, String> {
         if !valid_profile_uuid(uuid) {
             return Err("Invalid Ptyxis profile identifier.".into());
         }

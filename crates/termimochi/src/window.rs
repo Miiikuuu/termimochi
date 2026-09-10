@@ -21,6 +21,7 @@ mod greeting;
 mod output_bar;
 mod preview_hint;
 mod preview_scroll;
+mod scheme;
 #[cfg(test)]
 mod stress_tests;
 
@@ -3500,6 +3501,21 @@ impl Workbench {
 
     fn install_actions(this: &Rc<Self>) {
         let window = this.window();
+
+        for (name, review) in [("apply-scheme", true), ("last-scheme-application", false)] {
+            let action = gio::SimpleAction::new(name, None);
+            let weak = Rc::downgrade(this);
+            action.connect_activate(move |_, _| {
+                if let Some(this) = weak.upgrade() {
+                    if review {
+                        this.request_scheme_apply();
+                    } else {
+                        this.show_last_scheme_application();
+                    }
+                }
+            });
+            window.add_action(&action);
+        }
 
         let fonts = gio::SimpleAction::new("diagnostic-fonts", None);
         let weak = Rc::downgrade(this);

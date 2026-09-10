@@ -19,6 +19,40 @@ fn plain_report_line(line: &str) -> String {
 }
 
 impl Workbench {
+    pub(in crate::window) fn prepare_scheme_fastfetch(
+        &self,
+    ) -> Result<(fastfetch_apply::Target, String), String> {
+        let mut settings = self.greeting.settings();
+        if settings.imported_source.is_none() {
+            settings.position =
+                settings.position_at_width(self.preview_terminal.column_count().max(12) as usize);
+        }
+        let source = settings.fastfetch_config()?;
+        let target = self
+            .greeting
+            .fastfetch_target
+            .borrow()
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(|| {
+                fastfetch_apply::last_path(&self.greeting.fastfetch_state).and_then(|path| {
+                    fastfetch_apply::Target::open(
+                        path.unwrap_or_else(fastfetch_apply::default_path),
+                    )
+                })
+            })?;
+        target.check()?;
+        Ok((target, source))
+    }
+
+    pub(in crate::window) fn accept_scheme_fastfetch(
+        self: &Rc<Self>,
+        target: fastfetch_apply::Target,
+    ) {
+        *self.greeting.fastfetch_target.borrow_mut() = Some(target);
+        self.schedule_fastfetch_sync();
+    }
+
     pub(in crate::window) fn load_fastfetch_path(self: &Rc<Self>, path: PathBuf) {
         self.load_fastfetch(path, false);
     }

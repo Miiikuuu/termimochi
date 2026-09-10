@@ -706,7 +706,43 @@ impl PtyxisInstaller {
         file_name: &str,
         contents: &[u8],
     ) -> Result<InstallOutcome, InstallError> {
+        self.install_inner(file_name, contents, None)
+    }
+
+    pub(crate) fn install_reviewed(
+        &self,
+        file_name: &str,
+        contents: &[u8],
+        expected: &Option<Vec<u8>>,
+    ) -> Result<InstallOutcome, InstallError> {
+        self.install_inner(file_name, contents, Some(expected))
+    }
+
+    fn install_inner(
+        &self,
+        file_name: &str,
+        contents: &[u8],
+        expected: Option<&Option<Vec<u8>>>,
+    ) -> Result<InstallOutcome, InstallError> {
         validate_file_name(file_name)?;
+        let target = self.palette_dir.join(file_name);
+        let check_review = || -> Result<(), InstallError> {
+            if let Some(expected) = expected {
+                let actual = crate::typography_preset::read_private_with_limit(&target, 256 * 1024)
+                    .map_err(|source| {
+                        InstallError::io(
+                            "verify reviewed palette",
+                            &target,
+                            io::Error::other(source),
+                        )
+                    })?;
+                if &actual != expected {
+                    return Err(InstallError::TargetModified(target.clone()));
+                }
+            }
+            Ok(())
+        };
+        check_review()?;
         fs::create_dir_all(&self.palette_dir).map_err(|source| {
             InstallError::io("create Ptyxis palette directory", &self.palette_dir, source)
         })?;
@@ -714,7 +750,6 @@ impl PtyxisInstaller {
             InstallError::io("create TermiMochi state directory", &self.state_dir, source)
         })?;
 
-        let target = self.palette_dir.join(file_name);
         let previous = match fs::read(&target) {
             Ok(bytes) if bytes == contents => return Ok(InstallOutcome::Unchanged(target)),
             Ok(bytes) => Some(bytes),
@@ -748,6 +783,7 @@ impl PtyxisInstaller {
             installed_hash,
         };
 
+        check_review()?;
         write_atomically(&target, contents)
             .map_err(|source| InstallError::io("install palette", &target, source))?;
         if let Err(error) = self.write_receipt(&receipt) {

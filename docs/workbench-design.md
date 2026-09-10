@@ -23,14 +23,23 @@ when navigating. Diagnostics remain local to the preview.
 The output bar has three entry points:
 
 - **Save**: current document/preset and complete workspace options, explicitly named.
-- **Apply / Install / Export**: contextual primary action, accurately named for
-  the destination. Existing review, backup and conflict checks remain mandatory.
-- **More**: secondary export/import/reload/restore operations for this module.
+- **Apply Scheme…**: review all workspace destinations/scopes and select external
+  changes. No checkbox is preselected; palette activation depends on installation.
+  Existing review, backup and conflict checks remain mandatory.
+- **More**: the former contextual Apply/Install/Export action, module-specific
+  export/import/reload/restore, and persistent **Last Application & Recovery…**.
 
 Remove duplicate output controls from module bodies and the global header.
 Saving a workspace is not permission to modify terminal settings. Theme
 installation must not be mislabeled as activating a theme. Prompt Designer
 export must not be mislabeled as applying an active Starship file.
+
+The scheme review names the launching/configured Ptyxis profile and UUID; it
+does not claim to identify another application's active tab. Typeface is global,
+cell spacing is profile-specific, and palette activation also changes global
+Light/Dark appearance. Exact padding, tab bar and window spacing are preview-only.
+File replacements expose before/after text. See [Applying a scheme](apply-scheme.md)
+for outcome and recovery semantics.
 
 Prompt's Save menu and Ctrl+S both save workspace snapshots. Ctrl+Shift+S saves
 a workspace under another name; Ctrl+O opens a workspace. Starship writes are

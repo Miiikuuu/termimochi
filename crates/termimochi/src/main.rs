@@ -17,6 +17,7 @@ mod preview_inspect;
 mod prompt;
 mod prompt_diagnostics;
 mod ptyxis;
+mod scheme_apply;
 mod starship_draft;
 mod starship_editor;
 mod starship_file;

@@ -26,7 +26,7 @@ impl OutputBar {
             .css_classes(["output-context"])
             .build();
         let primary = gtk::Button::builder()
-            .label("Install…")
+            .label("Apply Scheme…")
             .css_classes(["output-primary"])
             .build();
         let more = gtk::MenuButton::builder()
@@ -138,6 +138,14 @@ impl Workbench {
             }),
         );
         more.append(Some("Open Workspace…"), Some("win.open-workspace"));
+        more.append(
+            Some("Last Application & Recovery…"),
+            Some("win.last-scheme-application"),
+        );
+        more.append(
+            Some(&format!("{} — {apply_label}", module.label())),
+            Some(apply_action),
+        );
         match module {
             EditorModule::Palette => {
                 more.append(Some("Save Theme As…"), Some("win.save-as"));
@@ -211,12 +219,13 @@ impl Workbench {
             }
         }
         bar.title.set_text(module.label());
-        bar.primary.set_label(apply_label);
-        bar.primary.set_action_name(Some(apply_action));
-        bar.primary.set_tooltip_text(Some(detail));
+        bar.primary.set_label("Apply Scheme…");
+        bar.primary.set_action_name(Some("win.apply-scheme"));
+        bar.primary.set_tooltip_text(Some("Review destinations and choose which workspace modules to apply. Saving never applies external settings."));
+        bar.more.set_tooltip_text(Some(detail));
         bar.primary
             .update_property(&[gtk::accessible::Property::Label(&format!(
-                "{} {apply_label}",
+                "{} — Apply Scheme",
                 module.label()
             ))]);
         self.save_button.set_menu_model(Some(&save));
@@ -278,7 +287,7 @@ mod tests {
             settle();
             assert_eq!(
                 this.output_bar.primary.action_name().as_deref(),
-                Some(action)
+                Some("win.apply-scheme")
             );
             let saved = commands(&this.save_button.menu_model().unwrap());
             assert!(
@@ -293,6 +302,8 @@ mod tests {
             );
             let extra = commands(&this.output_bar.more.menu_model().unwrap());
             assert!(extra.contains(&"win.open-workspace".into()));
+            assert!(extra.contains(&action.into()));
+            assert!(extra.contains(&"win.last-scheme-application".into()));
             if module == EditorModule::Greeting {
                 for expected in [
                     "win.export-fastfetch",
@@ -322,10 +333,13 @@ mod tests {
         this.prompt_module_button.set_active(true);
         this.prompt_source_selector.set_selected(1);
         settle();
-        assert_eq!(this.output_bar.primary.label().as_deref(), Some("Export…"));
+        assert_eq!(
+            this.output_bar.primary.label().as_deref(),
+            Some("Apply Scheme…")
+        );
         assert_eq!(
             this.output_bar.primary.action_name().as_deref(),
-            Some("win.export-starship")
+            Some("win.apply-scheme")
         );
         window.set_default_size(800, 560);
         settle();

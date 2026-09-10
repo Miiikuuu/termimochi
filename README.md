@@ -30,14 +30,14 @@ that looks balanced elsewhere can therefore become almost unreadable.
 - Typography presets: **Save → Save Typography Preset** (or `Ctrl+S` on Typography) remembers
   all five font settings for the next launch. Open and export portable
   `.termimochi-font.json` files; typography edits have their own Undo/Redo.
-  The bottom bar's **Apply…** confirms the app-wide font and target-profile spacing,
+  **⋮ → Typography — Apply…** confirms the app-wide font and target-profile spacing,
   saves a private backup, and blocks external-change conflicts. The Typography
   **⋮** menu offers **Restore Previous Typography**. Saving alone never applies.
 - Live layout controls for content padding, rows and columns, cursor behavior,
   tab and scrollbar chrome, and preview-window spacing.
 - Layout presets: **Save → Save Layout Preset** (`Ctrl+S` on Layout) restores all eight
   settings next launch, with independent Undo/Redo and portable
-  `.termimochi-layout.json` import/export. The bottom bar's **Apply…** backs up and
+  `.termimochi-layout.json` import/export. **⋮ → Layout — Apply…** backs up and
   applies global cursor, scrollbar and new-window grid settings; exact padding,
   tab bar and preview-window spacing remain preview-only. The **⋮** menu offers
   **Restore Previous Layout**. Remembered window sizing is disabled only after
@@ -50,6 +50,15 @@ that looks balanced elsewhere can therefore become almost unreadable.
   **Save As** instead of overwriting this machine's Starship configuration.
   Module shortcuts still save their own files; workspace files are explicit,
   not automatically reopened on startup.
+- **Apply Scheme…** reviews the complete workspace in one place, separately from
+  Save. Select individual changes after reviewing the exact Ptyxis profile,
+  global versus profile scope, palette installation versus activation, and file
+  destinations. Starship/Fastfetch replacements include before/after views.
+  Unsupported layout settings and export-only prompts are explicitly identified.
+  Results are recorded per item; **⋮ → Last Application & Recovery…** reopens them
+  after restart and restores this application's changes with conflict checks.
+  **Open Profile Tab** opens the reviewed Ptyxis profile for verification; no
+  shell startup files are edited. See [Applying a scheme](docs/apply-scheme.md).
 - Greeting starts with **Preset → TermiMochi** selected for new users; turn on
   the header switch to preview it. This complete native preset combines the
   brand mark, user/host title, separator, system/desktop/hardware fields and a
@@ -129,7 +138,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Original…**; old conversion settings cannot be reconstructed from ANSI alone.
   **Save Preset** remembers it inside TermiMochi for next launch; it does not apply
   anything externally. Its confirmation offers **Review & Apply…**, also available
-  as **Apply…** in the fixed bottom bar, to back up and update Fastfetch only after
+  as **⋮ → Greeting — Apply…**, to back up and update Fastfetch only after
   explicit confirmation. Run `fastfetch` again to see the result; startup files
   remain unchanged. **Export Fastfetch Configuration…**
   embeds the same colored artwork in `config.jsonc` without changing shell startup.
@@ -323,10 +332,11 @@ that looks balanced elsewhere can therefore become almost unreadable.
 ## Editor organization
 
 The activity rail switches properties without replacing the terminal preview.
-The fixed bottom bar keeps **Save**, the current module's **Apply… / Install… /
-Export…**, and **⋮** accessible while properties scroll. **Save** stores presets
-or a complete workspace; external changes still require the existing review and
-backup flow. Secondary imports, exports, reloads and restores live under **⋮**.
+The fixed bottom bar keeps **Save**, **Apply Scheme…**, and **⋮** accessible while
+properties scroll. **Save** stores presets or a complete workspace; external
+changes require review and confirmation. The former module-specific Apply,
+Install and Export actions remain under **⋮**, alongside imports, reloads,
+restores, and **Last Application & Recovery…**.
 Prompt's Save menu and `Ctrl+S` both save a workspace; `Ctrl+Shift+S` saves a
 workspace under a new name. `Ctrl+O` opens a workspace, not a palette. Only the
 explicit **Apply…** / **Export…** actions write Starship files.
@@ -378,7 +388,7 @@ repeatable success, failure, SSH and alignment checks in Designer.
 
 Your Starship reads `STARSHIP_CONFIG`, or `starship.toml` in the user's XDG
 configuration directory (normally `~/.config`). **Reload from Disk** rereads it,
-with confirmation before discarding unsaved edits. In Prompt, **Apply…** opens
+with confirmation before discarding unsaved edits. **⋮ → Prompt — Apply…** opens
 the backed-up save confirmation; **⋮ → Save Starship As…** exports separately.
 `Ctrl+S` saves a local workspace instead. Backups are kept beside the
 resolved configuration as `.NAME.termimochi-backup-TIMESTAMP-RANDOM.bak`, with

@@ -367,7 +367,7 @@ impl Workbench {
             || self.greeting.dirty()
     }
 
-    fn committed_workspace(&self) -> Result<Workspace, String> {
+    pub(super) fn committed_workspace(&self) -> Result<Workspace, String> {
         self.greeting.finish();
         self.settle_active_edit();
         self.committed_typography()?;

@@ -76,8 +76,9 @@ GDK_BACKEND=x11 GTK_A11Y=none \
 ```
 
 `window/output_bar.rs` owns one persistent contextual output area below the
-left inspector: preset/workspace Save, the module's reviewed Apply/Install or
-Export, and secondary commands. Module bodies no longer repeat these actions.
+left inspector: preset/workspace Save, reviewed Apply Scheme, and secondary
+commands including the former module-specific Apply/Install/Export actions.
+Module bodies no longer repeat these actions.
 The preview owns transient toasts so they cannot cover the left output bar.
 `window/color_targets.rs` resolves Designer prompt tones and Greeting global /
 per-field roles to existing palette slots, including VTE's bold-to-bright mapping. It
@@ -359,6 +360,26 @@ A complete workspace savepoint covers all five modules for close warnings,
 without pretending any module's standalone file or actual terminal settings
 were saved. Module shortcuts retain their contextual behavior. Workspace
 files are opened explicitly, while typography/layout presets restore at launch.
+
+`window/scheme.rs` freezes a complete workspace and prepares local destinations
+read-only for an explicit checklist review. The target/profile header stays
+visible while changes scroll. No capability or target is deserialized from the
+workspace. `scheme_apply.rs` runs selected module transactions independently,
+journaling each attempt in a private per-run directory before external writes.
+It reuses the typography/layout receipts, Starship file snapshots and backed-up
+saves, Fastfetch transactions, and the Ptyxis installer. Palette installation
+also rechecks the reviewed file snapshot immediately before replacement.
+`scheme_apply/activation.rs` adds a separate reviewed palette/Light-Dark
+GSettings transaction; it preserves unset values and does not change the
+default profile. Read-only profile discovery is independent of write capability.
+
+The result and local recovery record survive restart. Recovery processes only
+recorded changes in reverse order, with module conflict checks; a blocked
+activation prevents palette-file removal. Other modules can still restore.
+No-ops do not reuse older receipts, exports remain explicit and are kept, and
+neither applying nor recovery edits shell startup or runs imported commands.
+See [Applying a scheme](apply-scheme.md) for the scopes and remaining limitations.
+
 The opt-in `layout_and_workspace_save_restore_and_safety` GTK/VTE test covers
 contextual actions, live cursor settings, module history isolation, restart,
 cancelled apply/discard, external conflicts, atomic validation, detached
