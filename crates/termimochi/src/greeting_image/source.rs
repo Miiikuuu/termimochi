@@ -48,16 +48,16 @@ impl SourceImage {
         if !svg
             && !matches!(
                 image::guess_format(&bytes),
-                Ok(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP)
+                Ok(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif)
             )
         {
-            return Err("Editable sources support PNG, JPG, WebP and SVG only.".into());
+            return Err("Editable sources support PNG, JPG, WebP, SVG and GIF only.".into());
         }
         Ok(Self(Arc::new(bytes)))
     }
     pub fn read(path: &Path) -> Result<Self, String> {
         if !is_image(path) {
-            return Err("Choose the original PNG, JPG, WebP or SVG image.".into());
+            return Err("Choose the original PNG, JPG, WebP, SVG or GIF image.".into());
         }
         Self::new(
             crate::typography_preset::read_private_with_limit(path, FILE_LIMIT)?
@@ -66,6 +66,12 @@ impl SourceImage {
     }
     pub fn decode(&self) -> Result<DecodedImage, String> {
         decode(&self.0)
+    }
+    pub fn is_gif(&self) -> bool {
+        matches!(image::guess_format(&self.0), Ok(ImageFormat::Gif))
+    }
+    pub(super) fn bytes(&self) -> &[u8] {
+        &self.0
     }
 }
 

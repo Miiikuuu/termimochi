@@ -106,13 +106,19 @@ impl Adjustments {
 // Alpha and edge-connected flood fill avoid treating enclosed white details
 // as margin. This trims framing, not a semantic subject/background removal.
 pub(super) fn crop_image(image: &RgbaImage, edits: Adjustments) -> RgbaImage {
+    let (x, y, width, height) = crop_bounds(image, edits);
+    image::imageops::crop_imm(image, x, y, width, height).to_image()
+}
+
+// Bounds can be united across animation frames to avoid per-frame trim jitter.
+pub(super) fn crop_bounds(image: &RgbaImage, edits: Adjustments) -> (u32, u32, u32, u32) {
     let x = image.width() * u32::from(edits.crop[0]) / 100;
     let y = image.height() * u32::from(edits.crop[1]) / 100;
     let w = (image.width() - x - image.width() * u32::from(edits.crop[2]) / 100).max(1);
     let h = (image.height() - y - image.height() * u32::from(edits.crop[3]) / 100).max(1);
     let cropped = image::imageops::crop_imm(image, x, y, w, h).to_image();
     if !edits.trim {
-        return cropped;
+        return (x, y, w, h);
     }
     let mut border = Vec::new();
     for x in 0..w {
@@ -188,14 +194,14 @@ pub(super) fn crop_image(image: &RgbaImage, edits: Adjustments) -> RgbaImage {
         }
     }
     if left > right || top > bottom {
-        return cropped;
+        return (x, y, w, h);
     }
     let pad = ((right - left + 1).max(bottom - top + 1) / 50).max(1);
     left = left.saturating_sub(pad);
     top = top.saturating_sub(pad);
     right = (right + pad).min(w - 1);
     bottom = (bottom + pad).min(h - 1);
-    image::imageops::crop_imm(&cropped, left, top, right - left + 1, bottom - top + 1).to_image()
+    (x + left, y + top, right - left + 1, bottom - top + 1)
 }
 
 pub(super) fn adjust(image: &mut RgbaImage, edits: Adjustments) {

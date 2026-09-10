@@ -1,5 +1,5 @@
-//! Local, bounded PNG/JPEG/WebP/SVG decoding into portable, reviewed ANSI artwork.
-//! Editable sources are portable snapshots; external exports contain only ANSI.
+//! Local, bounded PNG/JPEG/WebP/SVG/GIF decoding into portable, reviewed ANSI artwork.
+//! Editable sources are portable snapshots; pixel bundles are an explicit export.
 use crate::{
     greeting::{ART_MAX_COLUMNS, ART_MAX_ROWS},
     greeting_art::Artwork,
@@ -7,8 +7,11 @@ use crate::{
 use image::{DynamicImage, ImageDecoder, ImageFormat, Limits, RgbaImage, imageops::FilterType};
 use std::{fmt::Write, io::Cursor, path::Path};
 
+pub(crate) mod animation;
 mod background;
+pub(crate) mod pixel_export;
 mod processing;
+mod sixel;
 pub(crate) mod source;
 pub(crate) mod svg;
 mod symbols;
@@ -63,7 +66,7 @@ pub(crate) fn is_image(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
         .is_some_and(|ext| {
-            ["png", "jpg", "jpeg", "webp", "svg"]
+            ["png", "jpg", "jpeg", "webp", "svg", "gif"]
                 .iter()
                 .any(|name| ext.eq_ignore_ascii_case(name))
         })
@@ -73,7 +76,7 @@ pub(crate) fn is_image(path: &Path) -> bool {
 pub(crate) fn load(path: &Path) -> Result<DecodedImage, String> {
     if !is_image(path) {
         return Err(
-            "Choose PNG, JPG, WebP or SVG. GIF and image-display protocols are not supported yet."
+            "Choose PNG, JPG, WebP, SVG or GIF. Raw image-display protocols cannot be imported."
                 .into(),
         );
     }
@@ -111,11 +114,27 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<DecodedImage, String> {
         return svg::decode(bytes);
     }
     let format = image::guess_format(bytes)
-        .map_err(|_| "Not a supported image. Choose PNG, JPG, WebP or SVG.")?;
+        .map_err(|_| "Not a supported image. Choose PNG, JPG, WebP, SVG or GIF.")?;
     let cursor = Cursor::new(bytes);
     let error = |e: image::ImageError| format!("Image could not be decoded: {e}");
-    let animated = "Animated images are not supported yet. Export a still PNG, JPG or WebP first.";
+    let animated =
+        "Animated PNG/WebP are not supported yet. Use GIF animation or export a still PNG first.";
     match format {
+        ImageFormat::Gif => {
+            let animation = animation::decode(bytes)?;
+            let dimensions = animation.dimensions;
+            let pixels = animation
+                .frames
+                .into_iter()
+                .find(|frame| frame.pixels.pixels().any(|p| p[3] > 1))
+                .ok_or("GIF contains no visible frames.")?
+                .pixels;
+            Ok(DecodedImage {
+                pixels,
+                dimensions,
+                format: "GIF still",
+            })
+        }
         ImageFormat::Png => {
             let decoder =
                 image::codecs::png::PngDecoder::with_limits(cursor, limits()).map_err(error)?;
@@ -152,7 +171,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<DecodedImage, String> {
             }
             decode_pixels(decoder, "WebP")
         }
-        _ => Err("Choose PNG, JPG, WebP or SVG. Animated images are not supported yet.".into()),
+        _ => Err("Choose PNG, JPG, WebP, SVG or GIF.".into()),
     }
 }
 

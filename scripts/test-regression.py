@@ -20,7 +20,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--display", required=True, help="Dedicated Xvfb display, not your desktop")
     parser.add_argument("--scale", action="append", type=int, choices=[1, 2])
-    parser.add_argument("--filter", default="", help="Optional test-name substring")
+    parser.add_argument("--filter", action="append", default=[],
+                        help="Test-name substring; repeat to match any of several names")
     args = parser.parse_args()
     repo = Path(__file__).resolve().parent.parent
     output = Path(tempfile.mkdtemp(prefix="termimochi-regression-"))
@@ -50,7 +51,8 @@ def main():
     listing = subprocess.run([str(pinned), "--ignored", "--list"], cwd=repo,
                              check=True, capture_output=True, text=True).stdout
     tests = [line.removesuffix(": test") for line in listing.splitlines()
-             if line.endswith(": test") and args.filter in line]
+             if line.endswith(": test") and
+             (not args.filter or any(fragment in line for fragment in args.filter))]
     if not tests:
         raise SystemExit("No matching tests; nothing was verified")
     results = []

@@ -9,6 +9,7 @@ mod artwork;
 mod fastfetch;
 mod fields;
 mod image_import;
+mod pixel_export;
 mod startup;
 mod sync;
 
@@ -85,6 +86,7 @@ pub(super) struct GreetingEditor {
     artwork_card: gtk::Box,
     pub artwork_preview: Rc<art_preview::ArtPreview>,
     image_import_window: glib::WeakRef<gtk::Window>,
+    pixel_export_window: glib::WeakRef<gtk::Window>,
     list: gtk::Box,
     rows: Vec<(Info, gtk::Box, gtk::Switch, gtk::Button, gtk::Button)>,
     pub status: gtk::Label,
@@ -270,7 +272,9 @@ impl GreetingEditor {
             .hexpand(true)
             .build();
         import_art.update_property(&[gtk::accessible::Property::Label("Import Artwork")]);
-        import_art.set_tooltip_text(Some("Choose PNG, JPG, WebP, SVG, TXT or ANSI artwork."));
+        import_art.set_tooltip_text(Some(
+            "Choose PNG, JPG, WebP, SVG, GIF, TXT or ANSI artwork.",
+        ));
         art_actions.append(&import_art);
         let art_menu = gio::Menu::new();
         for (label, action) in [
@@ -478,6 +482,7 @@ impl GreetingEditor {
             artwork_card,
             artwork_preview,
             image_import_window: glib::WeakRef::new(),
+            pixel_export_window: glib::WeakRef::new(),
             list,
             rows,
             status,

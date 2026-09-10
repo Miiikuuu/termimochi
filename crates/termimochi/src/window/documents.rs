@@ -288,6 +288,8 @@ impl Workbench {
             ("Open Layout Preset", "Open a layout preset  Ctrl+O")
         } else if self.typography_module_button.is_active() {
             ("Open Typography Preset", "Open a typography preset  Ctrl+O")
+        } else if self.prompt_module_button.is_active() {
+            ("Open Workspace", "Open a complete workspace  Ctrl+O")
         } else {
             ("Open Theme", "Open a Ptyxis .palette file  Ctrl+O")
         };

@@ -79,10 +79,14 @@ GDK_BACKEND=x11 GTK_A11Y=none \
 left inspector: preset/workspace Save, the module's reviewed Apply/Install or
 Export, and secondary commands. Module bodies no longer repeat these actions.
 The preview owns transient toasts so they cannot cover the left output bar.
-`window/color_targets.rs` resolves Designer prompt tones and simple Greeting
-roles to existing palette slots, including VTE's bold-to-bright mapping. It
+`window/color_targets.rs` resolves Designer prompt tones and Greeting global /
+per-field roles to existing palette slots, including VTE's bold-to-bright mapping. It
 reuses palette history; independent imported styles are preserved and routed
-to their source editor rather than approximated. See [workbench design](workbench-design.md).
+to their source editor rather than approximated. Repeated native fields retain
+their source indices; weak button references select only the mapped field list.
+Your Starship role navigation selects the exact reviewed module and style field
+without changing either the source or the retained preview transcript.
+See [workbench design](workbench-design.md).
 
 The desktop crate owns only presentation and file interaction. Every edit is
 written to the in-memory core model, after which the preview and diagnostics
@@ -254,9 +258,10 @@ Restore Previous Version discovers the latest regular, parseable backup after
 restart, confirms restoration, verifies both snapshots and backs up the current
 file first. Restore updates the draft and can be undone in memory. Reload from
 Disk requires confirmation for unsaved/invalid input and does not write files.
-Background folder refreshes never replace an existing draft. In Prompt, toolbar
-Save/Ctrl+S and Save As/Ctrl+Shift+S target the prompt rather than the theme;
-Designer continues exporting a separate complete document. Set
+Background folder refreshes never replace an existing draft. In Prompt,
+Save/Ctrl+S and Save As/Ctrl+Shift+S target the workspace, not external Starship.
+Apply and Export retain the reviewed source-write workflow; Designer continues
+exporting a separate complete document. Set
 `TERMIMOCHI_COPY_TEST=1` for the graphical test above to additionally exercise
 editing controls, real rendering, undo, validation, superseded render results,
 actual confirmation/cancellation, backed-up save, restore and external conflicts
@@ -577,10 +582,10 @@ native built-in logo export runs on a bounded worker without system modules.
 Tests cover encoding, widths, controls, snapshots, aliases/FIFOs, conflicts,
 multiline color, actual Fastfetch projection, GTK cancel/undo and restart.
 
-`greeting_image.rs` converts local PNG/JPEG/WebP and static SVG into that same `Artwork` type.
-Only these three raster `image` codecs are enabled; SVG uses the isolated renderer
-described below. GIF, APNG, animated WebP and native image-display protocols remain
-deferred. Reads are bounded to
+`greeting_image.rs` converts local PNG/JPEG/WebP, static SVG and a GIF still into
+that same `Artwork` type. Four raster `image` codecs are enabled; SVG uses the
+isolated renderer described above. APNG and animated WebP remain deferred.
+Reads are bounded to
 16 MiB and reject non-regular files, leaf symlinks/hardlinks and file races.
 Magic bytes select the decoder. RIFF chunk bounds are checked before WebP
 metadata reads. Before pixel decoding, dimensions are limited to 8192 per side,
@@ -626,6 +631,35 @@ exports never include the source or recipe. Edit Artwork restores controls and
 captured cell/color parameters; replacement with unrelated artwork or plain text
 detaches the source. Legacy images offer an explicit reimport rather than a
 fabricated reconstruction. Source, recipe and output commit in one history step.
+
+`greeting_image/animation.rs` preflights GIF containers before bounded frame
+decompression/compositing. A serialized worker pipeline unites crop/trim bounds,
+locks the background key, applies edits, and encodes/re-decodes the GIF so the
+pixel preview matches export quantization. Data budgets and cooperative deadlines
+are documented in `image-conversion.md`. Ordinary ANSI uses the first visible
+composited frame. The existing editable source envelope preserves all GIF bytes.
+
+`greeting_image/pixel_export.rs` creates fresh private export bundles without
+touching active configuration or documents. Static PNG uses kitty-direct;
+animation uses a generated self-contained Kitty stream through Fastfetch's raw
+logo interface. Explicit full-frame replacement avoids icat transparent-frame
+ghosting. The stream has bounded 4096-byte Base64 payload chunks, integer-only
+controls, quiet responses and fresh image-number allocation; no imported control
+streams or external file-transfer paths enter it. Animated bundles also include
+the processed GIF, PNG still and unchanged ANSI fallback configuration.
+`window/greeting/pixel_export.rs` provides opt-in playback, pause and frame seeking
+without modifying source/recipe/history. Main VTE rendering and Apply stay ANSI.
+
+`greeting_image/sixel.rs` generates bounded transparent Sixel directly, bypassing
+the Fastfetch/ImageMagick alpha-loss path found by real xterm screenshots. It
+resamples associated alpha into the captured physical cell geometry, thresholds
+alpha, uses exact colors or a sampled NeuQuant palette, then emits run-length
+encoded six-row color planes with P2=1. No imported protocol input is parsed or
+forwarded. Source/raster/byte/time bounds are independent, and failed generation
+creates no export directory. `logo.sixel` uses Fastfetch's raw logo interface;
+the bundle retains `logo.png` and an unchanged ANSI fallback configuration.
+Raw raster dimensions require re-export for different font/DPI settings.
+
 `greeting_image/background.rs` adds opt-in color-key removal before tone edits
 and resampling. Automatic mode requires a near-uniform opaque original border;
 manual mode uses validated HEX or a pixel picked from the original-color crop.

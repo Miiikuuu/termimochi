@@ -367,7 +367,7 @@ impl StarshipEditor {
             .map(|source| StarshipDraft::new("workspace-starship.toml".into(), source))
             .transpose()?;
         *self.file.borrow_mut() =
-            Err("This prompt belongs to a workspace. Use Save As to export it.".into());
+            Err("This prompt belongs to a workspace. Use Export to write a Starship file.".into());
         self.detached.set(true);
         self.document.set(self.document.get().wrapping_add(1));
         *self.draft.borrow_mut() = draft;

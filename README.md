@@ -148,7 +148,27 @@ that looks balanced elsewhere can therefore become almost unreadable.
   DTDs and external resources are rejected. Text uses system fonts; convert text
   to paths for portable results. SVG rendering requires Bubblewrap and `prlimit`
   and runs with time/memory limits, without an unsandboxed fallback.
-  Kitty/Sixel image logos and GIF/animated PNG/WebP remain unsupported.
+  **Bottom bar ⋮ → Export → Export Image Greeting…** separately exports a static
+  **Kitty (direct PNG)** or **Sixel** bundle from the editable image source.
+  The processed PNG retains crop, background removal and color edits. Choose a
+  parent folder; a new folder contains `logo.png`, `config.jsonc` and instructions.
+  Run `fastfetch --config config.jsonc` from that folder in a compatible terminal.
+  This does not install or activate the bundle. Its checkerboard preview shows
+  pixels, not terminal protocol support; Live Preview and normal Apply remain
+  ANSI. Sixel additionally includes a generated transparent `logo.sixel` and
+  `config-ansi.jsonc` fallback, avoiding ImageMagick's black-background conversion.
+  Its fixed pixel size follows the preview font/DPI; re-export after changing the
+  target font or DPI. Sixel uses up to 256 colors and binary transparency.
+  GIF imports retain their editable animation source while ordinary ANSI uses
+  the first nontransparent frame. In **Export Image Greeting…**, select
+  **Kitty · Animated GIF**, then use **Play / Pause** or the frame scrubber.
+  Playback is opt-in. Export includes the processed GIF, a generated Kitty
+  animation stream, PNG still and an ANSI fallback configuration. All frames
+  share one crop canvas; full-frame replacement prevents transparent-frame trails.
+  GIF is limited to 16 MiB, 1024×1024, 120 frames, 64 MiB of decoded frame pixels
+  and 60 seconds per cycle. Importing binary terminal protocol streams and
+  animated PNG/WebP remain unsupported.
+  See [image export requirements](docs/image-conversion.md#pixel-image-bundles).
 - Click a system field's name to edit its **label, inline icon, name/content
   colors and display format** in a compact popover. CPU/GPU summaries, memory
   and disk percentages/bars, and date/time formats share the same native
@@ -307,14 +327,18 @@ The fixed bottom bar keeps **Save**, the current module's **Apply… / Install�
 Export…**, and **⋮** accessible while properties scroll. **Save** stores presets
 or a complete workspace; external changes still require the existing review and
 backup flow. Secondary imports, exports, reloads and restores live under **⋮**.
-Prompt's Save menu stores workspaces; its existing `Ctrl+S` shortcut continues
-to review Starship changes (or export Designer), matching its primary action.
+Prompt's Save menu and `Ctrl+S` both save a workspace; `Ctrl+Shift+S` saves a
+workspace under a new name. `Ctrl+O` opens a workspace, not a palette. Only the
+explicit **Apply…** / **Export…** actions write Starship files.
 
 Palette's target selector can locate **Prompt Designer** segment colors and
-simple **Greeting** accent/text colors in the shared terminal palette. Editing
+**Greeting** accent/text and individual field name/content colors in the shared
+terminal palette. Repeated native fields retain distinct source indices. Editing
 a shared slot changes every element referencing it; **Edit source…** opens the
-module that owns its binding. Imported Starship RGB styles and Fastfetch
-per-field overrides remain in their source editors, without lossy conversion.
+module that owns its binding. **Your Starship** lists reviewed module style
+fields and jumps directly to their existing color editor. Literal RGB, complex
+SGR styles and ambiguous inherited native colors remain source-owned; they are
+never replaced with a guessed palette slot. Source navigation does not edit data.
 Artwork adjustments remain in Edit Artwork.
 
 ## Requirements
@@ -354,8 +378,9 @@ repeatable success, failure, SSH and alignment checks in Designer.
 
 Your Starship reads `STARSHIP_CONFIG`, or `starship.toml` in the user's XDG
 configuration directory (normally `~/.config`). **Reload from Disk** rereads it,
-with confirmation before discarding unsaved edits. In Prompt, `Ctrl+S` opens the
-save confirmation and `Ctrl+Shift+S` opens Save As. Backups are kept beside the
+with confirmation before discarding unsaved edits. In Prompt, **Apply…** opens
+the backed-up save confirmation; **⋮ → Save Starship As…** exports separately.
+`Ctrl+S` saves a local workspace instead. Backups are kept beside the
 resolved configuration as `.NAME.termimochi-backup-TIMESTAMP-RANDOM.bak`, with
 owner-only permissions; Restore Previous Version also works after restarting.
 The installed Starship renderer runs asynchronously with a read-only filesystem,

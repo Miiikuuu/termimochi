@@ -1389,7 +1389,7 @@ fn build_typography_editor(
     let font_list_factory = font_family_factory("font-family-option");
     font_family_selector.set_list_factory(Some(&font_list_factory));
     font_family_selector.set_tooltip_text(Some(
-        "Preview font. Save Preset remembers it; Apply to Ptyxis changes the terminal after confirmation.",
+        "Save remembers this font; Apply in the bottom bar reviews terminal changes.",
     ));
     font_family_selector.update_property(&[
         gtk::accessible::Property::Label("Font Family"),
@@ -3641,6 +3641,7 @@ impl Workbench {
             ("edit-greeting-art-text", 7),
             ("edit-image-artwork", 8),
             ("greeting-startup", 9),
+            ("export-pixel-greeting", 10),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let weak = Rc::downgrade(this);
@@ -3656,7 +3657,8 @@ impl Workbench {
                         6 => this.choose_greeting_art_export(true),
                         7 => this.edit_greeting_art_text(),
                         8 => this.edit_image_artwork(),
-                        _ => this.show_greeting_startup(),
+                        9 => this.show_greeting_startup(),
+                        _ => this.show_pixel_export(),
                     }
                 }
             });
@@ -3809,8 +3811,10 @@ impl Workbench {
         });
 
         for button in [
+            &this.palette_module_button,
             &this.typography_module_button,
             &this.layout_module_button,
+            &this.prompt_module_button,
             &this.greeting_module_button,
         ] {
             let weak = Rc::downgrade(this);
@@ -4720,8 +4724,9 @@ impl Workbench {
                 self.save_button.remove_css_class("save-ready");
             }
         } else if self.prompt_module_button.is_active() {
-            self.save_action.set_enabled(designer || (loaded && valid));
-            if self.prompt_has_unexported_changes() {
+            self.save_action
+                .set_enabled(valid && !self.has_draft() && !self.greeting.invalid.get());
+            if self.has_unsaved_setup() {
                 self.save_button.add_css_class("save-ready");
             } else {
                 self.save_button.remove_css_class("save-ready");
@@ -4902,9 +4907,9 @@ impl Workbench {
             let result = result.map(|(ansi, notices)| {
                 *this.copy_notices.borrow_mut() = notices.clone();
                 let status = if this.starship_editor.detached.get() {
-                    "Workspace prompt · Save As to export"
+                    "Workspace prompt · Export to write a Starship file"
                 } else {
-                    "Simulated preview. Save to apply edits."
+                    "Simulated preview. Apply to review changes."
                 };
                 this.starship_editor.status.set_text(status);
                 let mut tooltip = scene.as_ref().map_or_else(String::new, |frame| {
@@ -7038,6 +7043,10 @@ impl Workbench {
     }
 
     fn choose_open(self: &Rc<Self>) {
+        if self.prompt_module_button.is_active() {
+            self.choose_workspace_open();
+            return;
+        }
         if self.greeting_module_button.is_active() {
             self.choose_greeting_open();
             return;
@@ -7408,7 +7417,7 @@ impl Workbench {
             return;
         }
         if self.prompt_module_button.is_active() {
-            self.request_starship_save();
+            self.save_workspace();
             return;
         }
         self.settle_active_edit();
@@ -7437,7 +7446,7 @@ impl Workbench {
             return;
         }
         if self.prompt_module_button.is_active() {
-            self.choose_starship_export();
+            self.choose_workspace_save_as();
             return;
         }
         self.settle_active_edit();
@@ -9272,7 +9281,10 @@ mod tests {
                 .contents()
                 .to_owned();
             let theme_before = this.model.borrow().palette.clone();
-            this.save_action.activate(None); // Ctrl+S routes to Prompt, not Theme.
+            this.window()
+                .lookup_action("save-starship")
+                .unwrap()
+                .activate(None);
             respond("Cancel");
             assert_eq!(std::fs::read_to_string(&original).unwrap(), source);
             assert!(editor.dirty());
@@ -9285,7 +9297,10 @@ mod tests {
                     .latest_backup()
                     .is_err()
             );
-            this.save_action.activate(None);
+            this.window()
+                .lookup_action("save-starship")
+                .unwrap()
+                .activate(None);
             respond("Back Up and Save");
             assert_eq!(std::fs::read_to_string(&original).unwrap(), saved_contents);
             assert!(!editor.dirty());

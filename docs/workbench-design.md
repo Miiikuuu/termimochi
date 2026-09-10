@@ -32,10 +32,9 @@ Saving a workspace is not permission to modify terminal settings. Theme
 installation must not be mislabeled as activating a theme. Prompt Designer
 export must not be mislabeled as applying an active Starship file.
 
-Existing keyboard behavior is preserved: Prompt's Ctrl+S reviews Starship
-changes or exports Designer; its Save menu offers workspace snapshots. The
-header's Open remains context-sensitive for presets, and opens a palette in
-Prompt; Starship reload and Save As remain explicit secondary actions.
+Prompt's Save menu and Ctrl+S both save workspace snapshots. Ctrl+Shift+S saves
+a workspace under another name; Ctrl+O opens a workspace. Starship writes are
+explicit Apply / Export actions, never a side effect of the generic Save shortcut.
 
 ## Shared color editing
 
@@ -49,7 +48,11 @@ visible. Preserve the original module's history and persistence behavior.
 Imported advanced Starship styles and native Fastfetch fields must not silently
 lose literal RGB colors, retained formats or unsupported settings. When a source
 cannot be represented, reveal its existing editor rather than approximate it.
-Artwork pixel adjustments stay in the image editor unless explicitly requested.
+Greeting roles include individual names/contents, with repeated native modules
+identified by their source indices. Only proven ANSI bindings enable the palette
+picker. Your Starship lists reviewed style fields and opens the matching module
+and field in its existing source editor. Artwork pixel adjustments stay in the
+image editor unless explicitly requested.
 
 ## Verification
 

@@ -1,5 +1,7 @@
 //! Select a color by its use, while editing the single authoritative palette.
 use super::*;
+mod sources;
+use sources::{Role, Source};
 
 pub(super) struct ColorTargets {
     pub root: gtk::Box,
@@ -8,6 +10,7 @@ pub(super) struct ColorTargets {
     note: gtk::Label,
     open: gtk::Button,
     syncing: Cell<bool>,
+    roles: RefCell<Vec<Role>>,
 }
 
 impl ColorTargets {
@@ -16,10 +19,16 @@ impl ColorTargets {
     }
     pub fn new() -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        let scope = gtk::DropDown::from_strings(&["Terminal", "Prompt Designer", "Greeting"]);
+        let scope = gtk::DropDown::from_strings(&[
+            "Terminal",
+            "Prompt Designer",
+            "Greeting",
+            "Your Starship",
+        ]);
         scope.set_hexpand(true);
         scope.update_property(&[gtk::accessible::Property::Label("Color Target")]);
         let role = gtk::DropDown::from_strings(&[]);
+        role.set_enable_search(true);
         role.set_hexpand(true);
         role.update_property(&[gtk::accessible::Property::Label("Color Role")]);
         let note = gtk::Label::builder()
@@ -47,6 +56,7 @@ impl ColorTargets {
             note,
             open,
             syncing: Cell::new(false),
+            roles: RefCell::new(Vec::new()),
         }
     }
 }
@@ -82,16 +92,31 @@ impl Workbench {
         let weak = Rc::downgrade(this);
         this.color_targets.open.connect_clicked(move |_| {
             if let Some(this) = weak.upgrade() {
-                let target = if this.color_targets.scope.selected() == 1 {
-                    PromptSegmentKind::ALL
-                        .get(this.color_targets.role.selected() as usize)
-                        .copied()
-                        .map(PreviewTarget::PromptSegment)
-                        .unwrap_or(PreviewTarget::PromptCopy)
-                } else {
-                    PreviewTarget::GreetingFields
-                };
-                this.inspect_preview_target(target);
+                let source = this
+                    .color_targets
+                    .roles
+                    .borrow()
+                    .get(this.color_targets.role.selected() as usize)
+                    .map(|r| r.source.clone());
+                match source {
+                    Some(Source::Designer(kind)) => {
+                        this.inspect_preview_target(PreviewTarget::PromptSegment(kind))
+                    }
+                    Some(Source::Starship { module, style }) => {
+                        this.inspect_preview_target(PreviewTarget::PromptCopy);
+                        let navigating = this.navigating_preview.replace(true);
+                        this.starship_editor
+                            .select_module(crate::starship_modules::MODULES[module].id);
+                        this.starship_editor.style_field.set_selected(style as u32);
+                        this.navigating_preview.set(navigating);
+                        this.starship_editor.color.grab_focus();
+                    }
+                    Some(Source::Field(index)) => {
+                        this.inspect_preview_target(PreviewTarget::GreetingFields);
+                        this.greeting.open_color_field(index);
+                    }
+                    _ => this.inspect_preview_target(PreviewTarget::GreetingFields),
+                }
             }
         });
     }
@@ -105,46 +130,53 @@ impl Workbench {
         controls.role.set_visible(scope != 0);
         controls.note.set_visible(scope != 0);
         controls.open.set_visible(scope != 0);
-        if rebuild {
-            let names: Vec<&str> = match scope {
-                1 => PromptSegmentKind::ALL
-                    .iter()
-                    .map(|kind| kind.label())
-                    .collect(),
-                2 => vec!["Accent", "Content text"],
-                _ => vec![],
-            };
-            controls.role.set_model(Some(&gtk::StringList::new(&names)));
-            controls.role.set_selected(0);
-        }
-        let key = match scope {
-            1 => PromptSegmentKind::ALL
-                .get(controls.role.selected() as usize)
-                .and_then(|kind| {
-                    self.prompt_settings
-                        .borrow()
-                        .segments()
-                        .iter()
-                        .find(|segment| segment.kind == *kind)
-                        .map(|segment| {
-                            format!(
-                                "Color{}",
-                                tone_slot(segment.tone, self.preview_terminal.is_bold_is_bright())
-                            )
-                        })
-                }),
-            2 => {
-                let settings = self.greeting.settings();
-                if settings.imported_source.is_some() || !settings.field_styles.is_empty() {
-                    None
-                } else if controls.role.selected() == 1 || settings.accent == 16 {
-                    Some("Foreground".into())
-                } else {
-                    Some(format!("Color{}", settings.accent))
-                }
-            }
-            _ => None,
+        let roles = match scope {
+            1 => self
+                .prompt_settings
+                .borrow()
+                .segments()
+                .iter()
+                .map(|segment| Role {
+                    label: segment.kind.label().into(),
+                    key: Some(format!(
+                        "Color{}",
+                        tone_slot(segment.tone, self.preview_terminal.is_bold_is_bright())
+                    )),
+                    source: Source::Designer(segment.kind),
+                })
+                .collect(),
+            2 => sources::greeting_roles(&self.greeting.settings()),
+            3 => sources::starship_roles(),
+            _ => vec![],
         };
+        let old = controls.roles.borrow();
+        let selected = controls.role.selected() as usize;
+        let selection = if rebuild {
+            0
+        } else {
+            old.get(selected)
+                .and_then(|previous| {
+                    roles.iter().position(|role| {
+                        role.source == previous.source && role.label == previous.label
+                    })
+                })
+                .unwrap_or(0)
+        };
+        if rebuild
+            || old
+                .iter()
+                .map(|r| &r.label)
+                .ne(roles.iter().map(|r| &r.label))
+        {
+            let labels: Vec<_> = roles.iter().map(|r| r.label.as_str()).collect();
+            controls
+                .role
+                .set_model(Some(&gtk::StringList::new(&labels)));
+        }
+        drop(old);
+        let key = roles.get(selection).and_then(|r| r.key.clone());
+        *controls.roles.borrow_mut() = roles;
+        controls.role.set_selected(selection as u32);
         self.color_picker
             .widget()
             .set_sensitive(key.is_some() || scope == 0);
@@ -156,9 +188,11 @@ impl Workbench {
             ));
             controls.note.set_tooltip_text(Some("Changing this color affects every terminal, prompt or greeting element using the same palette slot. Edit source to change the binding instead."));
         } else if scope != 0 {
-            controls
-                .note
-                .set_text("This source has independent styles. Edit them in the source editor.");
+            controls.note.set_text(if scope == 3 {
+                "Source-owned style · edit in Prompt"
+            } else {
+                "Source-owned color · edit in Greeting"
+            });
             controls.note.set_tooltip_text(Some("Imported RGB colors and per-field overrides are preserved; they are not replaced with a guessed theme slot."));
         }
         controls.syncing.set(false);
@@ -211,6 +245,39 @@ mod tests {
         assert_eq!(this.color_targets.scope.selected(), 0);
         assert!(this.color_picker.widget().is_sensitive());
         assert_eq!(this.greeting.settings(), imported);
+        this.color_targets.scope.set_selected(2);
+        this.color_targets.role.set_selected(2); // imported OS name, literal RGB
+        assert!(!this.color_picker.widget().is_sensitive());
+        this.color_targets.open.emit_clicked();
+        settle();
+        assert!(this.greeting_module_button.is_active());
+        let popover = crate::window::greeting::tests::descendants(window.upcast_ref())
+            .into_iter()
+            .find(|w| w.has_css_class("greeting-field-popover") && w.is_mapped())
+            .expect("source navigation opens the selected native field");
+        popover.downcast::<gtk::Popover>().unwrap().popdown();
+        assert_eq!(this.greeting.settings(), imported);
+        let source = "# retained\n[rust]\nstyle = 'italic bg:blue fg:#123456'\n";
+        this.starship_editor
+            .begin_detached(Some(source.into()))
+            .unwrap();
+        this.palette_module_button.set_active(true);
+        this.color_targets.scope.set_selected(3);
+        let role = this.color_targets.roles.borrow().iter().position(|r| matches!(r.source,
+            Source::Starship { module, style: 0 } if crate::starship_modules::MODULES[module].id == "rust")).unwrap();
+        this.color_targets.role.set_selected(role as u32);
+        assert!(!this.color_picker.widget().is_sensitive());
+        this.color_targets.open.emit_clicked();
+        settle();
+        assert!(this.prompt_module_button.is_active());
+        {
+            let draft = this.starship_editor.draft.borrow();
+            let draft = draft.as_ref().unwrap();
+            assert_eq!(draft.spec().id, "rust");
+            assert_eq!(draft.style_spec().unwrap().key, "style");
+            assert_eq!(draft.contents(), source);
+        }
+        assert_eq!(this.model.borrow().palette, before);
         window.destroy();
     }
     #[test]

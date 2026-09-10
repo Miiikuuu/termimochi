@@ -121,8 +121,22 @@ impl Workbench {
             set_menu_verb_icon(&item, "termimochi-save-symbolic");
             save.append_item(&item);
         }
-        save.append(Some("Save Workspace"), Some("win.save-workspace"));
-        save.append(Some("Save Workspace As…"), Some("win.save-workspace-as"));
+        save.append(
+            Some("Save Workspace"),
+            Some(if module == EditorModule::Prompt {
+                "win.save"
+            } else {
+                "win.save-workspace"
+            }),
+        );
+        save.append(
+            Some("Save Workspace As…"),
+            Some(if module == EditorModule::Prompt {
+                "win.save-as"
+            } else {
+                "win.save-workspace-as"
+            }),
+        );
         more.append(Some("Open Workspace…"), Some("win.open-workspace"));
         match module {
             EditorModule::Palette => {
@@ -171,6 +185,7 @@ impl Workbench {
                     ("Export Fastfetch Configuration…", "export-fastfetch"),
                     ("Export Logo as TXT…", "export-greeting-txt"),
                     ("Export Logo as ANSI…", "export-greeting-ans"),
+                    ("Export Image Greeting…", "export-pixel-greeting"),
                 ] {
                     exports.append(Some(label), Some(&format!("win.{action}")));
                 }
@@ -266,7 +281,16 @@ mod tests {
                 Some(action)
             );
             let saved = commands(&this.save_button.menu_model().unwrap());
-            assert!(saved.contains(&"win.save-workspace".into()));
+            assert!(
+                saved.contains(
+                    &if module == EditorModule::Prompt {
+                        "win.save"
+                    } else {
+                        "win.save-workspace"
+                    }
+                    .into()
+                )
+            );
             let extra = commands(&this.output_bar.more.menu_model().unwrap());
             assert!(extra.contains(&"win.open-workspace".into()));
             if module == EditorModule::Greeting {
@@ -312,6 +336,37 @@ mod tests {
         this.save_button.popup();
         settle();
         this.save_button.popdown();
+        // Ctrl+S saves a local workspace, not the active Starship file.
+        let starship = root.path().join("starship.toml");
+        let source = "[rust]\nsymbol = 'rs '\nstyle = 'bold red'\n";
+        std::fs::write(&starship, source).unwrap();
+        this.starship_editor
+            .begin(starship.clone(), source.into())
+            .unwrap();
+        this.prompt_source_selector.set_selected(0);
+        this.starship_editor.select_module("rust");
+        this.starship_editor.symbol.set_text("rust ");
+        let workspace = root.path().join("saved.termimochi.json");
+        this.save_workspace_path(workspace.clone(), this.workspace_snapshot())
+            .unwrap();
+        this.starship_editor.symbol.set_text("crab ");
+        this.save_action.activate(None);
+        settle();
+        assert_eq!(std::fs::read_to_string(&starship).unwrap(), source);
+        assert!(
+            this.starship_editor.dirty(),
+            "workspace save must not mark external Starship applied"
+        );
+        let stored = DocumentStore::<Workspace>::open(workspace)
+            .unwrap()
+            .document()
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored, this.workspace_snapshot());
+        assert_eq!(
+            this.open_button.tooltip_text().as_deref(),
+            Some("Open a complete workspace  Ctrl+O")
+        );
         window.destroy();
     }
 }

@@ -103,7 +103,7 @@ impl Workbench {
         if let Some(source) = before.editable_artwork.clone() {
             self.open_image_source(before, None, Some(source));
         } else {
-            self.toast("This artwork has no editable source. Reimport its original PNG, JPG, WebP or SVG; previous conversion settings cannot be recovered.");
+            self.toast("This artwork has no editable source. Reimport its original PNG, JPG, WebP, SVG or GIF; previous conversion settings cannot be recovered.");
             self.choose_original_image();
         }
     }
@@ -1012,6 +1012,9 @@ impl ImageImport {
                     image.artwork.ansi.len() as f64 / 1024.0,
                     removal_note
                 ));
+                if image.format == "GIF still" {
+                    self.status.set_text(&format!("{}\nGIF: editing a still frame for ANSI. After Use Artwork, open Export → Export Image Greeting… for animation playback/export.", self.status.text()));
+                }
                 self.result_status.replace(self.status.text().to_string());
                 self.status.set_tooltip_text((image.format == "SVG").then_some(
                     "Static SVG rasterized locally at up to 1024 pixels. SVG text uses system fonts; convert text to paths for portable results."
@@ -1132,6 +1135,60 @@ impl ImageImport {
 mod tests {
     use super::super::tests::{controller, descendants, feed, respond, settle, wait_official};
     use super::*;
+
+    #[test]
+    #[ignore = "requires isolated GTK/VTE display; GIF import, source retention, undo and re-edit"]
+    fn gif_import_still_notice_undo_and_reedit_without_original() {
+        adw::init().unwrap();
+        gio::resources_register_include!("termimochi.gresource").unwrap();
+        let app = adw::Application::builder()
+            .application_id("io.github.miiikuuu.termimochi.GifImportTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("animation.GIF");
+        std::fs::write(
+            &path,
+            crate::greeting_image::animation::tests::fixture_bytes(),
+        )
+        .unwrap();
+        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        let window = app.active_window().unwrap();
+        let this = controller(&window);
+        let before = this.greeting.settings();
+        let (dialog, editor) = draft(&this, &path);
+        ready(&editor);
+        assert!(editor.status.text().contains("GIF: editing a still frame"));
+        editor.remove_background.set_active(true);
+        editor.trim.set_active(true);
+        let art = ready(&editor);
+        editor.apply.emit_clicked();
+        settle();
+        assert!(!dialog.is_visible());
+        let accepted = this.greeting.settings();
+        assert!(accepted.editable_artwork.as_ref().unwrap().image.is_gif());
+        this.greeting.undo();
+        assert_eq!(this.greeting.settings(), before);
+        this.greeting.redo();
+        assert_eq!(this.greeting.settings(), accepted);
+        std::fs::remove_file(&path).unwrap();
+        this.edit_image_artwork();
+        let dialog = this.greeting.image_import_window.upgrade().unwrap();
+        let restored = unsafe {
+            dialog
+                .data::<Rc<ImageImport>>("termimochi-image-import")
+                .unwrap()
+                .as_ref()
+                .clone()
+        };
+        assert_eq!(ready(&restored), art);
+        assert!(restored.remove_background.is_active());
+        dialog.close();
+        settle();
+        assert_eq!(this.greeting.settings(), accepted);
+        window.destroy();
+    }
 
     #[test]
     #[ignore = "requires GTK/VTE and X11 pointer driver; wheel must scroll, never edit"]

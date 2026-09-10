@@ -1,6 +1,6 @@
 # Image conversion workbench
 
-TermiMochi converts a bounded local PNG, JPEG, WebP or static SVG into portable text and ANSI
+TermiMochi converts a bounded local PNG, JPEG, WebP, static SVG or GIF still into portable text and ANSI
 colors. The conversion editor has an independently scrolling adjustment sidebar
 and a fixed preview area. No cloud service, GPU renderer or additional converter
 installation is required.
@@ -19,7 +19,8 @@ The [resvg renderer](https://docs.rs/resvg/0.48.1/resvg/) is built into TermiMoc
 SVG is rasterized onto a transparent canvas with a 1024-pixel longest side,
 including upscaling small vector viewports, preserving premultiplied alpha and
 aspect ratio. The existing character-grid limits still apply: SVG import does
-not enable original-image terminal protocols or make character output lossless.
+not make character output lossless. Pixel-image export is a separate operation
+described below.
 
 Sources must be UTF-8, at most 2 MiB, use the standard SVG namespace, and stay
 within 10,000 XML nodes / 64 nesting levels. Natural dimensions use the raster
@@ -108,7 +109,8 @@ are saved in TermiMochi presets/workspaces. **Edit Artwork…** restores all con
 and uses the embedded image even if its original file was moved or deleted.
 Original metadata may be present in those bytes; sharing a preset/workspace also
 shares its source image. The filesystem path is never persisted. Fastfetch,
-TXT and ANSI exports include only final artwork. Legacy/imported ANSI with no
+TXT and ANSI exports include only final artwork (pixel bundles are described
+below). Legacy/imported ANSI with no
 source offers **Reimport Original…**; it cannot reconstruct lost conversion settings.
 Cancel changes nothing; Use Artwork creates one existing Greeting Undo/Redo step,
 including both the source and recipe. Image bytes are shared across history
@@ -126,6 +128,139 @@ Review & Apply can run Fastfetch once in a new Ptyxis window after a successful
 apply. This does not install a shell startup hook or apply an unsaved color theme.
 An independent **Terminal Startup…** opt-in can install a reviewed, removable
 Bash block; neither image import nor preset/workspace loading enables it.
+
+## Pixel-image bundles
+
+After accepting an imported image with **Use Artwork**, enable Greeting and use
+**Bottom bar ⋮ → Export → Export Image Greeting…**. This export uses the embedded
+PNG/JPG/WebP/SVG source and accepted recipe, even if the original file was moved.
+Text, ANSI and built-in character logos do not contain recoverable source pixels;
+import an original image before using this export.
+
+The dialog shows the processed image on a transparency checkerboard. Choose
+**Kitty · Direct PNG** or **Sixel**, adjust **Max columns**, then **Export Folder…**.
+It creates a fresh private `termimochi-image-*` folder containing:
+
+- `logo.png`: re-encoded static pixels, preserving crop, margin trimming,
+  background removal, exposure, contrast, saturation, color mode and smoothing.
+  No original metadata, file path or editable source is included. The existing
+  bounded decoder limits the longest side to 1024 pixels.
+- `config.jsonc`: the current Greeting fields/colors with its logo replaced by
+  `kitty-direct` with relative `logo.png`, or `raw` with relative `logo.sixel`,
+  explicit dimensions and position.
+  Maximum logo width is 8–120 columns; aspect-ratio sizing may reduce the actual
+  width further to keep height within 64 rows. Dimensions use the current preview
+  font's cell ratio. Card layout uses a top-positioned image.
+- `README.md`: compatibility requirements and the launch command.
+- Sixel also includes `logo.sixel` (generated transparent raster commands) and
+  `config-ansi.jsonc` (the accepted portable character-art fallback).
+
+Open a terminal **in that generated folder** and run:
+
+```sh
+fastfetch --config config.jsonc
+```
+
+The relative logo path uses the working directory. Keep all bundle files together;
+moving the entire folder is supported. Review imported configuration commands or
+network modules before running: these are retained, not executed by this export.
+Cancel writes nothing. Every export uses a new directory; existing files, active
+Fastfetch configuration, shell startup and the local Greeting draft are unchanged.
+
+According to [Fastfetch's logo options](https://github.com/fastfetch-cli/fastfetch/wiki/Logo-options),
+`kitty-direct` needs a supporting terminal and explicit width/height. TermiMochi's
+Sixel bundle uses Fastfetch's `raw` path, not its ImageMagick conversion: the latter
+produced black backgrounds in the native display regression. No ImageMagick is
+required for the generated bundle. `logo.sixel` selects transparent background
+mode (P2=1) and never paints transparent pixels; opaque black remains black.
+
+Sixel has fixed pixel dimensions, calculated from the captured preview's physical
+cell width/height (including GTK scale) and requested columns/rows. Changing only
+Fastfetch's logo width/height does not resize this raster. **Re-export for a
+different terminal font, DPI or logo size**. Limits are 2048×2048 output pixels,
+8 MiB encoded data and a cooperative 12-second worker deadline; excessive sizes
+are refused before creating an export folder. Resampling uses premultiplied alpha.
+Alpha below 128 becomes transparent; the rest is opaque. Images with at most 256
+colors retain an exact palette before Sixel's percent-RGB conversion; complex
+images use bounded NeuQuant sampling. Sixel's binary alpha and palette may differ
+from the full-color, soft-alpha PNG checkerboard preview, particularly at edges.
+The original image, accepted recipe and reference PNG remain unchanged.
+
+TermiMochi does not automatically detect or certify these capabilities. A saved
+bundle is not proof that the receiving terminal can render it.
+
+The checkerboard is a GTK pixel preview, **not Kitty/Sixel rendering inside VTE**.
+Live Preview, normal Fastfetch Apply and startup integration remain on the ANSI
+path. Character density, ASCII contour/inversion effects and opening animations
+do not apply to pixel export. GIF animation is an explicit separate output,
+described below. Animated PNG/WebP and importing raw terminal graphics payloads
+remain unsupported.
+
+## GIF animation
+
+**Import Artwork…** accepts GIF87a/GIF89a. The image-to-text editor uses the first
+nontransparent composited frame for its Original/Converted views and the ANSI
+fallback. The complete original GIF and accepted recipe are embedded in the
+existing editable source; moving/deleting the original does not break re-editing.
+The import status explicitly distinguishes this still from animation playback.
+
+After **Use Artwork**, enable Greeting and open **Export Image Greeting…**. A GIF
+source adds **Kitty · Animated GIF**, selected by default. **Play / Pause** controls
+a looping pixel preview; the frame scrubber selects a frame without changing the
+source or exported animation. Playback does not start automatically. Wheel motion
+cannot change the scrubber or output parameters. Selecting **Kitty · Still PNG**
+or **Sixel · Transparent still** exports only a representative still, not motion.
+
+Animation preparation composites frame offsets and disposal operations first.
+The union of all per-frame crop/trim bounds defines one fixed canvas, preventing
+trim from chasing the moving subject. Automatic background removal uses one
+inferred color across all frames; use a manually picked key for changing or
+ambiguous backgrounds. Empty individual frames are allowed, but an entirely
+erased animation is rejected. Tone, ink and smoothing apply to every frame.
+
+The processed GIF has palette colors and binary transparency: alpha below 128 is
+cleared, the rest becomes opaque. This is not soft PNG transparency. The preview
+re-decodes the exported GIF, so it shows the same quantized colors and transparency.
+Delays shorter than 20 ms are raised to 20 ms. The preview accounts for delayed
+callbacks rather than accumulating one timer tick of drift per frame.
+
+The animation bundle contains `config.jsonc`, `logo.kitty`, `logo.gif`, `logo.png`,
+`config-ansi.jsonc` and `README.md`. Launch from that folder with:
+
+```sh
+fastfetch --config config.jsonc
+```
+
+Fastfetch's **raw** logo type reads the generated `logo.kitty` stream. It contains
+only bounded Kitty graphics commands and inline, locally re-encoded PNG frames;
+there are no external image paths, shell commands or clipboard/title sequences.
+Frame replacement (`X=1`) and independent full canvases prevent transparent pixels
+from accumulating earlier frames. This avoids the ghosting reproduced with
+Fastfetch 2.57.1 / Kitty 0.45.0's `kitty-icat` path; no `kitten` helper is required
+for the exported stream. The protocol implementation follows the
+[official Kitty animation specification](https://sw.kovidgoyal.net/kitty/graphics-protocol/#animation)
+and [Fastfetch raw logo interface](https://github.com/fastfetch-cli/fastfetch/wiki/Logo-options#raw).
+
+The terminal stream loops continuously. `logo.gif` is a shareable processed GIF,
+not the file Fastfetch uses for animation. `logo.png` is a still image. Use
+`fastfetch --config config-ansi.jsonc` for a terminal without Kitty animation.
+Re-export to change animation dimensions: they are embedded in both the stream
+and configuration. Keep the bundle together. Repeated runs allocate fresh image
+IDs through image numbers rather than deleting unrelated terminal images.
+
+GIF sources are bounded to 16 MiB, a 1024×1024 canvas, 120 frames, 64 MiB of
+aggregate decoded frame pixels and 60 seconds per cycle. A container preflight
+rejects out-of-canvas frame rectangles, excess frame budgets, malformed/truncated
+blocks and trailing data before decompression. Decoder allocation limits also
+apply. GIF workers are serialized to avoid concurrent large decode buffers, with
+cooperative elapsed-time checks between frames (not hard subprocess deadlines).
+Processed GIF output is capped at 16 MiB and the inline animation stream at 32 MiB.
+These are data limits, not a total process-memory guarantee.
+
+Native Kitty animation is not a universal terminal feature. Raw protocol imports
+remain blocked; do not assume arbitrary `.kitty`/binary files are safe. The main
+VTE preview, normal Apply and startup integration continue to use accepted ANSI.
+No animation bundle is installed or executed automatically.
 
 ## Independent implementation and references
 

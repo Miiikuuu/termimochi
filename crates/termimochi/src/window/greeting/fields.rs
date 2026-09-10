@@ -4,6 +4,7 @@ use crate::greeting_fields::{self, FieldStyle};
 
 pub(super) struct FieldInspector {
     pub popover: gtk::Popover,
+    buttons: RefCell<Vec<(usize, glib::WeakRef<gtk::MenuButton>)>>,
     anchor: glib::WeakRef<gtk::MenuButton>,
     selected: Cell<Option<usize>>,
     source: RefCell<String>,
@@ -97,6 +98,7 @@ impl FieldInspector {
             .build();
         Self {
             popover,
+            buttons: RefCell::new(Vec::new()),
             anchor: glib::WeakRef::new(),
             selected: Cell::new(None),
             source: RefCell::new(String::new()),
@@ -133,7 +135,33 @@ pub(super) fn field_button(label: &str) -> gtk::MenuButton {
 }
 
 impl GreetingEditor {
+    pub(in crate::window) fn open_color_field(&self, index: usize) {
+        let weak = self.weak.clone();
+        // Wait for the newly selected module to be allocated. Custom and
+        // native lists may share indices; only use the currently mapped row.
+        self.root.add_tick_callback(move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                let button = this
+                    .fields
+                    .buttons
+                    .borrow()
+                    .iter()
+                    .filter(|(id, _)| *id == index)
+                    .filter_map(|(_, button)| button.upgrade())
+                    .find(|button| button.is_mapped());
+                if let Some(button) = button {
+                    button.grab_focus();
+                    button.popup();
+                }
+            }
+            glib::ControlFlow::Break
+        });
+    }
     pub(super) fn bind_field(&self, button: &gtk::MenuButton, index: usize) {
+        let mut buttons = self.fields.buttons.borrow_mut();
+        buttons.retain(|(_, button)| button.upgrade().is_some());
+        buttons.push((index, button.downgrade()));
+        drop(buttons);
         let weak = self.weak.clone();
         button.set_create_popup_func(move |button| {
             if let Some(this) = weak.upgrade() {
