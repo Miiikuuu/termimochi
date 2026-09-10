@@ -178,6 +178,21 @@ that looks balanced elsewhere can therefore become almost unreadable.
   and 60 seconds per cycle. Importing binary terminal protocol streams and
   animated PNG/WebP remain unsupported.
   See [image export requirements](docs/image-conversion.md#pixel-image-bundles).
+  The same dialog now offers **Test in Terminal** (Kitty, Ptyxis or xterm): a
+  temporary, safe-field-only trial that leaves your daily configuration alone.
+  Confirm the actual picture/motion in that terminal, then **Review Install… →
+  Install & Apply** to back up Fastfetch and install permanent assets with
+  absolute paths. Static Kitty, animation and Sixel have separate verification
+  states; unknown is not supported-by-assumption. **Test ANSI Fallback** is an
+  explicit alternative. See [terminal trials and installation](docs/pixel-trials.md).
+  Installation updates the reviewed Fastfetch file for every terminal using it;
+  it does not automatically select image versus ANSI output per terminal.
+  A Kitty image configuration can leave a blank logo in Ptyxis; test and install
+  the ANSI fallback to return to character output.
+  Managed Kitty PNG/GIF installs also include a reviewed startup settling guard,
+  preventing the tested cold-start blank-image race without clearing the terminal
+  or consuming early keystrokes. Reinstall previously applied image configurations
+  through the same review to adopt it; `.bashrc` is not changed automatically.
 - Click a system field's name to edit its **label, inline icon, name/content
   colors and display format** in a compact popover. CPU/GPU summaries, memory
   and disk percentages/bars, and date/time formats share the same native

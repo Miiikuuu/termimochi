@@ -186,12 +186,14 @@ images use bounded NeuQuant sampling. Sixel's binary alpha and palette may diffe
 from the full-color, soft-alpha PNG checkerboard preview, particularly at edges.
 The original image, accepted recipe and reference PNG remain unchanged.
 
-TermiMochi does not automatically detect or certify these capabilities. A saved
-bundle is not proof that the receiving terminal can render it.
+Exporting a bundle does not query or certify terminal capabilities. The separate
+**Test in Terminal** flow queries the selected terminal and requires an explicit
+visual check before offering managed installation. See [terminal trials](pixel-trials.md).
 
 The checkerboard is a GTK pixel preview, **not Kitty/Sixel rendering inside VTE**.
-Live Preview, normal Fastfetch Apply and startup integration remain on the ANSI
-path. Character density, ASCII contour/inversion effects and opening animations
+Live Preview and normal Fastfetch Apply remain on the ANSI path. Image installation
+does not add startup hooks; an existing hook reading the updated configuration
+will use its new image output. Character density, ASCII contour/inversion effects and opening animations
 do not apply to pixel export. GIF animation is an explicit separate output,
 described below. Animated PNG/WebP and importing raw terminal graphics payloads
 remain unsupported.

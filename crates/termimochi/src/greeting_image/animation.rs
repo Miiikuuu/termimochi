@@ -251,7 +251,16 @@ impl Prepared {
             let chunks = payload.as_bytes().chunks(4096);
             let count = chunks.len();
             for (part, bytes) in chunks.enumerate() {
-                let prefix = if part == 0 { header.as_str() } else { "q=2" };
+                // Kitty requires a=f on EVERY chunk of an animation frame.
+                // Omitting it switches continuation packets to the base-image
+                // transfer action: small GIFs work, larger frames stay still.
+                let prefix = if part == 0 {
+                    header.as_str()
+                } else if index == 0 {
+                    "q=2"
+                } else {
+                    "a=f,q=2"
+                };
                 write!(
                     stream,
                     "\x1b_G{prefix},m={};{}\x1b\\",

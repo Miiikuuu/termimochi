@@ -671,6 +671,32 @@ the processed GIF, PNG still and unchanged ANSI fallback configuration.
 `window/greeting/pixel_export.rs` provides opt-in playback, pause and frame seeking
 without modifying source/recipe/history. Main VTE rendering and Apply stay ANSI.
 
+`pixel_trial.rs` owns private temporary trials, fixed-argv terminal launching,
+per-output capability/visual results and immutable installation plans. Its
+pre-GTK `--termimochi-pixel-trial` worker uses a real TTY, bounded Kitty/DA/cell
+queries and a restricted Fastfetch configuration with fixed safe fields. It
+never runs imported commands during trials. Sixel is regenerated for queried
+target cell dimensions. Static protocol acknowledgement does not verify motion;
+explicit visual approval is separate. Timeouts remain unverified and block install.
+The worker restores terminal input mode on exit. Stop/close drops only its owned
+temporary tree; deadlines prevent indefinitely running Fastfetch children.
+
+`window/greeting/pixel_export/trial.rs` connects test, fallback and review controls.
+Changing target/protocol/width invalidates prior verification. Review captures
+tested assets/configuration and checks their fingerprints; confirmation reuses
+`fastfetch_apply` for backup, late conflicts and restore. Managed files live below
+XDG data `termimochi/image-greetings` with absolute logo paths. They are retained
+on restore/failure because configuration backups may reference them. Installation
+does not execute the full configuration or add shell startup integration.
+
+`pixel_trial/startup.rs` supplies a pre-GTK `--termimochi-settle-kitty` helper.
+Managed Kitty configurations reference it from `general.preRun`; existing commands
+remain intact after the shell-quoted helper path, and repeated generation is
+idempotent. The guard samples terminal dimensions with `stty size` until they are
+quiet for 300 ms, bounded by 1.5 seconds. It never reads keyboard input, modifies
+termios, clears the screen or reruns imported modules. ANSI/Sixel installs do not
+add it. Existing configurations/startup hooks require explicit review to change.
+
 `greeting_image/sixel.rs` generates bounded transparent Sixel directly, bypassing
 the Fastfetch/ImageMagick alpha-loss path found by real xterm screenshots. It
 resamples associated alpha into the captured physical cell geometry, thresholds

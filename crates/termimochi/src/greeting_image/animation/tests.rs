@@ -48,6 +48,36 @@ pub(crate) fn fixture_bytes() -> Vec<u8> {
     fixture().image.bytes().to_vec()
 }
 
+// A flat-color GIF fits in one Kitty packet per frame and cannot exercise
+// continuation commands. Grayscale noise remains lossless in the GIF palette.
+pub(crate) fn chunked_fixture() -> EditableArtwork {
+    let mut seed = 17u32;
+    let mut background = RgbaImage::new(128, 128);
+    for pixel in background.pixels_mut() {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        let gray = ((seed >> 16) % 240) as u8;
+        *pixel = image::Rgba([gray, gray, gray, 255]);
+    }
+    let frames = (0..3).map(|i| {
+        let mut pixels = background.clone();
+        for y in 40..88 {
+            for x in (10 + i * 38)..(30 + i * 38) {
+                pixels.put_pixel(x, y, image::Rgba([200, 30, 70, 255]));
+            }
+        }
+        image::Frame::from_parts(pixels, 0, 0, image::Delay::from_numer_denom_ms(170, 1))
+    });
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = GifEncoder::new(&mut bytes);
+        encoder.set_repeat(Repeat::Infinite).unwrap();
+        encoder.encode_frames(frames).unwrap();
+    }
+    let mut options = fixture().options().unwrap();
+    options.edits = Default::default();
+    EditableArtwork::new(SourceImage::new(bytes).unwrap(), options).unwrap()
+}
+
 #[test]
 fn gif_edits_keep_a_fixed_canvas_timing_transparency_and_source() {
     let source = fixture();
@@ -348,7 +378,7 @@ fn gif_kitty_chunked_payload_roundtrips_exact_pixels() {
         if payload.is_empty() {
             assert!(header.starts_with(if frames == 0 { "a=T," } else { "a=f," }));
         } else {
-            assert!(header.starts_with("q=2,m="));
+            assert!(header.starts_with(if frames == 0 { "q=2,m=" } else { "a=f,q=2,m=" }));
         }
         chunks += 1;
         payload.push_str(data);

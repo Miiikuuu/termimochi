@@ -76,6 +76,13 @@ def button(down):
 
 
 move(px, py)
+if mode in ("key_y", "key_n", "key_q", "key_t"):
+    assert os.environ.get("DISPLAY") not in (None, ":0", ":1"), "Trial approvals are test-display-only"
+    keycode = x11.XKeysymToKeycode(d, ord(mode[-1]))
+    xtst.XTestFakeKeyEvent(d, keycode, 1, 0)
+    xtst.XTestFakeKeyEvent(d, keycode, 0, 0)
+    x11.XFlush(d)
+    sys.exit(0)
 if mode in ("scroll_up", "scroll_down", "scroll_left", "scroll_right", "shift_scroll_down"):
     shift = mode == "shift_scroll_down"
     keycode = x11.XKeysymToKeycode(d, 0xFFE1)

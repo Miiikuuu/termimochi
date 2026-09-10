@@ -11,6 +11,7 @@ mod greeting_official;
 mod greeting_startup;
 mod layout;
 mod layout_apply;
+mod pixel_trial;
 mod preview;
 mod preview_context;
 mod preview_inspect;
@@ -38,6 +39,19 @@ pub(crate) const APPLICATION_ID: &str = "io.github.miiikuuu.termimochi";
 pub(crate) const RESOURCE_BASE: &str = "/io/github/miiikuuu/termimochi";
 
 fn main() -> gtk::glib::ExitCode {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == pixel_trial::startup::ARG)
+    {
+        pixel_trial::startup::run();
+        return gtk::glib::ExitCode::SUCCESS;
+    }
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == pixel_trial::WORKER_ARG)
+    {
+        return pixel_trial::worker_entry();
+    }
     // The private SVG child never initializes GTK, D-Bus or user documents.
     if std::env::args_os()
         .nth(1)

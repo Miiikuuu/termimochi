@@ -19,6 +19,49 @@ fn plain_report_line(line: &str) -> String {
 }
 
 impl Workbench {
+    pub(in crate::window) fn review_pixel_install(
+        self: &Rc<Self>,
+        plan: crate::pixel_trial::InstallPlan,
+        snapshot: GreetingSettings,
+        terminal: &str,
+        ansi: bool,
+    ) {
+        let title = format!(
+            "Install {} Greeting · Tested in {terminal}",
+            if ansi { "ANSI" } else { "Image" }
+        );
+        let before = plan
+            .target
+            .expected
+            .as_ref()
+            .map(|b| String::from_utf8_lossy(b).into_owned());
+        let startup_note = if plan.config.contains(crate::pixel_trial::startup::ARG) {
+            "Kitty startup protection: Fastfetch preRun calls TermiMochi to wait for stable terminal dimensions (normally about 300 ms, bounded to 1.5 s). Existing preRun commands are retained. Keep TermiMochi installed at this path.\n"
+        } else {
+            ""
+        };
+        let description = format!(
+            "Configuration: {}\nManaged immutable assets: {}\nANSI fallback: {}\n{startup_note}Test used safe sample fields. The full configuration below may contain imported commands; they are not run by installation. Only the tested terminal/output is visually verified. Other terminals remain unverified. No shell startup hook is added. Use Restore Previous Configuration to roll back; managed assets remain for backup references.",
+            plan.target.path.display(),
+            plan.directory.display(),
+            plan.directory.join("config-ansi.jsonc").display()
+        );
+        let weak = Rc::downgrade(self);
+        self.review_fastfetch(&format!("{title}\n{description}"), &plan.target.path.clone(), before.as_deref(), Some(&plan.config.clone()), "Install & Apply", move |_| {
+            let Some(this) = weak.upgrade() else { return; };
+            if this.greeting.settings() != snapshot || this.greeting.invalid.get() { this.toast("Greeting changed during review. Test and review it again."); return; }
+            match plan.apply(&this.greeting.fastfetch_state) {
+                Ok(target) => {
+                    *this.greeting.fastfetch_target.borrow_mut() = Some(target);
+                    let saved = this.greeting.persist();
+                    this.schedule_fastfetch_sync();
+                    this.toast(&match saved { Ok(()) => "Greeting installed with absolute asset paths and a configuration backup. Startup is unchanged; other terminals may require ANSI fallback.".into(), Err(error) => format!("Image configuration applied, but the editable preset could not be saved: {error}") });
+                }
+                Err(error) => this.toast(&error),
+            }
+        });
+    }
+
     pub(in crate::window) fn prepare_scheme_fastfetch(
         &self,
     ) -> Result<(fastfetch_apply::Target, String), String> {
@@ -307,6 +350,7 @@ impl Workbench {
         action: &str,
         accept: impl FnOnce(bool) + 'static,
     ) {
+        let (title, extra_detail) = title.split_once('\n').unwrap_or((title, ""));
         let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
         content.set_margin_top(20);
         content.set_margin_bottom(20);
@@ -325,6 +369,18 @@ impl Workbench {
             .wrap(true)
             .build();
         content.append(&path_label);
+        if !extra_detail.is_empty() {
+            content.append(
+                &gtk::Label::builder()
+                    .label(extra_detail)
+                    .wrap(true)
+                    .wrap_mode(gtk::pango::WrapMode::WordChar)
+                    .max_width_chars(95)
+                    .xalign(0.0)
+                    .selectable(true)
+                    .build(),
+            );
+        }
         let note=gtk::Label::builder().label("Existing content is backed up; external changes block replacement. Imported settings may include commands or network modules. Running Fastfetch executes this configuration outside the preview sandbox. Shell startup files remain unchanged.").wrap(true).xalign(0.0).max_width_chars(95).css_classes(["dim-label"]).build();
         content.append(&note);
         if action == "Back Up & Apply" {
@@ -399,7 +455,7 @@ impl Workbench {
             .modal(true)
             .destroy_with_parent(true)
             .default_width(900)
-            .default_height(560)
+            .default_height(if extra_detail.is_empty() { 560 } else { 760 })
             .child(&content)
             .build();
         let weak = dialog.downgrade();

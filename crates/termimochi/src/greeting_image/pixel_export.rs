@@ -8,7 +8,7 @@ use std::{
     path::PathBuf,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Protocol {
     Kitty,
     Sixel,
@@ -31,7 +31,7 @@ impl Protocol {
     pub fn requirements(self) -> &'static str {
         match self {
             Self::Kitty => {
-                "Requires a terminal supporting Kitty graphics with direct PNG file transfer. This is not a terminal capability test."
+                "Requires Kitty graphics with direct PNG transfer. Exporting alone does not verify support."
             }
             Self::Sixel => {
                 "Requires a Sixel-capable terminal. Transparent pixels are preserved; soft alpha uses a 50% threshold and colors use a 256-color palette. Size follows the current preview font/DPI; re-export after changing the target font or DPI. No ImageMagick required."
@@ -189,6 +189,52 @@ fn configuration(
     let source = root.to_string();
     crate::fastfetch_document::parse(&source)?;
     Ok(source)
+}
+
+/// Bind a local trial/managed bundle to an absolute asset path. Portable export
+/// bundles retain their relative paths; installed configurations never need cd.
+pub(crate) fn absolute_configuration(source: &str, asset: &Path) -> Result<String, String> {
+    if !asset.is_absolute()
+        || asset
+            .to_str()
+            .is_none_or(|s| s.chars().any(char::is_control))
+    {
+        return Err("Image asset must have an absolute UTF-8 path without controls.".into());
+    }
+    let root = crate::fastfetch_document::parse(source)?;
+    root.object_value()
+        .and_then(|o| o.get("logo"))
+        .and_then(|p| p.object_value())
+        .and_then(|o| o.get("source"))
+        .ok_or("Missing image logo source.")?
+        .set_value(CstInputValue::String(asset.to_string_lossy().into_owned()));
+    Ok(root.to_string())
+}
+
+pub(crate) fn resize_sixel(
+    png: &[u8],
+    columns: u32,
+    cells: [u32; 2],
+) -> Result<(Vec<u8>, (u32, u32)), String> {
+    if cells.iter().any(|v| !(1..=256).contains(v)) {
+        return Err("Invalid target cell size.".into());
+    }
+    let decoded = source::SourceImage::new(png.to_vec())?.decode()?;
+    let mut image = decoded.pixels;
+    for pixel in image.pixels_mut() {
+        if let Some(color) = straight_color(pixel) {
+            pixel.0[..3].copy_from_slice(&color);
+        }
+    }
+    let size = area(
+        image.dimensions(),
+        columns,
+        cells[0] as f64 / cells[1] as f64,
+    )?;
+    Ok((
+        sixel::encode(&image, (size.0 * cells[0], size.1 * cells[1]))?,
+        size,
+    ))
 }
 
 pub(crate) fn export_bundle(
