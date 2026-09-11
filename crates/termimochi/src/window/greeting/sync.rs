@@ -102,6 +102,13 @@ fn observe(
     explicit: Option<PathBuf>,
     state: &Path,
 ) -> Result<Option<(PathBuf, bool)>, String> {
+    if settings.presentation.visual != crate::greeting_output::Visual::Character
+        && settings.editable_artwork.is_some()
+    {
+        // Pixel deployment uses its exact reviewed destination snapshot in the
+        // output bar. Comparing its ANSI fallback to a shared file is incorrect.
+        return Ok(None);
+    }
     let known = match explicit {
         Some(path) => Some(path),
         None => fastfetch_apply::last_path(state)?,
@@ -135,6 +142,15 @@ impl Workbench {
     pub(in crate::window) fn schedule_fastfetch_sync(self: &Rc<Self>) {
         let sync = &self.greeting.sync;
         sync.generation.set(sync.generation.get().wrapping_add(1));
+        let settings = self.greeting.settings();
+        if settings.presentation.visual != crate::greeting_output::Visual::Character
+            && settings.editable_artwork.is_some()
+        {
+            sync.difference.set_visible(false);
+            sync.observed.borrow_mut().take();
+            sync.refresh_visibility();
+            return;
+        }
         if sync.pending.replace(true) {
             return;
         }

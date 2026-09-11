@@ -137,6 +137,25 @@ fn publish(directory: &Path, assessment: &Assessment) -> Result<(), String> {
 fn key(directory: &Path, allowed: &[u8], timeout: Duration) -> Result<Option<u8>, String> {
     let started = Instant::now();
     while directory.is_dir() && started.elapsed() < timeout {
+        let path = directory.join("gui-response");
+        if let Some(response) = typography_preset::read_private_with_limit(&path, 32)? {
+            let _ = std::fs::remove_file(&path);
+            let stage = if allowed == b"ynq" {
+                "visual:"
+            } else if allowed == b"tq" {
+                "unknown:"
+            } else {
+                "close:"
+            };
+            if let Some(key) = response
+                .strip_prefix(stage.as_bytes())
+                .filter(|v| v.len() == 1)
+                .map(|v| v[0])
+                .filter(|v| allowed.contains(v))
+            {
+                return Ok(Some(key));
+            }
+        }
         let mut buffer = [0; 64];
         let n = io::stdin().read(&mut buffer).map_err(|e| e.to_string())?;
         // Do not interpret protocol responses, pasted commands or escape keys as
@@ -282,7 +301,7 @@ fn run(directory: &Path) -> Result<(), String> {
     };
     if !request.ansi && support == Support::Unavailable {
         assessment.done = true;
-        assessment.message = "This terminal session reports no support for the selected pixel protocol. No pixel stream was sent. Choose Test ANSI Fallback in TermiMochi.".into();
+        assessment.message = "This terminal session reports no support for the selected pixel protocol. No pixel stream was sent. Choose Use Character & Try in TermiMochi.".into();
         publish(directory, &assessment)?;
         println!("\n{}\nPress Q to close.", assessment.message);
         let _ = key(directory, b"q", Duration::from_secs(45));
@@ -355,7 +374,7 @@ fn run(directory: &Path) -> Result<(), String> {
         assessment.animation = assessment.visual;
     }
     assessment.done = true;
-    assessment.message = match assessment.visual { Visual::Confirmed => "Visually confirmed for this artwork, terminal session and output only. Return to TermiMochi to review installation.", Visual::Failed => "Visual check failed. Use Test ANSI Fallback or change target/protocol; installation is blocked.", Visual::Unverified => "Visual appearance was not confirmed. Installation is blocked; retry or test ANSI fallback." }.into();
+    assessment.message = match assessment.visual { Visual::Confirmed => "Visually confirmed for this artwork, terminal session and output only. Return to TermiMochi to review installation.", Visual::Failed => "Visual check failed. Use Character & Try or change target/protocol; installation is blocked.", Visual::Unverified => "Visual appearance was not confirmed. Installation is blocked; retry or choose Character." }.into();
     publish(directory, &assessment)?;
     println!("\n{}\nPress Q to close.", assessment.message);
     let _ = key(directory, b"q", Duration::from_secs(45));

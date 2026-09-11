@@ -374,7 +374,7 @@ impl Workbench {
             .halign(gtk::Align::Start)
             .css_classes(["variant-switch"])
             .build();
-        compare.set_tooltip_text(Some("Compare the same crop at the same display size. Original retains source colors; only Converted receives tone and structure edits. Source images are never saved in presets."));
+        compare.set_tooltip_text(Some("Compare the same crop at the same display size. Original retains source colors; only Converted receives tone and structure edits. Presets and schemes include the original image for re-editing."));
         let comparison = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         comparison.append(&compare);
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -401,7 +401,7 @@ impl Workbench {
             .wrap(true)
             .css_classes(["dim-label"])
             .build();
-        status.set_tooltip_text(Some("The original image copy and all conversion settings are kept in your TermiMochi preset/workspace for Edit Artwork. Exports to Fastfetch contain only final ANSI. Original image files are never modified. Sharing a preset also shares its embedded source image."));
+        status.set_tooltip_text(Some("The original image and recipe are kept in your scheme for re-editing. Character output uses this conversion; image/animation output uses processed pixels. Original files are never modified. Sharing a scheme also shares the embedded original."));
         viewing.append(&status);
         let window = gtk::Window::builder()
             .title("Image to Text")
@@ -1112,6 +1112,11 @@ impl ImageImport {
                         .clone()
                         .ok_or("Editable source is not ready.")?,
                 );
+                if self.before.editable_artwork.is_none() {
+                    next.presentation.visual = crate::greeting_output::Visual::Auto;
+                    next.presentation.protocol = None;
+                }
+                crate::greeting_output::sync_recipe(&mut next)?;
                 Ok(())
             })
             .and_then(|()| crate::fastfetch_document::value(&next.fastfetch_config()?).map(|_| ()))
@@ -1124,7 +1129,7 @@ impl ImageImport {
         }
         workbench.greeting.replace(next, true);
         workbench.greeting_module_button.set_active(true);
-        workbench.toast("Image imported as ANSI artwork. Save Preset to keep it; Undo restores the previous logo.");
+        workbench.toast("Artwork added to the scheme. Choose Display and Columns, then Save or Try. Your terminal configuration is unchanged.");
         if let Some(window) = self.window.upgrade() {
             window.close();
         }
@@ -1315,18 +1320,6 @@ mod tests {
         } else {
             settings.custom_art.clone()
         }
-    }
-
-    fn run_after_control() -> gtk::CheckButton {
-        gtk::Window::list_toplevels()
-            .into_iter()
-            .flat_map(|w| descendants(&w))
-            .find_map(|w| {
-                w.downcast::<gtk::CheckButton>().ok().filter(|w| {
-                    w.label().as_deref() == Some("Run Fastfetch in a new terminal after applying")
-                })
-            })
-            .unwrap()
     }
 
     #[test]
@@ -1913,7 +1906,7 @@ mod tests {
             .find_map(|w| {
                 w.downcast::<gtk::Label>()
                     .ok()
-                    .filter(|label| label.text() == "Import Artwork…")
+                    .filter(|label| label.text() == "Add image / GIF…")
             })
             .unwrap();
         let (label_width, _) = import_label.layout().pixel_size();
@@ -2136,6 +2129,11 @@ mod tests {
         assert_eq!(this.greeting.settings(), saved);
 
         let ansi = root.path().join("image.ans");
+        // This case exercises the retained character pipeline. Pixel intent is
+        // tested separately and may not silently enter the character Apply path.
+        let mut saved = saved;
+        crate::greeting_output::select_character(&mut saved);
+        this.greeting.replace(saved.clone(), false);
         crate::greeting_art::export_file(&ansi, &art.ansi, true, &None).unwrap();
         assert_eq!(crate::greeting_art::file_art(&ansi).unwrap(), art);
         super::super::export_fastfetch(&root.path().join("config.jsonc"), &saved, &None).unwrap();
@@ -2156,34 +2154,39 @@ mod tests {
         assert!(!external.exists(), "Cancel must not apply");
         this.save_greeting_preset();
         respond("Review & Apply…");
-        assert_eq!(
-            run_after_control().is_active(),
-            saved.imported_source.is_none()
-        );
-        run_after_control().set_active(true);
-        respond("Back Up & Apply");
+        super::super::tests::select_scheme_greeting();
+        respond("Back Up & Apply Selected");
+        assert!(crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().is_empty()));
+        respond("Run applied character greeting in Ptyxis");
+        respond("Cancel");
+        assert!(crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().is_empty()));
+        respond("Run applied character greeting in Ptyxis");
+        respond("Run Once");
         assert_eq!(
             crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().clone()),
             vec![external.clone()]
         );
+        respond("Close");
         this.request_fastfetch_apply();
-        let run = run_after_control();
-        assert_eq!(run.is_active(), saved.imported_source.is_none());
-        run.set_active(false);
-        respond("Back Up & Apply");
+        super::super::tests::select_scheme_greeting();
+        respond("Back Up & Apply Selected");
         assert_eq!(
             crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().len()),
             1
         );
+        respond("Close");
         this.request_fastfetch_apply();
-        run_after_control().set_active(true);
-        respond("Back Up & Apply");
+        super::super::tests::select_scheme_greeting();
+        respond("Back Up & Apply Selected");
+        respond("Run applied character greeting in Ptyxis");
+        respond("Run Once");
         assert_eq!(
             crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().len()),
             2
         );
         let applied =
             crate::fastfetch_document::value(&std::fs::read_to_string(&external).unwrap()).unwrap();
+        respond("Close");
         assert_eq!(applied["logo"]["source"], art.ansi);
         capture(&window, "TERMIMOCHI_IMAGE_PREVIEW_SCREENSHOT");
         let mut closeup = saved.clone();

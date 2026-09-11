@@ -75,7 +75,10 @@ impl ColorPicker {
             .adjustment(&hue_adjustment)
             .draw_value(false)
             .has_origin(false)
-            .inverted(true)
+            // Match the CSS spectrum: red -> yellow -> green -> cyan -> blue
+            // -> magenta from top to bottom. GtkRange already increases in
+            // that direction; inverting it mirrors the hue under the thumb.
+            .inverted(false)
             .width_request(26)
             .height_request(190)
             .focusable(true)
@@ -1087,6 +1090,145 @@ fn hsv_to_rgb(hsv: Hsv) -> Rgb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a GTK display; run separately at 1x and 2x"]
+    fn hue_slider_matches_rendered_spectrum_square_and_exact_fields() {
+        fn settle() {
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(80);
+            let context = gtk::glib::MainContext::default();
+            while std::time::Instant::now() < until {
+                while context.pending() {
+                    context.iteration(false);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        fn pixel(widget: &impl IsA<gtk::Widget>, x: f64, y: f64) -> Rgb {
+            let widget = widget.as_ref();
+            let snapshot = gtk::Snapshot::new();
+            gtk::WidgetPaintable::new(Some(widget)).snapshot(
+                &snapshot,
+                f64::from(widget.width()),
+                f64::from(widget.height()),
+            );
+            let texture = widget.native().unwrap().renderer().unwrap().render_texture(
+                snapshot.to_node().unwrap(),
+                Some(&gtk::graphene::Rect::new(
+                    0.0,
+                    0.0,
+                    widget.width() as f32,
+                    widget.height() as f32,
+                )),
+            );
+            let stride = texture.width() as usize * 4;
+            let mut bytes = vec![0; stride * texture.height() as usize];
+            texture.download(&mut bytes, stride);
+            let offset = y as usize * stride + x as usize * 4;
+            // Texture::download uses native-endian Cairo ARGB32.
+            let argb = u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            Rgb::new((argb >> 16) as u8, (argb >> 8) as u8, argb as u8)
+        }
+        fn assert_color(actual: Rgb, expected: Rgb) {
+            for (actual, expected) in [
+                (actual.red(), expected.red()),
+                (actual.green(), expected.green()),
+                (actual.blue(), expected.blue()),
+            ] {
+                assert!(
+                    actual.abs_diff(expected) <= 12,
+                    "channel {actual} != {expected}"
+                );
+            }
+        }
+        adw::init().unwrap();
+        let provider = gtk::CssProvider::new();
+        provider.load_from_data(&crate::style::chrome_css(
+            gtk::check_version(4, 16, 0).is_none(),
+        ));
+        gtk::style_context_add_provider_for_display(
+            &gdk::Display::default().unwrap(),
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        let picker = ColorPicker::new(Rgb::new(255, 0, 0));
+        let window = gtk::Window::builder().child(picker.widget()).build();
+        window.present();
+        settle();
+        let shared = &picker.shared;
+        let center = || {
+            let (start, end) = shared.hue.slider_range();
+            f64::from(start + end) / 2.0
+        };
+        shared.hue.set_value(0.0);
+        settle();
+        let top = center();
+        shared.hue.set_value(359.999_999);
+        settle();
+        let bottom = center();
+        assert!(
+            top < bottom,
+            "hue must increase downwards with the painted spectrum"
+        );
+        for hue in [30.0, 60.0, 120.0, 180.0, 240.0, 300.0, 330.0] {
+            shared.hue.set_value(hue);
+            settle();
+            let y = center();
+            assert!((y - (top + (bottom - top) * hue / 360.0)).abs() <= 2.0);
+            let expected = hsv_to_rgb(Hsv {
+                hue,
+                saturation: 1.0,
+                value: 1.0,
+            });
+            assert_eq!(shared.state.borrow().rgb, expected);
+            assert_eq!(shared.hex.text(), expected.to_hex());
+            assert_eq!(
+                parse_channel_triplet(
+                    &shared.red.text(),
+                    &shared.green.text(),
+                    &shared.blue.text()
+                ),
+                Some(expected)
+            );
+            // Move the thumb away before sampling the spectrum underneath it.
+            shared.hue.set_value(0.0);
+            settle();
+            assert_color(
+                pixel(&shared.hue, f64::from(shared.hue.width()) / 2.0, y),
+                expected,
+            );
+            shared.hue.set_value(hue);
+            let x = f64::from(shared.square.width()) * 0.8;
+            let y = f64::from(shared.square.height()) * 0.2;
+            settle();
+            assert_color(
+                pixel(&shared.square, x, y),
+                hsv_to_rgb(Hsv {
+                    hue,
+                    saturation: 0.8,
+                    value: 0.8,
+                }),
+            );
+            update_square_from_point(shared, x, y);
+            assert_eq!(
+                shared.state.borrow().rgb,
+                hsv_to_rgb(Hsv {
+                    hue,
+                    saturation: 0.8,
+                    value: 0.8
+                })
+            );
+            // Restore full S/V through the same public path used by swatches.
+            picker.set_color(expected);
+            assert!((shared.hue.value() - hue).abs() < 0.2);
+            shared.hex.set_text("#00FF00");
+            assert_eq!(shared.hue.value(), 120.0);
+            shared.red.set_text("255");
+            assert_eq!(shared.hue.value(), 60.0);
+        }
+        window.close();
+        settle();
+    }
 
     #[test]
     fn rgb_hsv_round_trips_exactly_for_representative_colors() {

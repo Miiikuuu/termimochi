@@ -7,7 +7,7 @@ installation is required.
 
 ## SVG import
 
-Use **Import Artwork…** with an `.svg` file. Static vector shapes, gradients,
+Use **Add image / GIF…** with an `.svg` file. Static vector shapes, gradients,
 local `#id` reuse, clipping, masks, filters and text go through the same Original /
 Converted editor, crop, background removal and character modes as raster images.
 The original SVG bytes and recipe are embedded in editable presets/workspaces;
@@ -191,7 +191,8 @@ Exporting a bundle does not query or certify terminal capabilities. The separate
 visual check before offering managed installation. See [terminal trials](pixel-trials.md).
 
 The checkerboard is a GTK pixel preview, **not Kitty/Sixel rendering inside VTE**.
-Live Preview and normal Fastfetch Apply remain on the ANSI path. Image installation
+Greeting's main Design Preview uses a GTK composition and normal Apply honors
+the saved Image / Animation / Character intent. Image installation
 does not add startup hooks; an existing hook reading the updated configuration
 will use its new image output. Character density, ASCII contour/inversion effects and opening animations
 do not apply to pixel export. GIF animation is an explicit separate output,
@@ -200,14 +201,16 @@ remain unsupported.
 
 ## GIF animation
 
-**Import Artwork…** accepts GIF87a/GIF89a. The image-to-text editor uses the first
+**Add image / GIF…** accepts GIF87a/GIF89a. The image-to-text editor uses the first
 nontransparent composited frame for its Original/Converted views and the ANSI
 fallback. The complete original GIF and accepted recipe are embedded in the
 existing editable source; moving/deleting the original does not break re-editing.
 The import status explicitly distinguishes this still from animation playback.
 
-After **Use Artwork**, enable Greeting and open **Export Image Greeting…**. A GIF
-source adds **Kitty · Animated GIF**, selected by default. **Play / Pause** controls
+After **Use Artwork**, enable Greeting and choose **Display → Animation** in the
+normal editor (Recommended also chooses animation for GIF). The separate
+**Export Image Greeting…** copy dialog starts from this intent; a GIF source adds
+**Kitty · Animated GIF**. **Play / Pause** controls
 a looping pixel preview; the frame scrubber selects a frame without changing the
 source or exported animation. Playback does not start automatically. Wheel motion
 cannot change the scrubber or output parameters. Selecting **Kitty · Still PNG**
@@ -260,9 +263,11 @@ Processed GIF output is capped at 16 MiB and the inline animation stream at 32 M
 These are data limits, not a total process-memory guarantee.
 
 Native Kitty animation is not a universal terminal feature. Raw protocol imports
-remain blocked; do not assume arbitrary `.kitty`/binary files are safe. The main
-VTE preview, normal Apply and startup integration continue to use accepted ANSI.
-No animation bundle is installed or executed automatically.
+remain blocked; do not assume arbitrary `.kitty`/binary files are safe. The embedded
+VTE is not a graphics-protocol renderer. The Greeting GTK canvas shows the design;
+main Try verifies it in a real terminal. Normal Apply uses the same saved intent
+and requires current visual approval for pixels. No animation bundle is installed
+or startup hook enabled automatically; independent managed configs are the default.
 
 ## Independent implementation and references
 

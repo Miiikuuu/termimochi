@@ -49,6 +49,10 @@ pub(crate) struct PixelImage {
     pub animation: Option<animation::Prepared>,
 }
 
+pub(crate) fn placeholder() -> Result<PixelImage, String> {
+    encoded(RgbaImage::from_pixel(1, 1, image::Rgba([0; 4])), None)
+}
+
 pub(crate) fn prepare(source: &source::EditableArtwork) -> Result<PixelImage, String> {
     if source.image.is_gif() {
         let animation = animation::prepare(source)?;

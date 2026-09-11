@@ -185,6 +185,8 @@ pub(crate) struct Item {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GreetingSettings {
+    #[serde(default)]
+    pub presentation: crate::greeting_output::Presentation,
     pub enabled: bool,
     pub logo: Logo,
     pub custom_logo: String,
@@ -239,6 +241,7 @@ fn deserialize_items<'de, D: serde::Deserializer<'de>>(
 impl Default for GreetingSettings {
     fn default() -> Self {
         Self {
+            presentation: Default::default(),
             enabled: false,
             logo: Logo::Mochi,
             custom_logo: "(づ｡◕‿‿◕｡)づ".into(),
@@ -276,6 +279,7 @@ impl GreetingSettings {
         settings
     }
     pub fn validate(&self) -> Result<(), String> {
+        self.presentation.validate()?;
         if let Some(source) = &self.editable_artwork {
             source.options()?;
         }
@@ -383,6 +387,7 @@ impl GreetingSettings {
         plain
     }
     pub fn use_official(&mut self, preset: OfficialPreset) {
+        self.presentation = Default::default();
         self.editable_artwork = None;
         self.imported_source = None;
         self.source_logo = None;
@@ -1060,6 +1065,9 @@ impl GreetingPreset {
 impl Document for GreetingPreset {
     const MAX_BYTES: u64 = crate::greeting_image::source::DOCUMENT_LIMIT;
     const SUFFIX: &'static str = ".termimochi-greeting.json";
+    fn migrate(&mut self, bytes: &[u8]) -> Result<(), String> {
+        crate::greeting_output::migrate(&mut self.greeting, bytes)
+    }
     fn validate(&self) -> Result<(), String> {
         if self.kind != "termimochi-greeting" || self.version != 1 {
             return Err("Unsupported greeting preset.".into());

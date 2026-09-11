@@ -25,7 +25,18 @@ workspace never grants permission to change terminal configuration.
 | Layout | Global cursor, blink, scrollbar and default grid settings. Grid affects new windows, not existing ones; remembered window sizing is disabled. Exact padding, tab bar and outer spacing are preview-only. |
 | Bound Starship source | Writes the displayed existing TOML file, keeping a private backup beside it. Only shells already configured to use that file pick it up. |
 | Designer or detached workspace prompt | **Exports only** to `starship.toml` inside the displayed application-record directory. Does not replace this machine's Starship file or activate a shell integration. |
-| Fastfetch | Replaces the displayed configuration, retaining a private backup. Does not run it or add a startup hook. Dedicated Kitty/Sixel/GIF bundles still use Image Greeting export. |
+| Character Greeting | Replaces the displayed shared Fastfetch configuration, retaining a private backup. Every terminal reading it is affected. Does not run it or add a startup hook. |
+| Image / animation Greeting | Requires a matching real-terminal visual check. Installs immutable assets and an independent target-specific config by default, reporting **Installed · not enabled**. Explicit shared replacement is a separate unchecked option with a cross-terminal warning. |
+
+Greeting's ordinary Apply, the main Apply Scheme button, and a completed terminal
+trial all use the same output plan. Reapplying fields does not silently replace
+pixels with ANSI. Choose **Display → Character** explicitly to change effect;
+this is undoable. Saving or exporting is not approval to apply.
+
+Independent configs live under `$XDG_DATA_HOME/termimochi/targets/<terminal>/config.jsonc`.
+Selecting Kitty changes Greeting's trial destination, **not** the scope of Ptyxis
+font/layout/palette settings. The review names both scopes. Independent image
+installation preserves the shared greeting and does not enable automatic routing.
 
 Application uses a frozen review snapshot. Changes to the workspace or reviewed
 external values require another review. File operations retain the existing
@@ -53,6 +64,12 @@ An applied config is not proof that shell integration is enabled. TermiMochi
 does not add Starship initialization or Fastfetch startup hooks in this workflow.
 Exported prompts and preview-only layout options do not automatically appear in
 a new terminal.
+
+For continuity, a successful Greeting item also retains the existing local recovery
+preset. Failure to save that preset is reported separately and leaves the draft
+intact. This does not mark the complete scheme saved; use main Save to keep all
+modules together. Running the full character configuration is a separate result-page
+**Run Once** confirmation, not a preselected post-apply side effect.
 
 ## Restore this application
 

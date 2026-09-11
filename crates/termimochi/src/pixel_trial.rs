@@ -206,6 +206,33 @@ fn require_pixel_output(source: &str) -> Result<String, String> {
 }
 
 impl Trial {
+    pub fn respond(&self, key: u8) -> Result<(), String> {
+        let assessment = self.assessment()?;
+        if assessment.done {
+            return Err("This trial has finished. Start a fresh trial.".into());
+        }
+        let stage = if assessment.message.starts_with("No conclusive") {
+            "unknown"
+        } else if assessment.asset_hash.is_some()
+            && (assessment.message.starts_with("Does the animation")
+                || assessment.message.starts_with("Is the artwork"))
+        {
+            "visual"
+        } else {
+            return Err("Wait until the terminal has rendered before giving feedback.".into());
+        };
+        if !(stage == "visual" && b"ynq".contains(&key)
+            || stage == "unknown" && b"tq".contains(&key))
+        {
+            return Err("Feedback does not match the trial stage.".into());
+        }
+        typography_preset::write_checked_with_limit(
+            &self.directory.join("gui-response"),
+            format!("{stage}:{}", key as char).as_bytes(),
+            &None,
+            32,
+        )
+    }
     pub fn prepare(
         parent: &Path,
         settings: &GreetingSettings,
@@ -342,9 +369,6 @@ impl Trial {
             self.directory.file_name().unwrap().to_string_lossy()
         );
         let directory = root.join(name);
-        if directory.exists() {
-            return Err("This tested artwork is already installed. Start a fresh trial before installing again.".into());
-        }
         target.check()?;
         let config = if self.ansi {
             String::from_utf8(tested).map_err(|e| e.to_string())?
@@ -371,20 +395,103 @@ pub(crate) struct InstallPlan {
     assets: Vec<(String, Vec<u8>)>,
 }
 impl InstallPlan {
+    /// Reuse verified pixels/layout, but review the current complete fields.
+    /// Trial confirmation never authorizes imported commands or a destination.
+    pub fn with_current_fields(mut self, current: &str) -> Result<Self, String> {
+        use jsonc_parser::cst::CstInputValue;
+        let tested = crate::fastfetch_document::value(&self.config)?;
+        let root = crate::fastfetch_document::parse(current)?;
+        let object = root.object_value().ok_or("Missing configuration object.")?;
+        fn input(v: &serde_json::Value) -> CstInputValue {
+            match v {
+                serde_json::Value::Null => CstInputValue::Null,
+                serde_json::Value::Bool(v) => CstInputValue::Bool(*v),
+                serde_json::Value::Number(v) => CstInputValue::Number(v.to_string()),
+                serde_json::Value::String(v) => CstInputValue::String(v.clone()),
+                serde_json::Value::Array(v) => CstInputValue::Array(v.iter().map(input).collect()),
+                serde_json::Value::Object(v) => {
+                    CstInputValue::Object(v.iter().map(|(k, v)| (k.clone(), input(v))).collect())
+                }
+            }
+        }
+        let logo = input(&tested["logo"]);
+        if let Some(old) = object.get("logo") {
+            old.set_value(logo);
+        } else {
+            object.append("logo", logo);
+        }
+        let mut config = require_pixel_output(&root.to_string())?;
+        if let Some(guard) = tested
+            .get("general")
+            .and_then(|g| g.get("preRun"))
+            .and_then(|v| v.as_str())
+        {
+            let root = crate::fastfetch_document::parse(&config)?;
+            let object = root.object_value().unwrap();
+            if object.get("general").is_none() {
+                object.append("general", CstInputValue::Object(vec![]));
+            }
+            let general = object
+                .get("general")
+                .and_then(|p| p.object_value())
+                .ok_or("Invalid general settings")?;
+            let guard = guard.split(";\n").next().unwrap_or(guard);
+            let values = crate::fastfetch_document::value(current)?;
+            let previous = values
+                .get("general")
+                .and_then(|g| g.get("preRun"))
+                .map(|v| {
+                    v.as_str()
+                        .ok_or("general.preRun must be text; it has not been replaced.")
+                })
+                .transpose()?
+                .unwrap_or("");
+            let command = if previous == guard || previous.starts_with(&format!("{guard};\n")) {
+                previous.to_owned()
+            } else if previous.is_empty() {
+                guard.to_owned()
+            } else {
+                format!("{guard};\n{previous}")
+            };
+            if let Some(p) = general.get("preRun") {
+                p.set_value(CstInputValue::String(command));
+            } else {
+                general.append("preRun", CstInputValue::String(command));
+            }
+            config = root.to_string();
+        }
+        self.config = config;
+        Ok(self)
+    }
     pub fn apply(mut self, state: &Path) -> Result<fastfetch_apply::Target, String> {
         self.target.check()?;
         crate::fastfetch_document::parse(&self.config)?;
         std::fs::create_dir_all(self.directory.parent().ok_or("Missing asset parent.")?)
             .map_err(|e| e.to_string())?;
         use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&self.directory)
-            .map_err(|e| e.to_string())?;
+        if self.directory.exists() {
+            let metadata = std::fs::symlink_metadata(&self.directory).map_err(|e| e.to_string())?;
+            if !metadata.is_dir() || metadata.mode() & 0o077 != 0 {
+                return Err("Managed asset directory changed.".into());
+            }
+            for (name, bytes) in &self.assets {
+                if read(&self.directory.join(name))? != *bytes {
+                    return Err("Managed artwork changed externally; nothing was applied.".into());
+                }
+            }
+        } else {
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&self.directory)
+                .map_err(|e| e.to_string())?;
+        }
         // Retain immutable assets on any uncertain failure: the active file or a
         // backup may reference them. Never garbage-collect assets during restore.
         let result = (|| {
             for (name, bytes) in self.assets {
+                if self.directory.join(&name).exists() {
+                    continue;
+                }
                 typography_preset::write_checked_with_limit(
                     &self.directory.join(name),
                     &bytes,
@@ -392,7 +499,10 @@ impl InstallPlan {
                     LIMIT,
                 )?;
             }
-            write(&self.directory.join("config.jsonc"), self.config.as_bytes())?;
+            // A retained bundle remains immutable across later field edits.
+            if !self.directory.join("config.jsonc").exists() {
+                write(&self.directory.join("config.jsonc"), self.config.as_bytes())?;
+            }
             fastfetch_apply::apply(&mut self.target, &self.config, state)?;
             Ok(self.target)
         })();

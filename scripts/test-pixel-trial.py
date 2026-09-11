@@ -141,7 +141,19 @@ def main(folder, terminal, mode):
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "--inside-installed":
+    if sys.argv[1] == "--observe-existing":
+        assert os.environ.get("DISPLAY") not in (None, ":0", ":1")
+        os.environ["TERMIMOCHI_TEST_WINDOW_TITLE"] = "TermiMochi Image Trial"
+        out = Path(os.environ["XDG_CACHE_HOME"])
+        bounds = []
+        for index in range(4):
+            capture = out / f"gui-native-animation-{index}.png"
+            driver("capture", capture)
+            bounds.append(check_picture(capture, True))
+            time.sleep(0.06)
+        assert len(set(bounds)) > 1, "Animation did not move"
+        print("PASS: actual animation moves; no approval or configuration was written by the observer")
+    elif sys.argv[1] == "--inside-installed":
         folder = Path(sys.argv[2])
         # Intentionally immediate: the installed configuration owns startup
         # stabilization, not a sleep hidden in the test launcher.

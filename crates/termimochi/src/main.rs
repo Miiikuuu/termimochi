@@ -8,6 +8,7 @@ mod greeting_art;
 mod greeting_fields;
 mod greeting_image;
 mod greeting_official;
+mod greeting_output;
 mod greeting_startup;
 mod layout;
 mod layout_apply;

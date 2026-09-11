@@ -19,57 +19,10 @@ fn plain_report_line(line: &str) -> String {
 }
 
 impl Workbench {
-    pub(in crate::window) fn review_pixel_install(
-        self: &Rc<Self>,
-        plan: crate::pixel_trial::InstallPlan,
-        snapshot: GreetingSettings,
-        terminal: &str,
-        ansi: bool,
-    ) {
-        let title = format!(
-            "Install {} Greeting · Tested in {terminal}",
-            if ansi { "ANSI" } else { "Image" }
-        );
-        let before = plan
-            .target
-            .expected
-            .as_ref()
-            .map(|b| String::from_utf8_lossy(b).into_owned());
-        let startup_note = if plan.config.contains(crate::pixel_trial::startup::ARG) {
-            "Kitty startup protection: Fastfetch preRun calls TermiMochi to wait for stable terminal dimensions (normally about 300 ms, bounded to 1.5 s). Existing preRun commands are retained. Keep TermiMochi installed at this path.\n"
-        } else {
-            ""
-        };
-        let description = format!(
-            "Configuration: {}\nManaged immutable assets: {}\nANSI fallback: {}\n{startup_note}Test used safe sample fields. The full configuration below may contain imported commands; they are not run by installation. Only the tested terminal/output is visually verified. Other terminals remain unverified. No shell startup hook is added. Use Restore Previous Configuration to roll back; managed assets remain for backup references.",
-            plan.target.path.display(),
-            plan.directory.display(),
-            plan.directory.join("config-ansi.jsonc").display()
-        );
-        let weak = Rc::downgrade(self);
-        self.review_fastfetch(&format!("{title}\n{description}"), &plan.target.path.clone(), before.as_deref(), Some(&plan.config.clone()), "Install & Apply", move |_| {
-            let Some(this) = weak.upgrade() else { return; };
-            if this.greeting.settings() != snapshot || this.greeting.invalid.get() { this.toast("Greeting changed during review. Test and review it again."); return; }
-            match plan.apply(&this.greeting.fastfetch_state) {
-                Ok(target) => {
-                    *this.greeting.fastfetch_target.borrow_mut() = Some(target);
-                    let saved = this.greeting.persist();
-                    this.schedule_fastfetch_sync();
-                    this.toast(&match saved { Ok(()) => "Greeting installed with absolute asset paths and a configuration backup. Startup is unchanged; other terminals may require ANSI fallback.".into(), Err(error) => format!("Image configuration applied, but the editable preset could not be saved: {error}") });
-                }
-                Err(error) => this.toast(&error),
-            }
-        });
-    }
-
     pub(in crate::window) fn prepare_scheme_fastfetch(
         &self,
     ) -> Result<(fastfetch_apply::Target, String), String> {
-        let mut settings = self.greeting.settings();
-        if settings.imported_source.is_none() {
-            settings.position =
-                settings.position_at_width(self.preview_terminal.column_count().max(12) as usize);
-        }
+        let settings = self.greeting.settings();
         let source = settings.fastfetch_config()?;
         let target = self
             .greeting
@@ -127,7 +80,10 @@ impl Workbench {
                 let mut settings = this.greeting.settings();
                 let same_logo = settings.fastfetch_config().ok().and_then(|s| fastfetch_document::value(&s).ok()).map(|v| v["logo"].clone())
                     == fastfetch_document::value(&source).ok().map(|v| v["logo"].clone());
-                if !same_logo { settings.editable_artwork = None; }
+                if !same_logo {
+                    settings.editable_artwork = None;
+                    crate::greeting_output::select_character(&mut settings);
+                }
                 settings.enabled = true;
                 settings.official_preset = None;
                 settings.official_items.clear();
@@ -216,100 +172,7 @@ impl Workbench {
         );
     }
     pub(in crate::window) fn request_fastfetch_apply(self: &Rc<Self>) {
-        self.greeting.finish();
-        if self.greeting.invalid.get() {
-            self.toast("Fix or undo the invalid field before applying.");
-            return;
-        }
-        let snapshot = self.greeting.settings();
-        let mut export = snapshot.clone();
-        if export.imported_source.is_none() {
-            export.position =
-                export.position_at_width(self.preview_terminal.column_count().max(12) as usize);
-        }
-        let source = match export.fastfetch_config() {
-            Ok(source) => source,
-            Err(error) => {
-                self.toast(&error);
-                return;
-            }
-        };
-        let target = self
-            .greeting
-            .fastfetch_target
-            .borrow()
-            .clone()
-            .map(Ok)
-            .unwrap_or_else(|| {
-                fastfetch_apply::last_path(&self.greeting.fastfetch_state).and_then(|path| {
-                    fastfetch_apply::Target::open(
-                        path.unwrap_or_else(fastfetch_apply::default_path),
-                    )
-                })
-            });
-        let target = match target.and_then(|target| target.check().map(|()| target)) {
-            Ok(target) => target,
-            Err(error) => {
-                self.toast(&error);
-                return;
-            }
-        };
-        let before = target
-            .expected
-            .as_ref()
-            .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
-        let weak = Rc::downgrade(self);
-        self.review_fastfetch(
-            "Review Fastfetch Changes",
-            &target.path.clone(),
-            before.as_deref(),
-            Some(&source.clone()),
-            "Back Up & Apply",
-            move |run_after| {
-                let Some(this) = weak.upgrade() else {
-                    return;
-                };
-                if this.greeting.invalid.get() || this.greeting.settings() != snapshot {
-                    this.toast(
-                        "Greeting changed while reviewing. Review it again before applying.",
-                    );
-                    return;
-                }
-                let mut target = target;
-                match fastfetch_apply::apply(&mut target, &source, &this.greeting.fastfetch_state) {
-                    Ok(_) => {
-                        *this.greeting.fastfetch_target.borrow_mut() = Some(target.clone());
-                        let saved = this.greeting.persist();
-                        if let Err(error) = &saved {
-                            this.greeting
-                                .sync
-                                .save_failed("Fastfetch applied; preset not saved.", error);
-                        }
-                        let mut message = match saved {
-                            Ok(()) => "Fastfetch applied and Greeting preset saved in TermiMochi."
-                                .to_owned(),
-                            Err(error) => format!(
-                                "Fastfetch applied, but Greeting preset could not be saved: {error}"
-                            ),
-                        };
-                        if run_after {
-                            match crate::fastfetch_run::launch(&target) {
-                                Ok(()) => message.push_str(
-                                    " Opening a new terminal; press Enter there to close.",
-                                ),
-                                Err(error) => {
-                                    message.push_str(&format!(" Automatic launch failed: {error}"))
-                                }
-                            }
-                        }
-                        this.toast(&message);
-                        this.refresh_history_actions();
-                        this.schedule_fastfetch_sync();
-                    }
-                    Err(error) => this.toast(&error),
-                }
-            },
-        );
+        self.request_scheme_apply();
     }
     pub(in crate::window) fn request_fastfetch_restore(self: &Rc<Self>) {
         let plan = match fastfetch_apply::prepare_restore(&self.greeting.fastfetch_state) {

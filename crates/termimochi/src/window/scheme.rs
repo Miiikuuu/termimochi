@@ -85,7 +85,7 @@ impl Workbench {
         let profile = scheme_apply::activation::profile();
         let target = match &profile {
             Ok((uuid, name)) => format!(
-                "Target: Ptyxis\nProfile: {name} ({uuid})\nLaunching profile when available, otherwise the configured default. This is not another window's active tab. Kitty and other terminals are not modified."
+                "Appearance target: Ptyxis\nProfile: {name} ({uuid})\nLaunching profile when available, otherwise the configured default. This is not another window's active tab. Typography can affect ALL Ptyxis windows. Greeting has a separate explicit destination below; shared files can affect other terminals."
             ),
             Err(error) => format!(
                 "Target: Ptyxis unavailable\n{error}\nStarship and Fastfetch file operations remain available independently."
@@ -208,11 +208,12 @@ impl Workbench {
             }
         })();
         add(&mut plan, "starship", "Prompt · Starship", prompt);
-        add(&mut plan, "fastfetch", "Greeting · Fastfetch", self.prepare_scheme_fastfetch().map(|(target, source)| {
-            let detail = format!("Write: {}\nReplaces this configuration, with backup. New terminals show it only if a startup hook already runs this config. No hook is added. Imported command/network modules will not be executed by Apply. Image/GIF protocol bundles still require their dedicated export; this applies the Fastfetch configuration reviewed below.", target.path.display());
-            let versions = Some((target.expected.as_ref().map(|b| String::from_utf8_lossy(b).into_owned()).unwrap_or_else(|| "No file".into()), source.clone()));
-            (detail, versions, Action::Fastfetch { target, source })
-        }));
+        add(
+            &mut plan,
+            "fastfetch",
+            "Greeting · selected display effect",
+            self.prepare_greeting_action(),
+        );
         plan
     }
 
@@ -282,20 +283,26 @@ impl Workbench {
             }
         });
         let weak_window = window.downgrade();
+        let reviewed_target = self.greeting.presentation.binding.borrow().clone();
+        let reviewed_key = self.greeting_verification_key();
         let weak = Rc::downgrade(self);
         let plan = RefCell::new(Some(plan));
         confirm.connect_clicked(move |_| {
             let Some(this) = weak.upgrade() else { return; };
             let Some(plan) = plan.borrow_mut().take() else { return; };
             if let Some(window) = weak_window.upgrade() { window.destroy(); }
-            if this.committed_workspace().is_err() || this.workspace_snapshot() != workspace {
+            if this.committed_workspace().is_err() || this.workspace_snapshot() != workspace || *this.greeting.presentation.binding.borrow() != reviewed_target || this.greeting_verification_key().ok() != reviewed_key.clone().ok() {
                 this.toast("Workspace changed during review. Review the scheme again; nothing was applied.");
                 return;
             }
             let selected: Vec<_> = checks.iter().map(|c| c.is_sensitive() && c.is_active()).collect();
             let document = this.starship_editor.document();
             let binding = plan.items.iter().find_map(|item| match item.action.as_ref() { Some(Action::Starship { file, contents }) => Some((file.path.clone(), contents.clone())), _ => None });
-            let fastfetch = plan.items.iter().find_map(|item| match item.action.as_ref() { Some(Action::Fastfetch { target, source }) => Some(crate::fastfetch_apply::Target { path: target.path.clone(), expected: Some(source.as_bytes().to_vec()) }), _ => None });
+            let fastfetch = plan.items.iter().find_map(|item| match item.action.as_ref() {
+                Some(Action::Fastfetch { target, source }) => Some(crate::fastfetch_apply::Target { path: target.path.clone(), expected: Some(source.as_bytes().to_vec()) }),
+                Some(Action::ImageGreeting { plan, independent: false }) => Some(crate::fastfetch_apply::Target { path: plan.target.path.clone(), expected: Some(plan.config.as_bytes().to_vec()) }),
+                _ => None
+            });
             match plan.apply(&selected) {
                 Ok((directory, report)) => {
                     let succeeded = |id| report.items.iter().any(|row| row.id == id && matches!(row.status, Status::Applied | Status::Unchanged));
@@ -303,7 +310,17 @@ impl Workbench {
                         this.starship_editor.accept_saved(document, file);
                     }
                     if succeeded("fastfetch") && let Some(target) = fastfetch { this.accept_scheme_fastfetch(target); }
+                    if let Some(row)=report.items.iter().find(|r|r.id=="fastfetch" && matches!(r.status,Status::Applied|Status::Unchanged|Status::NotEnabled)) && let Some(path)=&row.path && let Ok(target)=crate::fastfetch_apply::Target::open(path.clone()) {
+                        *this.greeting.presentation.deployed.borrow_mut()=Some((this.greeting.settings(),this.greeting.presentation.binding.borrow().clone(),target,row.status==Status::NotEnabled));
+                        // Retain the existing local recovery draft after a
+                        // successful Greeting apply. This does not mark the
+                        // complete scheme saved or borrow permission to run it.
+                        if let Err(error) = this.greeting.retain_applied_preset() {
+                            this.toast(&format!("Greeting applied, but local preset was not saved: {error}"));
+                        }
+                    }
                     this.refresh_deployment();
+                    this.refresh_output_bar();
                     this.show_scheme_report(directory, report);
                 }
                 Err(error) => { gtk::AlertDialog::builder().message("Scheme application needs attention").detail(&error).buttons(["Close"]).modal(true).build().choose(Some(&this.window()), gio::Cancellable::NONE, |_| {}); },
@@ -345,10 +362,43 @@ impl Workbench {
         body.append(&label(&format!("Application record: {}\n\nVerify in a new Ptyxis window using the profile above. Font is Ptyxis-wide; grid size affects new windows. Starship requires an existing shell integration, and Fastfetch requires an existing startup hook or a manual run with the reviewed config. Export-only and preview-only items do not take effect automatically.", directory.display())));
         for row in &report.items {
             if row.id == "fastfetch"
-                && matches!(row.status, Status::Applied | Status::Unchanged)
+                && matches!(
+                    row.status,
+                    Status::Applied | Status::Unchanged | Status::NotEnabled
+                )
                 && let Some(path) = &row.path
             {
                 body.append(&label(&format!("To verify this Greeting, run in that terminal:\nfastfetch --config {}\nThis runs the configuration, including any imported command/network modules.", shell_argument(&path.to_string_lossy()))));
+                if let Ok(target) = crate::fastfetch_apply::Target::open(path.clone())
+                    && target
+                        .source()
+                        .ok()
+                        .and_then(|s| crate::fastfetch_document::value(&s).ok())
+                        .is_some_and(|v| {
+                            v["logo"]["type"] == "data-raw"
+                                || v["logo"]["type"] == "data"
+                                || v["logo"]["type"] == "builtin"
+                        })
+                {
+                    let run = gtk::Button::with_label("Run applied character greeting in Ptyxis");
+                    let weak = Rc::downgrade(self);
+                    run.connect_clicked(move |_| {
+                        if let Some(this) = weak.upgrade() {
+                            let target = target.clone();
+                            let weak = Rc::downgrade(&this);
+                            gtk::AlertDialog::builder()
+                                .message("Run the complete applied configuration?")
+                                .detail("Unlike the safe trial, this executes imported command/network modules. Shell startup will not be loaded.")
+                                .buttons(["Cancel", "Run Once"])
+                                .cancel_button(0).default_button(0).modal(true).build()
+                                .choose(Some(&this.window()), gio::Cancellable::NONE, move |result| {
+                                    if result == Ok(1) && let Some(this) = weak.upgrade()
+                                        && let Err(error) = crate::fastfetch_run::launch(&target) { this.toast(&error); }
+                                });
+                        }
+                    });
+                    body.append(&run);
+                }
             }
         }
         let close = gtk::Button::with_label("Close");
@@ -393,7 +443,7 @@ impl Workbench {
                 let Some(this) = weak.upgrade() else { return; };
                 if let Some(window) = weak_window.upgrade() { window.destroy(); }
                 match Report::load(&directory).and_then(|mut report| { report.restore(&directory)?; Ok(report) }) {
-                    Ok(report) => { this.accept_scheme_restore(&report); this.refresh_deployment(); this.show_scheme_report(directory, report); }
+                    Ok(report) => { this.accept_scheme_restore(&report); this.refresh_deployment(); this.refresh_output_bar(); this.show_scheme_report(directory, report); }
                     Err(error) => this.toast(&error),
                 }
             });
@@ -412,6 +462,7 @@ impl Workbench {
             }
             if let Some(path) = &row.path {
                 if row.id == "fastfetch"
+                    && !path.starts_with(glib::user_data_dir().join("termimochi/targets"))
                     && let Ok(target) = crate::fastfetch_apply::Target::open(path.clone())
                 {
                     self.accept_scheme_fastfetch(target);

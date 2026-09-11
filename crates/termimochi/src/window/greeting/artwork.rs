@@ -143,6 +143,7 @@ impl Workbench {
             self.toast(&error);
             return;
         }
+        crate::greeting_output::select_character(&mut next);
         let detail = format!(
             "{} lines · {} cells wide\n\nOnly the logo will change. Colors are preserved; unsupported controls are removed. Other fields and comments stay intact. Imported configurations embed a portable text copy. Nothing is applied to your terminal. Undo restores the previous logo.{}",
             art.plain.lines().count(),
@@ -200,6 +201,7 @@ impl Workbench {
         }
         settings.custom_art = None;
         settings.editable_artwork = None;
+        crate::greeting_output::select_character(&mut settings);
         self.greeting.replace(settings, true);
         self.greeting.artwork.grab_focus();
         self.toast("Plain-text editing enabled. Undo restores the original colors.");

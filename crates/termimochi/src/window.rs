@@ -515,6 +515,10 @@ fn present_with_preset(
     initial_path: Option<PathBuf>,
     preset_path: PathBuf,
 ) {
+    if let Some(display) = gdk::Display::default() {
+        gtk::IconTheme::for_display(&display)
+            .add_resource_path(&format!("{}/icons", crate::RESOURCE_BASE));
+    }
     let initial_workspace = initial_path
         .as_ref()
         .filter(|path| document_store::matches_path::<Workspace>(path))
@@ -2477,7 +2481,7 @@ fn build_preview(
     content.set_width_request(360);
     content.set_vexpand(true);
 
-    let heading = gtk::Label::new(Some("Live Preview"));
+    let heading = gtk::Label::new(Some("Design Preview"));
     heading.set_xalign(0.0);
     heading.set_valign(gtk::Align::Center);
     heading.set_hexpand(true);
@@ -3598,6 +3602,10 @@ impl Workbench {
 
         for (name, operation) in [
             ("save-layout", 0),
+            ("save-theme", 8),
+            ("export-theme", 9),
+            ("try-greeting", 10),
+            ("save-font-preset", 11),
             ("export-layout", 1),
             ("reload-layout", 2),
             ("apply-layout", 3),
@@ -3618,6 +3626,10 @@ impl Workbench {
                         4 => this.request_layout_restore(),
                         5 => this.choose_workspace_open(),
                         6 => this.save_workspace(),
+                        8 => this.save_theme(),
+                        9 => this.choose_theme_save_as(),
+                        10 => this.show_greeting_trial(),
+                        11 => this.save_typography_preset(),
                         _ => this.choose_workspace_save_as(),
                     }
                 }
@@ -3860,6 +3872,7 @@ impl Workbench {
                 return;
             }
             this.refresh_history_actions();
+            this.refresh_output_bar();
             this.schedule_fastfetch_sync();
             this.ensure_official_greeting_preview();
             this.schedule_diagnostics();
@@ -4718,48 +4731,12 @@ impl Workbench {
         }
         // Keep the menu available even for invalid fields: Reload and Restore
         // are recovery actions. Individual write actions stay disabled.
-        if self.greeting_module_button.is_active() {
-            self.save_action.set_enabled(!self.greeting.invalid.get());
-            if self.greeting.dirty() {
-                self.save_button.add_css_class("save-ready");
-            } else {
-                self.save_button.remove_css_class("save-ready");
-            }
-        } else if self.layout_module_button.is_active() {
-            self.save_action.set_enabled(true);
-            if self.layout_dirty() {
-                self.save_button.add_css_class("save-ready");
-            } else {
-                self.save_button.remove_css_class("save-ready");
-            }
-        } else if self.typography_module_button.is_active() {
-            self.save_action.set_enabled(true);
-            if self.typography_dirty() {
-                self.save_button.add_css_class("save-ready");
-            } else {
-                self.save_button.remove_css_class("save-ready");
-            }
-        } else if self.prompt_module_button.is_active() {
-            self.save_action
-                .set_enabled(valid && !self.has_draft() && !self.greeting.invalid.get());
-            if self.has_unsaved_setup() {
-                self.save_button.add_css_class("save-ready");
-            } else {
-                self.save_button.remove_css_class("save-ready");
-            }
+        self.save_action
+            .set_enabled(valid && !self.has_draft() && !self.greeting.invalid.get());
+        if self.has_unsaved_setup() {
+            self.save_button.add_css_class("save-ready");
         } else {
-            let model = self.model.borrow();
-            let (enabled, ready) = save_button_state(
-                model.dirty,
-                model.current_path.is_some(),
-                self.name_valid.get() && !self.color_picker.has_invalid_draft(),
-            );
-            self.save_action.set_enabled(enabled);
-            if ready {
-                self.save_button.add_css_class("save-ready");
-            } else {
-                self.save_button.remove_css_class("save-ready");
-            }
+            self.save_button.remove_css_class("save-ready");
         }
     }
 
@@ -7420,22 +7397,10 @@ impl Workbench {
     }
 
     fn save(self: &Rc<Self>) {
-        if self.greeting_module_button.is_active() {
-            self.save_greeting_preset();
-            return;
-        }
-        if self.layout_module_button.is_active() {
-            self.save_layout_preset();
-            return;
-        }
-        if self.typography_module_button.is_active() {
-            self.save_typography_preset();
-            return;
-        }
-        if self.prompt_module_button.is_active() {
-            self.save_workspace();
-            return;
-        }
+        self.save_workspace();
+    }
+
+    fn save_theme(self: &Rc<Self>) {
         self.settle_active_edit();
         if !self.require_valid_name() {
             return;
@@ -7444,27 +7409,15 @@ impl Workbench {
         if let Some(path) = path {
             self.write_to(&path);
         } else {
-            self.choose_save_as();
+            self.choose_theme_save_as();
         }
     }
 
     fn choose_save_as(self: &Rc<Self>) {
-        if self.greeting_module_button.is_active() {
-            self.choose_greeting_export(false);
-            return;
-        }
-        if self.layout_module_button.is_active() {
-            self.choose_layout_export();
-            return;
-        }
-        if self.typography_module_button.is_active() {
-            self.choose_typography_export();
-            return;
-        }
-        if self.prompt_module_button.is_active() {
-            self.choose_workspace_save_as();
-            return;
-        }
+        self.choose_workspace_save_as();
+    }
+
+    fn choose_theme_save_as(self: &Rc<Self>) {
         self.settle_active_edit();
         if !self.require_valid_name() {
             return;
@@ -7923,7 +7876,7 @@ mod tests {
         settle();
         assert!(this.preview_terminal.char_height() > height);
         assert!(this.typography_dirty());
-        this.save_action.activate(None);
+        this.save_typography_preset(); // Explicit preset action, not main Save.
         let saved = this.typography_settings();
         assert_eq!(
             PresetStore::open(preset_path.clone())
@@ -7948,7 +7901,7 @@ mod tests {
             .set_selected(PreviewFontWeight::Semibold.index());
         this.line_height_input.set_value(1.25);
         this.cell_width_input.set_value(1.1);
-        this.save_action.activate(None);
+        this.save_typography_preset(); // Explicit preset action, not main Save.
         let saved = this.typography_settings();
         let respond = |label: &str| {
             settle();
@@ -7991,7 +7944,7 @@ mod tests {
             .save(&external)
             .unwrap();
         this.font_size_input.set_value(16.0);
-        this.save_action.activate(None);
+        this.save_typography_preset(); // Explicit preset action, not main Save.
         assert!(
             this.typography_dirty(),
             "conflicted save must not mark the draft clean"

@@ -11,6 +11,9 @@ const LIMIT: u64 = 1024 * 1024;
 pub(crate) trait Document: Serialize + DeserializeOwned + Clone {
     const SUFFIX: &'static str;
     const MAX_BYTES: u64 = LIMIT;
+    fn migrate(&mut self, _bytes: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
     fn validate(&self) -> Result<(), String>;
 }
 
@@ -27,7 +30,9 @@ pub(crate) fn decode<T: Document>(bytes: &[u8]) -> Result<T, String> {
     if bytes.len() as u64 > T::MAX_BYTES {
         return Err(format!("Document exceeds {} KiB.", T::MAX_BYTES / 1024));
     }
-    let document: T = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    let mut document: T = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    // Typed decoding first preserves duplicate/unknown-field rejection.
+    document.migrate(bytes)?;
     document.validate()?;
     Ok(document)
 }

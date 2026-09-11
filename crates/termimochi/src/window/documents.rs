@@ -632,7 +632,7 @@ mod tests {
                 .menu_model()
                 .unwrap()
                 .item_attribute_value(0, "label", None),
-            Some("Save Layout Preset".to_variant())
+            Some("Save Workspace".to_variant())
         );
         this.content_padding_input.set_value(17.0);
         this.column_count_input.set_value(93.0);
@@ -647,7 +647,7 @@ mod tests {
         assert!(this.layout_dirty());
         assert!(this.undo_action.is_enabled());
         let saved = this.layout_settings();
-        this.save_action.activate(None);
+        this.save_layout_preset(); // Explicit secondary action; Ctrl+S now saves the scheme.
         assert_eq!(
             DocumentStore::<LayoutPreset>::open(layout_path.clone())
                 .unwrap()
@@ -695,7 +695,7 @@ mod tests {
             .save(&LayoutPreset::new(external))
             .unwrap();
         this.column_count_input.set_value(94.0);
-        this.save_action.activate(None);
+        this.save_layout_preset();
         assert!(this.layout_dirty());
         assert_eq!(
             DocumentStore::<LayoutPreset>::open(layout_path.clone())

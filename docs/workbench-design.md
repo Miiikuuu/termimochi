@@ -17,12 +17,13 @@ References:
 
 The header owns brand, opening files and undo/redo. The existing activity rail
 owns module navigation. The left inspector scrolls independently; its compact
-output bar stays visible below it. The right Live Preview does not move or reset
+output bar stays visible below it. The right Design Preview does not move or reset
 when navigating. Diagnostics remain local to the preview.
 
-The output bar has three entry points:
+The output bar has four entry points:
 
-- **Save**: current document/preset and complete workspace options, explicitly named.
+- **Save / Ctrl+S**: always the complete scheme, regardless of the active module.
+- **Try in Terminal**: current Greeting output and local target; GUI visual feedback.
 - **Apply Scheme…**: review all workspace destinations/scopes and select external
   changes. No checkbox is preselected; palette activation depends on installation.
   Existing review, backup and conflict checks remain mandatory.
@@ -41,9 +42,17 @@ Light/Dark appearance. Exact padding, tab bar and window spacing are preview-onl
 File replacements expose before/after text. See [Applying a scheme](apply-scheme.md)
 for outcome and recovery semantics.
 
-Prompt's Save menu and Ctrl+S both save workspace snapshots. Ctrl+Shift+S saves
+Every module's Save menu and Ctrl+S save workspace snapshots. Ctrl+Shift+S saves
 a workspace under another name; Ctrl+O opens a workspace. Starship writes are
 explicit Apply / Export actions, never a side effect of the generic Save shortcut.
+
+Greeting's normal editor owns Display, Columns and character style. Protocol and
+fallback preferences are advanced options; preview zoom/playback are session-only.
+The Greeting pixel canvas is a GTK composition, not a VTE graphics-protocol test.
+Other modules retain their VTE testing scenes. The output bar separately reports
+saved state, current-session visual approval and deployment comparison. Local target
+selection is remembered, but shared-pixel replacement consent is never remembered
+or embedded in a scheme. Image output defaults to an independent managed config.
 
 ## Shared color editing
 

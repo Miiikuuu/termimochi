@@ -16,7 +16,8 @@ impl OutputBar {
         &self.more
     }
     pub fn new(save: &gtk::MenuButton) -> Self {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         root.add_css_class("editor-output-bar");
         let title = gtk::Label::builder()
             .label("Palette")
@@ -34,10 +35,21 @@ impl OutputBar {
             .tooltip_text("Import, export and recovery")
             .css_classes(["tool-menu"])
             .build();
-        root.append(&title);
-        root.append(save);
-        root.append(&primary);
-        root.append(&more);
+        let trial = gtk::Button::builder()
+            .label("Try")
+            .action_name("win.try-greeting")
+            .tooltip_text(
+                "Try the current greeting in the target terminal · no configuration changes",
+            )
+            .css_classes(["flat"])
+            .build();
+        trial.update_property(&[gtk::accessible::Property::Label("Try in Terminal")]);
+        actions.append(&title);
+        actions.append(save);
+        actions.append(&trial);
+        actions.append(&primary);
+        actions.append(&more);
+        root.append(&actions);
         Self {
             root,
             title,
@@ -65,6 +77,102 @@ impl Workbench {
     }
 
     pub(super) fn refresh_output_bar(&self) {
+        let presentation = &self.greeting.presentation;
+        if presentation.target_bar.parent().is_none() {
+            self.output_bar.root.prepend(&presentation.target_bar);
+        }
+        let binding = presentation.binding.borrow();
+        let settings = self.greeting.settings();
+        presentation.cells.set([
+            self.preview_terminal.char_width().max(1) as u32,
+            self.preview_terminal.char_height().max(1) as u32,
+        ]);
+        if presentation.canvas.parent().is_none()
+            && let Some(terminal) = self.inspect_layer.child()
+        {
+            self.inspect_layer.set_child(None::<&gtk::Widget>);
+            let stack = gtk::Stack::builder()
+                .vhomogeneous(false)
+                .hhomogeneous(false)
+                .build();
+            stack.add_named(&terminal, Some("terminal"));
+            stack.add_named(&presentation.canvas, Some("pixels"));
+            self.inspect_layer.set_child(Some(&stack));
+        }
+        if let Some(stack) = self.inspect_layer.child().and_downcast::<gtk::Stack>() {
+            let pixels = self.greeting_module_button.is_active()
+                && settings.enabled
+                && settings
+                    .presentation
+                    .resolve(&settings, binding.terminal)
+                    .is_ok_and(|s| s.protocol.is_some());
+            stack.set_visible_child_name(if pixels { "pixels" } else { "terminal" });
+            if pixels {
+                let text: String = self
+                    .greeting_parts_for_width(160)
+                    .into_iter()
+                    .filter(|(_, part)| *part != crate::greeting::GreetingPart::Artwork)
+                    .map(|(text, _)| text)
+                    .collect();
+                let plain = crate::greeting_art::Artwork::parse(&text)
+                    .map(|a| a.plain)
+                    .unwrap_or_else(|_| "Field preview unavailable · Try uses safe samples".into());
+                presentation.fields.set_label(
+                    &plain
+                        .lines()
+                        .map(str::trim_start)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+                presentation.fields.set_tooltip_text(Some("Design information from the existing safe preview. Imported commands are not executed; Try uses safe sample fields."));
+            }
+        }
+        let verified = self.greeting_verification_key().ok().is_some_and(|key| {
+            presentation
+                .verified
+                .borrow()
+                .as_ref()
+                .is_some_and(|(k, _)| *k == key)
+        });
+        let destination = if settings.presentation.visual
+            == crate::greeting_output::Visual::Character
+            || binding.shared_pixels
+        {
+            "Shared greeting · affects every reader"
+        } else {
+            "Independent image · shared greeting unchanged"
+        };
+        let deployment = presentation.deployed.borrow();
+        let applied = match deployment.as_ref() {
+            Some((design, target, file, independent))
+                if *design == settings && *target == *binding && file.check().is_ok() =>
+            {
+                if *independent {
+                    "Installed · not enabled"
+                } else {
+                    "Greeting applied"
+                }
+            }
+            Some(_) => "Greeting has pending changes / target differs",
+            None => "Application not compared · review before applying",
+        };
+        let profile = crate::scheme_apply::activation::profile()
+            .map(|(_, name)| name)
+            .unwrap_or_else(|_| "unavailable".into());
+        presentation.state.set_label(&format!(
+            "{} · {}\n{}\n{applied}\nPtyxis profile: {profile} · font is global",
+            if self.workspace_is_clean() {
+                "Scheme saved"
+            } else {
+                "Scheme unsaved"
+            },
+            if verified {
+                "Visual check confirmed"
+            } else {
+                "Visual check unverified"
+            },
+            destination
+        ));
         let module = self.output_module();
         let designer =
             self.prompt_source_selector.selected() == 1 || self.starship_editor.detached.get();
@@ -117,9 +225,17 @@ impl Workbench {
         // Prompt's main action already owns writing/exporting Starship. Save in
         // that module instead offers a workspace snapshot, without a duplicate.
         if module != EditorModule::Prompt {
-            let item = gio::MenuItem::new(Some(save_label), Some("win.save"));
+            let item = gio::MenuItem::new(
+                Some(save_label),
+                Some(match module {
+                    EditorModule::Palette => "win.save-theme",
+                    EditorModule::Typography => "win.save-font-preset",
+                    EditorModule::Layout => "win.save-layout",
+                    _ => "win.save-greeting",
+                }),
+            );
             set_menu_verb_icon(&item, "termimochi-save-symbolic");
-            save.append_item(&item);
+            more.append_item(&item);
         }
         save.append(
             Some("Save Workspace"),
@@ -148,7 +264,7 @@ impl Workbench {
         );
         match module {
             EditorModule::Palette => {
-                more.append(Some("Save Theme As…"), Some("win.save-as"));
+                more.append(Some("Save Theme As…"), Some("win.export-theme"));
                 let exports = gio::Menu::new();
                 for format in ExportFormat::ALL {
                     exports.append(
@@ -218,7 +334,7 @@ impl Workbench {
                 more.append(Some("Terminal Startup…"), Some("win.greeting-startup"));
             }
         }
-        bar.title.set_text(module.label());
+        bar.title.set_text("");
         bar.primary.set_label("Apply Scheme…");
         bar.primary.set_action_name(Some("win.apply-scheme"));
         bar.primary.set_tooltip_text(Some("Review destinations and choose which workspace modules to apply. Saving never applies external settings."));
@@ -230,7 +346,7 @@ impl Workbench {
             ))]);
         self.save_button.set_menu_model(Some(&save));
         self.save_button
-            .set_tooltip_text(Some("Save the current preset or a complete workspace"));
+            .set_tooltip_text(Some("Save the complete scheme · Ctrl+S"));
         bar.more.set_menu_model(Some(&more));
     }
 }

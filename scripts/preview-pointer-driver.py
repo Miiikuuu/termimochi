@@ -10,6 +10,10 @@ import sys
 import time
 
 title = b"TermiMochi point-to-edit test"
+if os.environ.get("TERMIMOCHI_TEST_WINDOW_TITLE"):
+    assert os.environ.get("DISPLAY") not in (None, ":0", ":1"), "Title override requires an isolated test display"
+    assert os.environ["TERMIMOCHI_TEST_WINDOW_TITLE"] in ("TermiMochi Image Trial", "TermiMochi point-to-edit test (Failed)")
+    title = os.environ["TERMIMOCHI_TEST_WINDOW_TITLE"].encode()
 x11 = c.CDLL("libX11.so.6")
 xtst = c.CDLL("libXtst.so.6")
 x11.XOpenDisplay.restype = c.c_void_p
