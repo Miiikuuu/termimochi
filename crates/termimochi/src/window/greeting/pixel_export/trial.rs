@@ -30,34 +30,32 @@ impl PixelExport {
                         this.invalidate_trial();
                         this.status
                             .set_label("Trial stopped. No daily configuration was changed.");
-                    } else {
-                        if ansi {
-                            if let Some(workbench) = this.workbench.upgrade() {
-                                let mut intent = workbench.greeting.settings().presentation;
-                                intent.visual = crate::greeting_output::Visual::Character;
-                                intent.protocol = None;
-                                match crate::greeting_output::edit(
-                                    &workbench.greeting.settings(),
-                                    intent,
-                                ) {
-                                    Ok(next) => {
-                                        workbench.greeting.replace(next, true);
-                                        if let Some(window) = this.window.upgrade() {
-                                            window.close();
-                                        }
-                                        workbench.show_greeting_trial();
+                    } else if ansi {
+                        if let Some(workbench) = this.workbench.upgrade() {
+                            let mut intent = workbench.greeting.settings().presentation;
+                            intent.visual = crate::greeting_output::Visual::Character;
+                            intent.protocol = None;
+                            match crate::greeting_output::edit(
+                                &workbench.greeting.settings(),
+                                intent,
+                            ) {
+                                Ok(next) => {
+                                    workbench.greeting.replace(next, true);
+                                    if let Some(window) = this.window.upgrade() {
+                                        window.close();
                                     }
-                                    Err(error) => this.status.set_label(&error),
+                                    workbench.show_greeting_trial();
                                 }
+                                Err(error) => this.status.set_label(&error),
                             }
-                        } else {
-                            let ansi = this
-                                .before
-                                .presentation
-                                .resolve(&this.before, this.terminal())
-                                .is_ok_and(|s| s.protocol.is_none());
-                            this.start_trial(ansi);
                         }
+                    } else {
+                        let ansi = this
+                            .before
+                            .presentation
+                            .resolve(&this.before, this.terminal())
+                            .is_ok_and(|s| s.protocol.is_none());
+                        this.start_trial(ansi);
                     }
                 }
             });
