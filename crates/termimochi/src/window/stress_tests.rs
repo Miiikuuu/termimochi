@@ -15,7 +15,7 @@ fn extreme_settings_and_rapid_navigation_keep_preview_bounded_and_recoverable() 
         .build();
     app.register(None::<&gio::Cancellable>).unwrap();
     let root = tempfile::tempdir().unwrap();
-    present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+    present_advanced_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
     let window = app.active_window().unwrap();
     let this = controller(&window);
     let deadline = std::time::Instant::now() + Duration::from_secs(15);

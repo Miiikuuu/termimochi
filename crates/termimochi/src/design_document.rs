@@ -11,6 +11,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use termimochi_core::{PtyxisPalette, Variant};
 mod strict;
+pub(crate) mod theme;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -299,6 +300,8 @@ pub(crate) struct DesignDocument {
     pub native: Option<NativeSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_hint: Option<TargetHint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<theme::ThemeIntent>,
 }
 
 impl DesignDocument {
@@ -476,6 +479,7 @@ impl DesignDocument {
                 text,
             }),
             target_hint: Some(TargetHint::Kitty),
+            theme: None,
         };
         document.validate()?;
         Ok(document)
@@ -518,15 +522,23 @@ impl DesignDocument {
                 Kind::KittyAppearance => Some(TargetHint::Kitty),
                 _ => None,
             },
+            theme: None,
         };
         result.validate()?;
         Ok(result)
     }
 
     pub fn scope(&self) -> Scope {
+        if self.theme.is_some() {
+            return self.theme_scope();
+        }
         if self.kind == Kind::KittyAppearance
             && let Some(native) = &self.native
-            && let Ok(kitty) = crate::kitty_document::KittyDocument::parse(&native.text)
+            && let Ok(kitty) = crate::kitty_document::KittyDocument::parse(
+                &self
+                    .theme_native_source()
+                    .unwrap_or_else(|| native.text.clone()),
+            )
         {
             let (palette, typography, layout) = kitty.ownership();
             return Scope {
@@ -537,9 +549,15 @@ impl DesignDocument {
             };
         }
         Scope {
-            palette: self.components.palette.is_some(),
-            typography: self.components.typography.is_some(),
-            layout: self.components.layout.is_some(),
+            palette: self.components.palette.is_some()
+                || self.theme.as_ref().is_some_and(|t| !t.colors.is_empty()),
+            typography: self.components.typography.is_some()
+                || self
+                    .theme
+                    .as_ref()
+                    .is_some_and(|t| !t.typography.is_empty()),
+            layout: self.components.layout.is_some()
+                || self.theme.as_ref().is_some_and(|t| !t.layout.is_empty()),
             prompt: self.components.prompt.is_some(),
             greeting: self.components.greeting.is_some(),
             artwork: self.components.artwork.is_some(),
@@ -550,12 +568,31 @@ impl DesignDocument {
     /// use from_workspace with this document's scope, never serialize the bridge.
     pub fn project_preview(&self, references: &Workspace) -> Workspace {
         let mut workspace = references.clone();
-        if self.kind == Kind::KittyAppearance
+        if let Some(theme) = &self.theme {
+            workspace.light = theme.light;
+        }
+        if (self.kind == Kind::KittyAppearance || self.theme.is_some())
             && let Some(native) = &self.native
-            && let Ok(kitty) = crate::kitty_document::KittyDocument::parse(&native.text)
-            && let Ok(projected) = kitty.project_workspace(references)
+            && let Ok(kitty) = crate::kitty_document::KittyDocument::parse(
+                &self
+                    .theme_native_source()
+                    .unwrap_or_else(|| native.text.clone()),
+            )
+            && let Ok(projected) = kitty.project_workspace(&workspace)
         {
             workspace = projected;
+            if self.theme.is_some() {
+                let light = workspace.light;
+                workspace.light = !light;
+                if workspace
+                    .palette()
+                    .is_ok_and(|p| p.variant(workspace.variant()).is_some())
+                    && let Ok(other) = kitty.project_workspace(&workspace)
+                {
+                    workspace = other;
+                }
+                workspace.light = light;
+            }
         }
         if let Some(value) = &self.components.palette {
             workspace.palette.clone_from(&value.source);
@@ -577,6 +614,12 @@ impl DesignDocument {
         }
         if let Some(value) = &self.components.artwork {
             value.project(&mut workspace.greeting);
+        }
+        if let Some(theme) = &self.theme {
+            if self.components.greeting.is_none() {
+                workspace.greeting.enabled = false;
+            }
+            theme.project(&mut workspace);
         }
         workspace
     }
@@ -681,14 +724,17 @@ impl Document for DesignDocument {
         strict::unique_json_keys(bytes)
     }
     fn validate(&self) -> Result<(), String> {
-        if self.schema != "termimochi-design" || self.version != 2 {
+        if self.schema != "termimochi-design"
+            || !matches!((self.version, self.theme.is_some()), (2, false) | (3, true))
+        {
             return Err("Unsupported TermiMochi design schema or version.".into());
         }
         if self.id.len() != 36 || !self.id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
             return Err("Invalid portable document identity.".into());
         }
         let scope = self.scope();
-        if scope == Scope::default()
+        if self.theme.is_none()
+            && scope == Scope::default()
             && (self.kind == Kind::Project
                 || self.kind == Kind::KittyAppearance && self.native.is_none())
         {
@@ -708,6 +754,16 @@ impl Document for DesignDocument {
         if self.kind != Kind::Project && !scope.subset_of(Scope::for_kind(self.kind)) {
             return Err("The document contains components outside its declared type.".into());
         }
+        if let Some(theme) = &self.theme {
+            if self.kind != Kind::Project
+                || self.target_hint.is_none()
+                || self.components.typography.is_some()
+                || self.components.layout.is_some()
+            {
+                return Err("A theme requires one target and sparse appearance settings, not duplicate component owners.".into());
+            }
+            theme.validate()?;
+        }
         if scope.greeting && scope.artwork {
             return Err("Artwork cannot have two mutable owners; keep it inside Greeting.".into());
         }
@@ -725,6 +781,17 @@ impl Document for DesignDocument {
         }
         if let Some(value) = &self.components.palette {
             let palette = PtyxisPalette::from_text(&value.source).map_err(|e| e.to_string())?;
+            if let Some(theme) = &self.theme
+                && palette
+                    .variant(if theme.light {
+                        Variant::Light
+                    } else {
+                        Variant::Dark
+                    })
+                    .is_none()
+            {
+                return Err("The theme's selected palette variant is missing.".into());
+            }
             if palette
                 .variant(if value.light {
                     Variant::Light
@@ -772,19 +839,22 @@ impl Document for DesignDocument {
             return Err("Native source is too large.".into());
         }
         if let Some(native) = &self.native {
-            let compatible = matches!(
-                (self.kind, native.format),
-                (Kind::Palette, NativeFormat::Ptyxis)
-                    | (Kind::KittyAppearance, NativeFormat::Kitty)
-                    | (Kind::Prompt, NativeFormat::Starship)
-                    | (
-                        Kind::Greeting,
-                        NativeFormat::Fastfetch | NativeFormat::GreetingPreset
-                    )
-                    | (Kind::Typography, NativeFormat::TypographyPreset)
-                    | (Kind::Layout, NativeFormat::LayoutPreset)
-                    | (Kind::Legacy, NativeFormat::LegacyWorkspace)
-            );
+            let compatible = (self.theme.is_some()
+                && native.format == NativeFormat::Kitty
+                && self.target_hint == Some(TargetHint::Kitty))
+                || matches!(
+                    (self.kind, native.format),
+                    (Kind::Palette, NativeFormat::Ptyxis)
+                        | (Kind::KittyAppearance, NativeFormat::Kitty)
+                        | (Kind::Prompt, NativeFormat::Starship)
+                        | (
+                            Kind::Greeting,
+                            NativeFormat::Fastfetch | NativeFormat::GreetingPreset
+                        )
+                        | (Kind::Typography, NativeFormat::TypographyPreset)
+                        | (Kind::Layout, NativeFormat::LayoutPreset)
+                        | (Kind::Legacy, NativeFormat::LegacyWorkspace)
+                );
             if !compatible {
                 return Err(
                     "Native provenance does not match the document type. Convert a copy instead."

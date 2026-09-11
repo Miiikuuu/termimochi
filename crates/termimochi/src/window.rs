@@ -27,6 +27,7 @@ mod preview_scroll;
 mod scheme;
 #[cfg(test)]
 mod stress_tests;
+mod theme_workspace;
 mod typed_documents;
 mod typed_kitty;
 #[cfg(test)]
@@ -526,6 +527,24 @@ fn present_with_preset(
     initial_path: Option<PathBuf>,
     preset_path: PathBuf,
 ) {
+    present_with_mode(application, initial_path, preset_path, false);
+}
+
+#[cfg(test)]
+fn present_advanced_with_preset(
+    application: &adw::Application,
+    initial_path: Option<PathBuf>,
+    preset_path: PathBuf,
+) {
+    present_with_mode(application, initial_path, preset_path, true);
+}
+
+fn present_with_mode(
+    application: &adw::Application,
+    initial_path: Option<PathBuf>,
+    preset_path: PathBuf,
+    advanced: bool,
+) {
     if let Some(display) = gdk::Display::default() {
         gtk::IconTheme::for_display(&display)
             .add_resource_path(&format!("{}/icons", crate::RESOURCE_BASE));
@@ -661,6 +680,8 @@ fn present_with_preset(
     let brand_name = gtk::Label::builder()
         .label("TermiMochi")
         .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .max_width_chars(32)
         .css_classes(["brand-title-name"])
         .build();
     let app_logo = gtk::Image::builder()
@@ -814,7 +835,11 @@ fn present_with_preset(
     window_ref.set(Some(&window));
     install_editor_module_actions(&window, &editor_workspace);
     let workbench = Rc::new(Workbench {
-        typed: typed_documents::TypedSession::new(),
+        typed: {
+            let session = typed_documents::TypedSession::new();
+            session.advanced.set(advanced);
+            session
+        },
         document_use: document_use::DocumentUseBinding::new(),
         window: window_ref,
         toast_overlay,
@@ -3202,9 +3227,20 @@ impl Workbench {
 
     fn refresh_history_actions(&self) {
         self.refresh_document_scope();
+        if self.is_theme() && !self.updating.get() {
+            self.record_theme_edit();
+        }
         self.refresh_output_bar();
         self.refresh_workspace_title();
         self.greeting.refresh_status();
+        if self.is_theme() {
+            let history = self.typed.theme_history.borrow();
+            self.undo_action
+                .set_enabled(!history.undo.is_empty() || !self.document_inputs_valid());
+            self.redo_action
+                .set_enabled(!history.redo.is_empty() && self.document_inputs_valid());
+            return;
+        }
         if !self.greeting.invalid.get()
             && !self.greeting.presentation_pending()
             && self
@@ -3269,7 +3305,11 @@ impl Workbench {
             .set_enabled(!has_draft && history.can_redo());
     }
 
-    fn undo_edit(&self) {
+    fn undo_edit(self: &Rc<Self>) {
+        if self.is_theme() && self.document_inputs_valid() {
+            self.theme_undo(false);
+            return;
+        }
         if self.greeting_module_button.is_active() {
             self.greeting.undo();
             self.refresh_history_actions();
@@ -3331,7 +3371,11 @@ impl Workbench {
         }
     }
 
-    fn redo_edit(&self) {
+    fn redo_edit(self: &Rc<Self>) {
+        if self.is_theme() {
+            self.theme_undo(true);
+            return;
+        }
         if self.greeting_module_button.is_active() {
             self.greeting.redo();
             self.refresh_history_actions();
@@ -5143,6 +5187,11 @@ impl Workbench {
     }
 
     fn redraw_prompt_preview(&self) {
+        if self.full_session.active.get() && self.theme_prompt_disabled() {
+            self.feed_scoped_preview("$ ", Some(PreviewTarget::Prompt));
+            self.feed_preview(self.preview_input.borrow().text().as_bytes());
+            return;
+        }
         if self.preview_prompt_source.get() == 0 && self.starship_editor.draft.borrow().is_some() {
             self.redraw_copy_preview();
             return;
@@ -7812,7 +7861,7 @@ mod tests {
         app.register(None::<&gio::Cancellable>).unwrap();
         let fixture = tempfile::tempdir().unwrap();
         let preset_path = fixture.path().join(typography_preset::PRESET_NAME);
-        present_with_preset(&app, None, preset_path.clone());
+        present_advanced_with_preset(&app, None, preset_path.clone());
         let window = app.active_window().unwrap();
         let this = greeting::tests::project_controller(&window);
         let settle = || {
@@ -8071,7 +8120,7 @@ mod tests {
         let saved = external;
         assert_eq!(this.model.borrow().palette, palette);
         window.destroy();
-        present_with_preset(&app, None, preset_path);
+        present_advanced_with_preset(&app, None, preset_path);
         let restored_window = app.active_window().unwrap();
         let restored = greeting::tests::project_controller(&restored_window);
         settle();
@@ -8338,6 +8387,7 @@ mod tests {
                 .unwrap();
             this.preview_target_at(f64::from(p.x()) + dx, f64::from(p.y()) + dy)
         };
+        this.select_preview_scene(preview_scene::PreviewScene::Terminal);
         this.preview_selector.set_selected(0);
         settle();
         let first_row = terminal.cursor_position().1 - 7;

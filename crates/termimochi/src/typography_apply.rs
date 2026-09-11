@@ -72,16 +72,17 @@ struct Receipt {
 
 impl Receipt {
     fn validate(&self) -> Result<(), String> {
-        if self.version != 1 || !valid_profile_uuid(&self.profile_uuid) {
+        if ![1, 2].contains(&self.version) || !valid_profile_uuid(&self.profile_uuid) {
             return Err("Unsupported typography backup or invalid profile identifier.".into());
         }
         self.before.user.validate()?;
         self.before.effective.validate()?;
         self.after.validate()?;
-        if self.after.use_system_font != Some(false)
-            || self.after.font_name.is_none()
-            || self.after.line_height.is_none()
-            || self.after.cell_width.is_none()
+        if self.version == 1
+            && (self.after.use_system_font != Some(false)
+                || self.after.font_name.is_none()
+                || self.after.line_height.is_none()
+                || self.after.cell_width.is_none())
         {
             return Err("Incomplete typography apply record.".into());
         }
@@ -225,6 +226,9 @@ impl TypographyTarget {
             (&self.profile, PROFILE_KEYS, profile),
         ] {
             for (key, value) in keys.into_iter().zip(values) {
+                if settings.user_value(key) == value {
+                    continue;
+                }
                 let result = match value {
                     Some(value) => settings
                         .set_value(key, &value)
@@ -265,6 +269,57 @@ impl TypographyTarget {
             },
         })
     }
+
+    /// Sparse theme edit: composite font fields come from the actual target,
+    /// never from the disposable preview. Unowned user values stay unset.
+    pub fn prepare_theme(
+        &self,
+        settings: &TypographySettings,
+        fields: &crate::design_document::theme::Fields,
+    ) -> Result<ApplyRequest, String> {
+        let mut request = self.prepare(settings)?;
+        let before = &request.receipt.before;
+        let mut after = before.user.clone();
+        if ["family", "size", "weight"]
+            .iter()
+            .any(|k| fields.contains_key(*k))
+        {
+            let font = if before.effective.use_system_font == Some(true) {
+                find_settings("org.gnome.desktop.interface", None)
+                    .map(|s| s.string("monospace-font-name").to_string())
+                    .ok_or("Cannot resolve inherited system font; no font was applied.")?
+            } else {
+                before
+                    .effective
+                    .font_name
+                    .clone()
+                    .ok_or("Cannot read target font")?
+            };
+            let mut description = gtk::pango::FontDescription::from_string(&font);
+            let requested = settings.font_description();
+            if fields.contains_key("family") {
+                description.set_family(&settings.family);
+            }
+            if fields.contains_key("size") {
+                description.set_size(requested.size());
+            }
+            if fields.contains_key("weight") {
+                description.set_weight(requested.weight());
+            }
+            after.font_name = Some(description.to_string());
+            after.use_system_font = Some(false);
+        }
+        if fields.contains_key("line_height") {
+            after.line_height = Some(settings.line_height);
+        }
+        if fields.contains_key("cell_width") {
+            after.cell_width = Some(settings.cell_width);
+        }
+        request.receipt.version = 2;
+        request.receipt.after = after;
+        request.receipt.validate()?;
+        Ok(request)
+    }
 }
 
 pub(crate) struct ApplyRequest {
@@ -282,13 +337,25 @@ impl ApplyRequest {
         };
         format!(
             "Ptyxis-wide (all windows and profiles):\nFont: {before_font} → {}\n\nProfile: {} ({})\nLine height: {:.2} → {:.2}\nCell width: {:.2} → {:.2}\n\nA private backup is saved first. Palette, desktop font and shell files are not changed.",
-            self.receipt.after.font_name.as_deref().unwrap(),
+            self.receipt
+                .after
+                .font_name
+                .as_deref()
+                .unwrap_or("Inherited (unchanged)"),
             self.target.label,
             self.target.uuid,
             before.line_height.unwrap_or(1.0),
-            self.receipt.after.line_height.unwrap(),
+            self.receipt
+                .after
+                .line_height
+                .or(before.line_height)
+                .unwrap_or(1.0),
             before.cell_width.unwrap_or(1.0),
-            self.receipt.after.cell_width.unwrap()
+            self.receipt
+                .after
+                .cell_width
+                .or(before.cell_width)
+                .unwrap_or(1.0)
         )
     }
 
@@ -385,6 +452,38 @@ impl RestoreRequest {
 mod tests {
     use super::*;
     use crate::typography::PreviewFontWeight;
+
+    #[test]
+    fn sparse_theme_size_keeps_target_family_weight_and_unset_spacing() {
+        let target = target();
+        let root = tempfile::tempdir().unwrap();
+        target.global.set_boolean("use-system-font", false).unwrap();
+        target
+            .global
+            .set_string("font-name", "Target Mono Bold 12")
+            .unwrap();
+        let before = target.snapshot().unwrap();
+        let patch = [("size".into(), serde_json::json!(18.0))]
+            .into_iter()
+            .collect();
+        let mut preview = desired();
+        preview.size = 18.0;
+        let request = target.prepare_theme(&preview, &patch).unwrap();
+        assert_eq!(
+            request.receipt.after.font_name.as_deref(),
+            Some("Target Mono Bold 18")
+        );
+        assert_eq!(request.receipt.after.line_height, None);
+        assert_eq!(request.receipt.after.cell_width, None);
+        let receipt = request.receipt.clone();
+        request.apply(root.path()).unwrap();
+        assert_eq!(target.profile.user_value("cell-height-scale"), None);
+        RestoreRequest::prepare(target.clone(), receipt)
+            .unwrap()
+            .restore()
+            .unwrap();
+        assert_eq!(target.snapshot().unwrap(), before);
+    }
 
     fn target() -> TypographyTarget {
         let backend = gio::memory_settings_backend_new();
@@ -579,7 +678,7 @@ mod tests {
         assert!(restore.restore().is_err());
         assert_eq!(target.profile.double("cell-width-scale"), 1.6);
         let mut invalid = receipt.clone();
-        invalid.version = 2;
+        invalid.version = 3;
         assert!(invalid.validate().is_err());
         invalid = receipt.clone();
         invalid.profile_uuid = "../../other".into();

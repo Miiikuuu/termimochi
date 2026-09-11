@@ -89,7 +89,7 @@ fn typed_kitty_main_use_review_and_stale_trial_guards() {
         .build();
     app.register(None::<&gio::Cancellable>).unwrap();
     let temporary = tempfile::tempdir().unwrap();
-    crate::window::present_with_preset(
+    crate::window::present_advanced_with_preset(
         &app,
         None,
         temporary.path().join(typography_preset::PRESET_NAME),

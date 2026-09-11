@@ -128,7 +128,7 @@ impl KittyDocument {
                 notices.push(format!("Kitty line {} · {key}: retained in source, not executed by this controlled appearance adapter.", index + 1));
             }
         }
-        if properties.is_empty() && notices.is_empty() {
+        if source.trim().is_empty() {
             return Err("No Kitty settings found.".into());
         }
         Ok(Self {
@@ -322,7 +322,7 @@ impl KittyDocument {
     }
 }
 
-fn workspace_properties(
+pub(crate) fn workspace_properties(
     workspace: &crate::workspace::Workspace,
 ) -> Result<BTreeMap<String, String>, String> {
     use crate::layout::{PreviewCursorBlink as B, PreviewCursorShape as S};
@@ -385,7 +385,7 @@ fn workspace_properties(
     Ok(values)
 }
 
-fn palette_key(key: &str) -> Option<String> {
+pub(crate) fn palette_key(key: &str) -> Option<String> {
     match key {
         "foreground" => Some("Foreground".into()),
         "background" => Some("Background".into()),

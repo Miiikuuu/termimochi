@@ -122,7 +122,7 @@ mod tests {
         std::fs::write(&rc, original).unwrap();
         let config = root.path().join("config.jsonc");
         std::fs::write(&config, "{\"modules\":[\"os\"]}").unwrap();
-        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        present_advanced_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
         let window = app.active_window().unwrap();
         let this = controller(&window);
         *this.greeting.fastfetch_target.borrow_mut() =

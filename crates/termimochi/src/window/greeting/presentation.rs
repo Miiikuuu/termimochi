@@ -711,7 +711,7 @@ mod tests {
         std::fs::write(&active, "// sentinel\n{}").unwrap();
         let shell = glib::home_dir().join(".bashrc");
         std::fs::write(&shell, "# untouched\n").unwrap();
-        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        present_advanced_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
         let window = app.active_window().unwrap();
         let this = controller(&window);
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
@@ -882,7 +882,7 @@ mod tests {
         }
         window.close();
         settle();
-        present_with_preset(
+        present_advanced_with_preset(
             &app,
             Some(scheme.clone()),
             root.path().join("reopened-font.json"),

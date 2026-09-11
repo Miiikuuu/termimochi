@@ -22,10 +22,22 @@ fn application(suffix: &str) -> adw::Application {
 }
 
 fn open_window(app: &adw::Application, root: &Path) -> (gtk::Window, Rc<Workbench>) {
-    present_with_preset(app, None, root.join(typography_preset::PRESET_NAME));
+    present_advanced_with_preset(app, None, root.join(typography_preset::PRESET_NAME));
     let window = app.active_window().unwrap();
     let this = controller(&window);
     ready(&this);
+    // These historical tests exercise the retained advanced single-component
+    // contract; normal-theme behavior has separate regression cases below.
+    this.typed.advanced.set(true);
+    this.load_design(
+        DesignDocument::from_workspace(
+            Kind::Palette,
+            Scope::for_kind(Kind::Palette),
+            &this.workspace_snapshot(),
+            None,
+        )
+        .unwrap(),
+    );
     (window, this)
 }
 
@@ -41,7 +53,7 @@ fn ready(this: &Workbench) {
     settle();
 }
 
-fn capture(window: &gtk::Window, name: &str) {
+pub(super) fn capture(window: &gtk::Window, name: &str) {
     window.set_title(Some("TermiMochi point-to-edit test"));
     let path = glib::user_cache_dir().join(format!("{name}.png"));
     gtk::prelude::WidgetExt::display(window).flush();

@@ -458,7 +458,7 @@ mod tests {
         std::fs::write(&active, "// untouched\n{}").unwrap();
         let shell = glib::home_dir().join(".bashrc");
         std::fs::write(&shell, "# untouched\n").unwrap();
-        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        present_advanced_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
         let window = app.active_window().unwrap();
         window.set_default_size(1280, 900);
         let this = controller(&window);

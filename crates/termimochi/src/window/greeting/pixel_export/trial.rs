@@ -11,6 +11,13 @@ fn visual(value: Visual) -> &'static str {
 
 impl PixelExport {
     pub(super) fn terminal(&self) -> Terminal {
+        if let Some(w) = self.workbench.upgrade().filter(|w| w.is_theme()) {
+            return if w.typed.target.get() == Some(crate::design_document::TargetHint::Kitty) {
+                Terminal::Kitty
+            } else {
+                Terminal::Ptyxis
+            };
+        }
         Terminal::ALL[self.target.selected().min(2) as usize]
     }
 
@@ -96,8 +103,11 @@ impl PixelExport {
         });
         self.ansi_test
             .set_sensitive(available && installed && !self.trial_running.get());
-        self.target
-            .set_sensitive(!self.trial_mode && !self.writing.get());
+        self.target.set_sensitive(
+            !self.trial_mode
+                && !self.writing.get()
+                && !self.workbench.upgrade().is_some_and(|w| w.is_theme()),
+        );
         self.protocol
             .set_sensitive(!self.trial_mode && !self.writing.get());
         self.columns

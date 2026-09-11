@@ -12,6 +12,9 @@ pub(super) struct OutputBar {
 }
 
 impl OutputBar {
+    pub fn invalidate_context(&self) {
+        self.module.set(None);
+    }
     #[cfg(test)]
     pub fn more_button(&self) -> &gtk::MenuButton {
         &self.more
@@ -203,7 +206,19 @@ impl Workbench {
         let designer =
             self.prompt_source_selector.selected() == 1 || self.starship_editor.detached.get();
         let bar = &self.output_bar;
-        bar.title.set_text(self.typed.kind.get().label());
+        if self.is_theme() {
+            let kitty = self.typed.target.get() == Some(crate::design_document::TargetHint::Kitty);
+            if kitty {
+                presentation.shared.set_visible(false);
+            }
+            presentation.state.set_label(if kitty {"Kitty theme · independent session\nUse Theme reviews this entire theme; Try Greeting tests only Greeting."}else{"Ptyxis theme · reviewed shared settings\nUse Theme shows profile/global effects; no complete session trial."});
+            presentation.state.set_tooltip_text(Some("Unspecified settings are inherited preview references. Theme Settings & Inheritance lists overrides. Save only saves the theme; Use Theme requires a separate review."));
+        }
+        bar.title.set_text(if self.is_theme() {
+            "Theme"
+        } else {
+            self.typed.kind.get().label()
+        });
         if bar.module.get() == Some(module) && bar.designer.get() == designer {
             return;
         }
@@ -265,7 +280,11 @@ impl Workbench {
             more.append_item(&item);
         }
         save.append(
-            Some("Save Design"),
+            Some(if self.is_theme() {
+                "Save Theme"
+            } else {
+                "Save Design"
+            }),
             Some(if module == EditorModule::Prompt {
                 "win.save"
             } else {
@@ -273,23 +292,50 @@ impl Workbench {
             }),
         );
         save.append(
-            Some("Save Design As…"),
+            Some(if self.is_theme() {
+                "Save Theme As…"
+            } else {
+                "Save Design As…"
+            }),
             Some(if module == EditorModule::Prompt {
                 "win.save-as"
             } else {
                 "win.save-workspace-as"
             }),
         );
-        more.append(Some("Open Document…"), Some("win.open-workspace"));
-        more.append(Some("New Document…"), Some("win.new-document"));
+        more.append(Some("Open Theme…"), Some("win.open-workspace"));
+        more.append(Some("New Theme…"), Some("win.new-document"));
+        if self.is_theme() {
+            more.append(Some("Import into Current Theme…"), Some("win.import-theme"));
+            more.append(
+                Some("Theme Settings & Inheritance…"),
+                Some("win.theme-settings"),
+            );
+        }
+        let advanced = gio::Menu::new();
+        advanced.append(
+            Some("New Single-component Document…"),
+            Some("win.advanced-document"),
+        );
+        advanced.append(
+            Some("Open Single-component Document…"),
+            Some("win.advanced-open"),
+        );
+        more.append_submenu(Some("Advanced"), &advanced);
         more.append(Some("Export Native Copy…"), Some("win.export-native"));
         more.append(
             Some("Document Capabilities…"),
             Some("win.document-capabilities"),
         );
-        more.append(Some("Choose Use Target…"), Some("win.document-target"));
+        if !self.is_theme() {
+            more.append(Some("Choose Use Target…"), Some("win.document-target"));
+        }
         more.append(
-            Some("Create Project / Convert Copy…"),
+            Some(if self.is_theme() {
+                "Convert Terminal — Create Copy…"
+            } else {
+                "Create Project / Convert Copy…"
+            }),
             Some("win.document-copy"),
         );
         more.append(
@@ -376,8 +422,16 @@ impl Workbench {
                 more.append(Some("Terminal Startup…"), Some("win.greeting-startup"));
             }
         }
-        bar.title.set_text(self.typed.kind.get().label());
-        bar.primary.set_label("Use Design…");
+        bar.title.set_text(if self.is_theme() {
+            "Theme"
+        } else {
+            self.typed.kind.get().label()
+        });
+        bar.primary.set_label(if self.is_theme() {
+            "Use Theme…"
+        } else {
+            "Use Design…"
+        });
         bar.primary.set_action_name(Some("win.apply-scheme"));
         bar.primary.set_tooltip_text(Some(
             "Use only this document's content in its explicit target. Review before any writes.",
@@ -413,7 +467,7 @@ mod tests {
             .build();
         app.register(None::<&gio::Cancellable>).unwrap();
         let root = tempfile::tempdir().unwrap();
-        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        present_advanced_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
         let window = app.active_window().unwrap();
         let this = crate::window::greeting::tests::greeting_controller(&window);
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
@@ -490,7 +544,7 @@ mod tests {
             .build();
         app.register(None::<&gio::Cancellable>).unwrap();
         let root = tempfile::tempdir().unwrap();
-        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        present_advanced_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
         let window = app.active_window().unwrap();
         let this = controller(&window);
         for (module, action) in [

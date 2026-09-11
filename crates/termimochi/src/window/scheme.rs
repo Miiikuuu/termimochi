@@ -85,7 +85,16 @@ impl Workbench {
         format!("termimochi-{}.palette", self.typed.document_id.borrow())
     }
     pub(super) fn scheme_plan(&self, workspace: &Workspace) -> Plan {
-        let scope = self.typed.scope.get();
+        let design = self.design_snapshot().ok();
+        let theme = design.as_ref().and_then(|d| d.theme.as_ref());
+        let mut scope = design
+            .as_ref()
+            .map(|d| d.scope())
+            .unwrap_or(self.typed.scope.get());
+        if let Some(t) = theme {
+            scope.prompt &= t.prompt_enabled;
+            scope.greeting &= workspace.greeting.enabled;
+        }
         let profile = scheme_apply::activation::profile();
         let target = if !(scope.palette || scope.typography || scope.layout) {
             "Target: explicitly reviewed native configuration\nOnly owned Prompt / Greeting content; terminal appearance and shell startup are unchanged.".into()
@@ -108,6 +117,13 @@ impl Workbench {
         );
         let palette = (|| {
             scope.require(crate::design_document::Action::Palette)?;
+            if theme.is_some()
+                && design
+                    .as_ref()
+                    .is_some_and(|d| d.components.palette.is_none())
+            {
+                return Err("This theme contains individual colors, not a complete Ptyxis palette. Explicitly include a base palette in Use Theme; preview colors are not silently installed.".into());
+            }
             let installer = self
                 .ptyxis_installer
                 .clone()
@@ -163,19 +179,26 @@ impl Workbench {
             scope.require(crate::design_document::Action::Typography)?;
             let (uuid, _) = profile.as_ref().map_err(Clone::clone)?;
             let settings = &workspace.typography;
-            let font = self
-                .preview_terminal
-                .pango_context()
-                .load_font(&settings.font_description())
-                .ok_or("The selected font is unavailable.")?;
-            if !settings.family.eq_ignore_ascii_case(DEFAULT_FONT_FAMILY)
-                && font
-                    .face()
-                    .is_none_or(|face| !face.family().name().eq_ignore_ascii_case(&settings.family))
-            {
-                return Err("The selected font is missing. Install it before applying; preview currently uses a fallback.".into());
+            if theme.is_none_or(|t| t.typography.contains_key("family")) {
+                let font = self
+                    .preview_terminal
+                    .pango_context()
+                    .load_font(&settings.font_description())
+                    .ok_or("The selected font is unavailable.")?;
+                if !settings.family.eq_ignore_ascii_case(DEFAULT_FONT_FAMILY)
+                    && font.face().is_none_or(|face| {
+                        !face.family().name().eq_ignore_ascii_case(&settings.family)
+                    })
+                {
+                    return Err("The selected font is missing. Install it before applying; preview currently uses a fallback.".into());
+                }
             }
-            let request = TypographyTarget::for_uuid(uuid)?.prepare(settings)?;
+            let target = TypographyTarget::for_uuid(uuid)?;
+            let request = if let Some(t) = theme {
+                target.prepare_theme(settings, &t.typography)?
+            } else {
+                target.prepare(settings)?
+            };
             Ok((request.detail(), None, Action::Typography(request)))
         })();
         add(&mut plan, "typography", "Typography", typography);
@@ -185,7 +208,13 @@ impl Workbench {
             "Layout · supported settings",
             scope
                 .require(crate::design_document::Action::Layout)
-                .and_then(|()| layout_apply::ApplyRequest::discover(&workspace.layout))
+                .and_then(|()| {
+                    if let Some(t) = theme {
+                        layout_apply::ApplyRequest::discover_theme(&workspace.layout, &t.layout)
+                    } else {
+                        layout_apply::ApplyRequest::discover(&workspace.layout)
+                    }
+                })
                 .map(|request| (request.detail(), None, Action::Layout(request))),
         );
         plan.items.push(Item { id: "preview-only", title: "Layout · preview only".into(), detail: "Exact content padding, tab bar and window spacing are saved in the workspace, but cannot be applied to Ptyxis. Preview animation is not a terminal setting.".into(), versions: None, action: None });
@@ -281,7 +310,31 @@ impl Workbench {
             }
         };
         let document_identity = self.typed.identity.get();
-        if design.scope().greeting {
+        if design.theme.is_some() && design.scope().palette && design.components.palette.is_none() {
+            let dialog=gtk::AlertDialog::builder().message("Choose a complete Ptyxis palette base")
+                .detail("Ptyxis installs palette files as a whole. This theme currently specifies only individual colors. You can explicitly include ALL currently previewed colors as the theme's base, or go back and import a .palette. No font, layout, Prompt or Greeting reference is included. Nothing is applied by this step.")
+                .buttons(["Back — import a palette","Include Preview Palette in Theme"]).cancel_button(0).default_button(0).modal(true).build();
+            let weak = Rc::downgrade(self);
+            dialog.choose(Some(&self.window()), gio::Cancellable::NONE, move |r| {
+                if r == Ok(1)
+                    && let Some(this) = weak.upgrade().filter(|w| {
+                        w.typed.identity.get() == document_identity
+                            && w.design_snapshot().ok().as_ref() == Some(&design)
+                    })
+                {
+                    let mut next = design.clone();
+                    let w = this.workspace_snapshot();
+                    next.components.palette = Some(crate::design_document::PaletteComponent {
+                        source: w.palette,
+                        light: w.light,
+                    });
+                    this.replace_theme(next, true);
+                    this.request_scheme_apply();
+                }
+            });
+            return;
+        }
+        if design.scope().greeting && self.greeting.settings().enabled {
             let settings = self.greeting.settings();
             let protocol = settings.presentation.resolve(
                 &settings,
@@ -291,9 +344,12 @@ impl Workbench {
                 && let Err(error) = design.require_greeting_target(spec.protocol)
             {
                 let prompt = gtk::AlertDialog::builder()
-                    .message("This Greeting needs a different project target")
+                    .message("This Greeting is not supported by this target")
                     .detail(error)
-                    .buttons(["Back to Design", "Create Project Copy…"])
+                    .buttons([
+                        "Back — change or disable Greeting",
+                        "Convert Terminal Copy…",
+                    ])
                     .cancel_button(0)
                     .default_button(0)
                     .modal(true)
@@ -351,8 +407,12 @@ impl Workbench {
         ) {
             let activate_available = plan.items[activate_index].action.is_some();
             let activate = checks[activate_index].clone();
+            let theme = self.is_theme();
             checks[palette_index].connect_toggled(move |palette| {
                 activate.set_sensitive(palette.is_active() && activate_available);
+                if theme {
+                    activate.set_active(palette.is_active() && activate_available);
+                }
                 if !palette.is_active() {
                     activate.set_active(false);
                 }
@@ -881,7 +941,7 @@ mod tests {
             .build();
         app.register(None::<&gio::Cancellable>).unwrap();
         let root = tempfile::tempdir().unwrap();
-        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        present_advanced_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
         let main = app.active_window().unwrap();
         let this = controller(&main);
         settle();

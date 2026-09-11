@@ -502,7 +502,7 @@ mod tests {
         app.register(None::<&gio::Cancellable>).unwrap();
         let root = tempfile::tempdir().unwrap();
         let preset = root.path().join(typography_preset::PRESET_NAME);
-        present_with_preset(&app, None, preset.clone());
+        present_advanced_with_preset(&app, None, preset.clone());
         let window = app.active_window().unwrap();
         window.set_default_size(1320, 850);
         let this = project_controller(&window);
@@ -661,7 +661,7 @@ mod tests {
         this.save_workspace_path(workspace.clone(), this.workspace_snapshot())
             .unwrap();
         window.destroy();
-        present_with_preset(&app, None, preset);
+        present_advanced_with_preset(&app, None, preset);
         let window = app.active_window().unwrap();
         let this = project_controller(&window);
         assert_eq!(this.greeting.settings(), saved);

@@ -1163,7 +1163,7 @@ mod tests {
             crate::greeting_image::animation::tests::fixture_bytes(),
         )
         .unwrap();
-        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        present_advanced_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
         let window = app.active_window().unwrap();
         let this = controller(&window);
         let before = this.greeting.settings();
@@ -1222,7 +1222,7 @@ mod tests {
         })
         .save(&source)
         .unwrap();
-        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        present_advanced_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
         let window = app.active_window().unwrap();
         let this = controller(&window);
         let (dialog, draft) = draft(&this, &source);
@@ -1365,7 +1365,7 @@ mod tests {
             .save(&source)
             .unwrap();
         }
-        present_with_preset(&app, None, preset.clone());
+        present_advanced_with_preset(&app, None, preset.clone());
         let window = app.active_window().unwrap();
         let this = controller(&window);
         let (_, preview) = draft(&this, &source);
@@ -1428,7 +1428,7 @@ mod tests {
         window.destroy();
         drop(this);
         settle();
-        present_with_preset(&app, None, preset);
+        present_advanced_with_preset(&app, None, preset);
         let window = app.active_window().unwrap();
         let this = controller(&window);
         assert_eq!(this.greeting.settings(), saved);
@@ -1880,7 +1880,7 @@ mod tests {
             )
             .unwrap();
         }
-        present_with_preset(&app, None, preset.clone());
+        present_advanced_with_preset(&app, None, preset.clone());
         let window = app.active_window().unwrap();
         window.set_default_size(1320, 850);
         let this = controller(&window);
@@ -2228,7 +2228,7 @@ mod tests {
         window.close();
         drop(this);
         settle();
-        present_with_preset(&app, None, preset);
+        present_advanced_with_preset(&app, None, preset);
         let window = app.active_window().unwrap();
         let this = controller(&window);
         settle();

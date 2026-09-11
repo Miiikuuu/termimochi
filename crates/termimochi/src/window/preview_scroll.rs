@@ -272,7 +272,7 @@ mod tests {
             .build();
         app.register(None::<&gio::Cancellable>).unwrap();
         let temp = tempfile::tempdir().unwrap();
-        present_with_preset(&app, None, temp.path().join(typography_preset::PRESET_NAME));
+        present_advanced_with_preset(&app, None, temp.path().join(typography_preset::PRESET_NAME));
         let window = app.active_window().unwrap();
         window.set_title(Some("TermiMochi point-to-edit test"));
         window.set_default_size(1120, 700);

@@ -1733,6 +1733,9 @@ impl Workbench {
         self.feed_preview(PREVIEW_SHOW_CURSOR);
     }
     pub(super) fn greeting_prompt_ansi(&self) -> String {
+        if self.theme_prompt_disabled() {
+            return "$ ".into();
+        }
         let context = self.current_preview_context.borrow();
         let designed = self.preview_prompt_source.get() == 1;
         if designed {
@@ -1775,6 +1778,10 @@ impl Workbench {
     }
 
     pub(super) fn feed_greeting_prompt(&self) {
+        if self.theme_prompt_disabled() {
+            self.feed_scoped_preview("$ ", Some(PreviewTarget::Prompt));
+            return;
+        }
         if self.preview_prompt_source.get() == 1 {
             let context = self.current_preview_context.borrow();
             self.feed_designed_prompt(
@@ -2047,7 +2054,7 @@ pub(super) mod tests {
             .build();
         app.register(None::<&gio::Cancellable>).unwrap();
         let root = tempfile::tempdir().unwrap();
-        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        present_advanced_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
         let window = app.active_window().unwrap();
         let this = project_controller(&window);
         settle();
@@ -2271,7 +2278,14 @@ pub(super) mod tests {
     }
     pub(in crate::window) fn explicit_project(this: &Workbench) {
         use crate::design_document::{Kind, Scope, TargetHint};
-        if this.typed.kind.get() == Kind::Palette {
+        if this.typed.kind.get() == Kind::Palette || this.is_theme() {
+            if this.is_theme()
+                && let Some(reference) = this.typed.theme_reference.borrow().as_ref()
+            {
+                this.greeting.replace(reference.greeting.clone(), false);
+            }
+            this.typed.theme_origin.borrow_mut().take();
+            this.typed.advanced.set(true);
             this.typed.kind.set(Kind::Project);
             this.typed.scope.set(Scope::for_kind(Kind::Legacy));
             this.typed.target.set(Some(TargetHint::Ptyxis));
@@ -2284,6 +2298,13 @@ pub(super) mod tests {
     pub(in crate::window) fn greeting_controller(window: &gtk::Window) -> Rc<Workbench> {
         use crate::design_document::{Kind, Scope};
         let this = controller(window);
+        if this.is_theme()
+            && let Some(reference) = this.typed.theme_reference.borrow().as_ref()
+        {
+            this.greeting.replace(reference.greeting.clone(), false);
+        }
+        this.typed.theme_origin.borrow_mut().take();
+        this.typed.advanced.set(true);
         this.typed.kind.set(Kind::Greeting);
         this.typed.scope.set(Scope::for_kind(Kind::Greeting));
         this.typed.target.set(None);
@@ -2367,7 +2388,7 @@ pub(super) mod tests {
         app.register(None::<&gio::Cancellable>).unwrap();
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join(typography_preset::PRESET_NAME);
-        present_with_preset(&app, None, path.clone());
+        present_advanced_with_preset(&app, None, path.clone());
         let window = app.active_window().unwrap();
         window.set_default_size(1320, 850);
         let this = project_controller(&window);
@@ -2430,7 +2451,7 @@ pub(super) mod tests {
         wait_official(&this);
         assert_eq!(this.greeting.settings(), brand);
         window.destroy();
-        present_with_preset(&app, None, path.clone());
+        present_advanced_with_preset(&app, None, path.clone());
         let window = app.active_window().unwrap();
         let this = project_controller(&window);
         assert_eq!(this.greeting.settings(), brand);
@@ -2441,7 +2462,7 @@ pub(super) mod tests {
         this.save_greeting_preset();
         let custom = this.greeting.settings();
         window.destroy();
-        present_with_preset(&app, None, path);
+        present_advanced_with_preset(&app, None, path);
         let window = app.active_window().unwrap();
         assert_eq!(project_controller(&window).greeting.settings(), custom);
         assert!(custom.official_preset.is_none());
@@ -2478,7 +2499,7 @@ pub(super) mod tests {
             .unwrap()
             .save(&GreetingPreset::new(settings.clone()))
             .unwrap();
-        present_with_preset(&app, None, path);
+        present_advanced_with_preset(&app, None, path);
         let window = app.active_window().unwrap();
         window.set_default_size(1320, 850);
         let this = project_controller(&window);
@@ -2556,7 +2577,7 @@ pub(super) mod tests {
         app.register(None::<&gio::Cancellable>).unwrap();
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join(typography_preset::PRESET_NAME);
-        present_with_preset(&app, None, path.clone());
+        present_advanced_with_preset(&app, None, path.clone());
         let window = app.active_window().unwrap();
         window.set_default_size(1320, 850);
         let this = project_controller(&window);
@@ -2738,7 +2759,7 @@ pub(super) mod tests {
             assert!(child.wait().unwrap().success());
         }
         window.destroy();
-        present_with_preset(&app, None, path);
+        present_advanced_with_preset(&app, None, path);
         let restored_window = app.active_window().unwrap();
         let restored = project_controller(&restored_window);
         assert_eq!(restored.greeting.settings(), saved);
@@ -2760,7 +2781,7 @@ pub(super) mod tests {
         app.register(None::<&gio::Cancellable>).unwrap();
         let root = tempfile::tempdir().unwrap();
         let preset = root.path().join(typography_preset::PRESET_NAME);
-        present_with_preset(&app, None, preset.clone());
+        present_advanced_with_preset(&app, None, preset.clone());
         let window = app.active_window().unwrap();
         let this = project_controller(&window);
         // Exercise the retained basic editor, independent of the new starter.
@@ -3056,7 +3077,7 @@ pub(super) mod tests {
             external
         );
         window.destroy();
-        present_with_preset(&app, None, preset);
+        present_advanced_with_preset(&app, None, preset);
         let restored_window = app.active_window().unwrap();
         let restored = project_controller(&restored_window);
         settle();

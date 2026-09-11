@@ -13,16 +13,21 @@ that looks balanced elsewhere can therefore become almost unreadable.
 
 ## Current MVP
 
-- Typed native documents: open a palette, `kitty.conf`, Starship, Fastfetch,
-  font/layout preset, artwork, or explicit project. Only owned components are
-  editable and eligible for output. **Save / Ctrl+S** saves the current
-  `.termimochi-design.json` design, never preview references or system settings.
-  **New Document…**, **Create Project / Convert Copy…**, **Choose Use Target…** and
-  **Document Capabilities…** are in **⋮**. See the
-  [capability table](docs/typed-documents-capabilities.md),
-  [architecture](docs/typed-documents-architecture.md),
-  [verification record](docs/typed-documents-qa.md) and
-  [Chinese acceptance card](docs/typed-documents-acceptance-zh.md).
+- One theme, one target workspace. **New Theme…** selects Kitty or Ptyxis;
+  opening a color-only `kitty.conf` or `.palette` opens that target's complete
+  workspace. Colors, Typography, Layout, Prompt and Greeting are settings pages,
+  not projects you must assemble. Unspecified fields inherit; editing only font
+  size does not write a reference font family, weight or spacing.
+  **Save / Ctrl+S** saves the entire v3 `.termimochi-design.json` theme and assets,
+  not system settings. **Import into Current Theme…** preserves identity/target.
+  **Use Theme…** uses that terminal's reviewed adapter; Kitty has controlled trial,
+  publication, result opening and a durable independent-entry library. Ptyxis
+  retains its narrower shared/profile/global effects, not a complete isolated trial.
+  **Advanced** retains single-component documents and native output tools.
+  [Architecture and capabilities](docs/theme-workspace-architecture.md),
+  [migration and retained features](docs/theme-workspace-migration.md),
+  [QA](docs/theme-workspace-qa.md),
+  [Chinese acceptance card](docs/theme-workspace-acceptance-zh.md).
 - Pure Rust, UI-independent palette core.
 - Strict Ptyxis `.palette` parsing with unknown-property preservation.
 - WCAG relative luminance and contrast ratios.
@@ -290,7 +295,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Optional **Fade in / Line by line / Shimmer** openings can be replayed with
   the play button. Motion is **preview only**, respects system reduced motion,
   and never changes terminal text; Fastfetch exports remain static.
-- **⋮ → Save Greeting Preset** restores owned Greeting content next launch; main Save / `Ctrl+S` saves only the current design document.
+- **⋮ → Save Greeting Preset** retains a reusable component preset; main Save / `Ctrl+S` saves the entire current theme. New themes do not silently enable a saved Greeting preset.
   Import/export `.termimochi-greeting.json` presets, or **Export Fastfetch…** to
   `config.jsonc` or a separate `.fastfetch.jsonc` file. Basic, unstyled custom preview
   needs no Fastfetch installation; field overrides, official presets and imports

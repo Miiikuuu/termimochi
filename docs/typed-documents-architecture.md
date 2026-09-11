@@ -1,5 +1,8 @@
 # Current document and target boundaries
 
+Historical v2 baseline / retained Advanced tools. Normal operation now follows
+[one theme, one target workspace](theme-workspace-architecture.md).
+
 This describes implemented native Rust/GTK code, not a web prototype.
 
 ## Data and editing

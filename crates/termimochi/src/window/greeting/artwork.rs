@@ -442,7 +442,7 @@ mod tests {
         app.register(None::<&gio::Cancellable>).unwrap();
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join(typography_preset::PRESET_NAME);
-        present_with_preset(&app, None, path.clone());
+        present_advanced_with_preset(&app, None, path.clone());
         let window = app.active_window().unwrap();
         window.set_default_size(1320, 850);
         let this = controller(&window);
@@ -545,7 +545,7 @@ mod tests {
         window.close();
         drop(this);
         settle();
-        present_with_preset(&app, None, path);
+        present_advanced_with_preset(&app, None, path);
         let window = app.active_window().unwrap();
         let this = controller(&window);
         settle();

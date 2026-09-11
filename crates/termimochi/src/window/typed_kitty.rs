@@ -37,22 +37,38 @@ impl Workbench {
             palette: scope.palette,
             typography: scope.typography,
             layout: scope.layout,
-            prompt: scope.prompt,
-            greeting: scope.greeting || scope.artwork,
+            prompt: scope.prompt && design.theme.as_ref().is_none_or(|t| t.prompt_enabled),
+            greeting: (scope.greeting || scope.artwork) && snapshot.greeting.enabled,
         };
-        let native = design
-            .native
-            .as_ref()
-            .filter(|s| s.format == NativeFormat::Kitty)
-            .map(|s| s.text.clone());
+        let native = if design.theme.is_some() {
+            match design.theme_kitty_configuration(&snapshot) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    self.typed.busy.set(false);
+                    self.toast(&e);
+                    return;
+                }
+            }
+        } else {
+            design
+                .native
+                .as_ref()
+                .filter(|s| s.format == NativeFormat::Kitty)
+                .map(|s| s.text.clone())
+        };
         let id = design.id.clone();
-        let name = self
-            .typed
-            .store
-            .borrow()
+        let name = design
+            .theme
             .as_ref()
-            .and_then(|s| s.path.file_stem().map(|s| s.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| format!("{} {}", design.kind.label(), &id[..8]));
+            .map(|t| t.name.clone())
+            .unwrap_or_else(|| {
+                self.typed
+                    .store
+                    .borrow()
+                    .as_ref()
+                    .and_then(|s| s.path.file_stem().map(|s| s.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| format!("{} {}", design.kind.label(), &id[..8]))
+            });
         let identity = self.typed.identity.get();
         let cells = [
             self.preview_terminal.char_width().max(1) as u32,
@@ -90,7 +106,18 @@ impl Workbench {
                 this.toast("Design changed during preparation. Use Design again; no configuration was published.");
             } else {
                 match result {
-                    Ok(plan) => this.review_kitty_plan(Arc::new(plan), design.clone()),
+                    Ok(mut plan) => {
+                        if let Some(t) = &design.theme {
+                            plan.notes.push("Unspecified appearance inherits controlled Kitty defaults, not your daily kitty.conf. App reference font and layout may differ.".into());
+                            if t.typography.contains_key("weight") {
+                                plan.notes.push("Typography weight is preview-only in this sparse adapter. Choose an exact weighted font family for Kitty; no weight setting was applied.".into());
+                            }
+                            if t.layout.contains_key("scrollbar") {
+                                plan.notes.push("Scrollbar is preview-only; Kitty does not implement this scrollbar control.".into());
+                            }
+                        }
+                        this.review_kitty_plan(Arc::new(plan), design.clone())
+                    }
                     Err(e) => this.show_kitty_requirement(&e),
                 }
             }
@@ -299,7 +326,9 @@ impl Workbench {
             "Locally published entries · no shared terminal configuration",
         );
         if entries.is_empty() {
-            body.append(&super::scheme::label("No independent entries yet. Create an explicit Kitty project, then choose Use Design."));
+            body.append(&super::scheme::label(
+                "No independent entries yet. Open or create a Kitty theme, then choose Use Theme.",
+            ));
         }
         for issue in issues {
             body.append(&super::scheme::label(&format!(

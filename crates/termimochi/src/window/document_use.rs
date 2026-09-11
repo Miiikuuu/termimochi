@@ -24,6 +24,10 @@ impl DocumentUseBinding {
 
 impl Workbench {
     pub(super) fn choose_document_use_target(self: &Rc<Self>) {
+        if self.is_theme() {
+            self.request_scheme_apply();
+            return;
+        }
         let kind = self.typed.kind.get();
         if !matches!(
             kind,

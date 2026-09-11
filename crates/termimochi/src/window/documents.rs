@@ -500,7 +500,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let preset_path = root.path().join(typography_preset::PRESET_NAME);
         let layout_path = root.path().join("layout.termimochi-layout.json");
-        present_with_preset(&app, None, preset_path.clone());
+        present_advanced_with_preset(&app, None, preset_path.clone());
         let this = workbench(&app);
         let palette = this.model.borrow().palette.clone();
         let typography = this.typography_settings();
@@ -587,7 +587,7 @@ mod tests {
             external
         );
         this.window().destroy();
-        present_with_preset(&app, None, preset_path.clone());
+        present_advanced_with_preset(&app, None, preset_path.clone());
         let this = workbench(&app);
         assert_eq!(
             this.layout_settings(),
@@ -707,7 +707,7 @@ mod tests {
             .unwrap()
             .save(&external_workspace)
             .unwrap();
-        present_with_preset(&app, Some(path), preset_path);
+        present_advanced_with_preset(&app, Some(path), preset_path);
         let this = workbench(&app);
         assert_eq!(this.workspace_snapshot(), external_workspace);
         this.prompt_source_selector.set_selected(0);

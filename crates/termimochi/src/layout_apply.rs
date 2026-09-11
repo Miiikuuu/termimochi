@@ -171,6 +171,9 @@ fn write(settings: &gio::Settings, values: &Values) -> Result<(), String> {
     }
     settings.delay();
     for (key, value) in values {
+        if settings.user_value(key) == value.as_ref().map(Value::variant) {
+            continue;
+        }
         if let Some(value) = value {
             if let Err(error) = settings.set_value(key, &value.variant()) {
                 settings.revert();
@@ -198,12 +201,12 @@ struct Receipt {
 
 impl Receipt {
     fn validate(&self) -> Result<(), String> {
-        if self.version != 1 {
+        if ![1, 2].contains(&self.version) {
             return Err("Unsupported layout backup version.".into());
         }
         validate(&self.before.user, true)?;
         validate(&self.before.effective, false)?;
-        validate(&self.after, false)
+        validate(&self.after, self.version == 2)
     }
 }
 
@@ -226,6 +229,43 @@ pub(crate) struct ApplyRequest {
 }
 
 impl ApplyRequest {
+    pub fn discover_theme(
+        layout: &LayoutSettings,
+        fields: &crate::design_document::theme::Fields,
+    ) -> Result<Self, String> {
+        Self::discover(layout)?.with_theme_fields(fields)
+    }
+    fn with_theme_fields(
+        mut self,
+        fields: &crate::design_document::theme::Fields,
+    ) -> Result<Self, String> {
+        let request = &mut self;
+        let desired = request.receipt.after.clone();
+        request.receipt.after = request.receipt.before.user.clone();
+        for (field, key) in [
+            ("cursor_shape", "cursor-shape"),
+            ("cursor_blink", "cursor-blink-mode"),
+            ("scrollbar", "scrollbar-policy"),
+            ("columns", "default-columns"),
+            ("rows", "default-rows"),
+        ] {
+            if fields.contains_key(field) {
+                request
+                    .receipt
+                    .after
+                    .insert(key.into(), desired[key].clone());
+            }
+        }
+        if fields.contains_key("columns") || fields.contains_key("rows") {
+            request
+                .receipt
+                .after
+                .insert("restore-window-size".into(), Some(Value::Boolean(false)));
+        }
+        request.receipt.version = 2;
+        request.receipt.validate()?;
+        Ok(self)
+    }
     pub fn discover(layout: &LayoutSettings) -> Result<Self, String> {
         Self::prepare(
             find_settings("org.gnome.Ptyxis", None)
@@ -252,12 +292,15 @@ impl ApplyRequest {
                         .as_ref()
                         .unwrap()
                         .label(),
-                    self.receipt.after[*key].as_ref().unwrap().label()
+                    self.receipt.after[*key]
+                        .as_ref()
+                        .map(Value::label)
+                        .unwrap_or_else(|| "Inherited (unchanged)".into())
                 )
             })
             .collect();
         format!(
-            "Scope: all Ptyxis windows and profiles.\n{}\n\nGrid size applies to new windows; remembered window sizing will be disabled. Existing windows are not resized.\n\nPreview only (saved, not applied): exact content padding, tab bar and window spacing.\n\nA private backup is created before changing settings. Fonts, colors and shell files are untouched.",
+            "Scope: all Ptyxis windows and profiles.\n{}\n\nSpecified grid size applies to new windows and disables remembered sizing. Unspecified grid fields keep their current values; existing windows are not resized.\n\nPreview only (saved, not applied): exact content padding, tab bar and window spacing.\n\nA private backup is created before changing settings. Fonts, colors and shell files are untouched.",
             changes.join("\n")
         )
     }
@@ -331,6 +374,32 @@ impl RestoreRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sparse_theme_cursor_preserves_unset_grid_and_other_values() {
+        let settings = settings();
+        let root = tempfile::tempdir().unwrap();
+        let before = snapshot(&settings).unwrap();
+        let layout = LayoutSettings {
+            cursor_shape: PreviewCursorShape::IBeam,
+            ..Default::default()
+        };
+        let fields = [("cursor_shape".into(), serde_json::json!("i_beam"))]
+            .into_iter()
+            .collect();
+        let request = ApplyRequest::prepare(settings.clone(), &layout)
+            .unwrap()
+            .with_theme_fields(&fields)
+            .unwrap();
+        assert_eq!(request.receipt.after["default-columns"], None);
+        assert_eq!(request.receipt.after["restore-window-size"], None);
+        request.apply(root.path()).unwrap();
+        assert_eq!(settings.string("cursor-shape"), "ibeam");
+        assert_eq!(settings.user_value("default-columns"), None);
+        assert_eq!(
+            snapshot(&settings).unwrap().user["scrollbar-policy"],
+            before.user["scrollbar-policy"]
+        );
+    }
     fn settings() -> gio::Settings {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("layout.gschema.xml"), r#"<schemalist><schema id="org.gnome.Ptyxis" path="/org/gnome/Ptyxis/">

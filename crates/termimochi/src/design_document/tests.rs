@@ -14,6 +14,132 @@ fn references() -> Workspace {
 }
 
 #[test]
+fn theme_color_only_size_edit_is_sparse_and_roundtrips() {
+    let reference = references();
+    let source = "# exact source\nbackground #123456\nforeground #abcdef\ninclude private.conf\n";
+    let native = DesignDocument::from_kitty_source(source.into()).unwrap();
+    let id = native.id.clone();
+    let theme = native.into_theme(TargetHint::Kitty, "My Kitty").unwrap();
+    assert_eq!(theme.id, id);
+    let opening = theme.project_preview(&reference);
+    assert_eq!(theme.capture_theme(&opening, &opening).unwrap(), theme);
+    assert!(!theme.scope().typography);
+    let mut now = opening.clone();
+    now.typography.size = 19.0;
+    let edited = theme.capture_theme(&opening, &now).unwrap();
+    assert_eq!(
+        edited
+            .theme
+            .as_ref()
+            .unwrap()
+            .typography
+            .keys()
+            .collect::<Vec<_>>(),
+        vec!["size"]
+    );
+    let output = edited.theme_kitty_configuration(&now).unwrap();
+    assert!(output.contains("font_size 19"));
+    assert!(output.contains("include private.conf"));
+    for forbidden in [
+        "font_family",
+        "modify_font",
+        "cursor_shape",
+        "initial_window",
+    ] {
+        assert!(!output.contains(forbidden), "{forbidden}");
+    }
+    let reopened = import(&document_store::encode(&edited).unwrap(), &reference).unwrap();
+    assert_eq!(reopened, edited);
+    assert_eq!(reopened.project_preview(&reference).typography.size, 19.0);
+    assert_eq!(theme.capture_theme(&opening, &opening).unwrap(), theme);
+}
+
+#[test]
+fn theme_inheritance_removes_only_owned_native_override_and_copy_retains_appearance() {
+    let reference = references();
+    let source = "background #123456\nfont_size 18\n# retained source\n";
+    let mut theme = DesignDocument::from_kitty_source(source.into())
+        .unwrap()
+        .into_theme(TargetHint::Kitty, "Native")
+        .unwrap();
+    let copy = theme
+        .convert_theme_copy(TargetHint::Ptyxis, &reference)
+        .unwrap();
+    assert_ne!(theme.id, copy.id);
+    assert_eq!(copy.theme.as_ref().unwrap().colors["Background"], "#123456");
+    assert_eq!(copy.theme.as_ref().unwrap().typography["size"], 18.0);
+    theme
+        .theme
+        .as_mut()
+        .unwrap()
+        .inherit
+        .insert("typography.size".into());
+    let preview = theme.project_preview(&reference);
+    assert_eq!(preview.typography.size, reference.typography.size);
+    assert!(
+        !theme
+            .theme_kitty_configuration(&preview)
+            .unwrap()
+            .contains("font_size")
+    );
+    assert_eq!(theme.theme.as_ref().unwrap().sources[0].text, source);
+}
+
+#[test]
+fn empty_theme_owns_no_reference_values_and_validates_sparse_keys() {
+    let mut theme = DesignDocument::new_theme(TargetHint::Kitty, "Empty", true);
+    assert_eq!(theme.scope(), Scope::default());
+    let reference = references();
+    let projection = theme.project_preview(&reference);
+    let output = theme.theme_kitty_configuration(&projection).unwrap();
+    assert!(output.lines().all(|l| l.starts_with('#')));
+    assert!(!projection.greeting.enabled);
+    theme
+        .theme
+        .as_mut()
+        .unwrap()
+        .colors
+        .insert("Typo".into(), "#ffffff".into());
+    assert!(theme.validate().is_err());
+}
+
+#[test]
+fn theme_name_and_both_palette_variants_survive_save_without_borrowing_defaults() {
+    let theme = DesignDocument::new_theme(TargetHint::Kitty, "Original", true);
+    let opening = theme.project_preview(&references());
+    let mut changed = opening.clone();
+    let mut palette = changed.palette().unwrap();
+    palette.set_name("Renamed Theme").unwrap();
+    palette
+        .variant_mut(Variant::Light)
+        .unwrap()
+        .set("Background", "#123456".parse().unwrap())
+        .unwrap();
+    palette
+        .variant_mut(Variant::Dark)
+        .unwrap()
+        .set("Background", "#abcdef".parse().unwrap())
+        .unwrap();
+    changed.palette = palette.to_palette_string();
+    changed.light = false;
+    let saved = theme.capture_theme(&opening, &changed).unwrap();
+    let intent = saved.theme.as_ref().unwrap();
+    assert_eq!(intent.name, "Renamed Theme");
+    assert_eq!(intent.colors.len(), 1);
+    assert_eq!(intent.dark_colors.len(), 1);
+    let reopened = import(&document_store::encode(&saved).unwrap(), &references()).unwrap();
+    let preview = reopened.project_preview(&references());
+    assert_eq!(preview.palette().unwrap().name(), "Renamed Theme");
+    assert!(
+        reopened
+            .theme_kitty_configuration(&preview)
+            .unwrap()
+            .contains("background #ABCDEF")
+    );
+    assert_eq!(reopened.theme.as_ref().unwrap().typography.len(), 0);
+}
+
+#[test]
 fn palette_save_serializes_only_owned_colors_not_visible_references() {
     let mut workspace = references();
     workspace.greeting.message = "reference-greeting-must-not-save".into();

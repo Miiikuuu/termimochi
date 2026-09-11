@@ -19,6 +19,11 @@ pub(super) struct TypedSession {
     pub document_id: RefCell<String>,
     pub deployment: RefCell<String>,
     pub busy: Cell<bool>,
+    pub theme_origin: RefCell<Option<DesignDocument>>,
+    pub theme_reference: RefCell<Option<Workspace>>,
+    pub theme_history: RefCell<super::theme_workspace::ThemeHistory>,
+    pub advanced: Cell<bool>,
+    pub prompt_toggle: RefCell<Option<gtk::Button>>,
 }
 
 impl TypedSession {
@@ -36,12 +41,20 @@ impl TypedSession {
             document_id: RefCell::new(glib::uuid_string_random().into()),
             deployment: RefCell::new(String::new()),
             busy: Cell::new(false),
+            theme_origin: RefCell::new(None),
+            theme_reference: RefCell::new(None),
+            theme_history: RefCell::new(Default::default()),
+            advanced: Cell::new(false),
+            prompt_toggle: RefCell::new(None),
         }
     }
 }
 
 impl Workbench {
     pub(super) fn owns_module(&self, module: EditorModule) -> bool {
+        if self.is_theme() {
+            return true;
+        }
         if self.typed.kind.get() == Kind::KittyAppearance {
             // These are addable appearance properties; unchanged inherited
             // fields remain absent in the source-only saved document.
@@ -63,6 +76,34 @@ impl Workbench {
 
     /// Called at action boundaries as well as to project menu sensitivity.
     pub(super) fn allows_document_action(&self, name: &str) -> bool {
+        if self.is_theme() {
+            if matches!(
+                name,
+                "install-ptyxis"
+                    | "rollback-ptyxis"
+                    | "apply-typography"
+                    | "apply-layout"
+                    | "save-starship"
+                    | "apply-fastfetch"
+                    | "reload-terminal"
+            ) {
+                return false;
+            }
+            if name.starts_with("show-")
+                || matches!(
+                    name,
+                    "import-fastfetch"
+                        | "load-current-fastfetch"
+                        | "import-greeting-art"
+                        | "edit-image-artwork"
+                        | "try-greeting"
+                        | "reload-starship"
+                        | "diagnostic-module"
+                )
+            {
+                return true;
+            }
+        }
         if self.typed.kind.get() == Kind::Legacy
             && matches!(
                 name,
@@ -144,6 +185,18 @@ impl Workbench {
     }
 
     pub(super) fn design_snapshot(&self) -> Result<DesignDocument, String> {
+        if let Some(origin) = self.typed.theme_origin.borrow().as_ref() {
+            let mut design = origin.capture_theme(
+                self.typed
+                    .native_reference
+                    .borrow()
+                    .as_ref()
+                    .ok_or("Missing theme reference")?,
+                &self.workspace_snapshot(),
+            )?;
+            design.id = self.typed.document_id.borrow().clone();
+            return Ok(design);
+        }
         let native = self.typed.native.borrow().clone();
         let mut design = if self.typed.kind.get() == Kind::KittyAppearance
             && let Some(source) = native.as_ref()
@@ -211,6 +264,9 @@ impl Workbench {
     }
 
     fn editable_document_scope(&self) -> Scope {
+        if self.is_theme() {
+            return Scope::for_kind(Kind::Legacy);
+        }
         if self.typed.kind.get() == Kind::KittyAppearance {
             Scope::for_kind(Kind::KittyAppearance)
         } else {
@@ -218,12 +274,39 @@ impl Workbench {
         }
     }
 
-    pub(super) fn initialize_design(&self) {
+    pub(super) fn initialize_design(self: &Rc<Self>) {
+        if !self.typed.advanced.get() {
+            self.load_design(DesignDocument::new_theme(
+                TargetHint::Ptyxis,
+                "Untitled Theme",
+                self.workspace_snapshot().light,
+            ));
+            return;
+        }
         *self.typed.baseline.borrow_mut() = self.design_snapshot().ok();
         self.refresh_document_scope();
     }
 
     pub(super) fn refresh_document_scope(&self) {
+        if let Some(button) = self.typed.prompt_toggle.borrow().as_ref() {
+            button.set_visible(self.is_theme());
+            let enabled = self
+                .design_snapshot()
+                .ok()
+                .and_then(|d| d.theme)
+                .is_some_and(|t| t.prompt_enabled);
+            button.set_label(if enabled {
+                "Prompt enabled — Turn Off"
+            } else {
+                "Enable Prompt in This Theme"
+            });
+        }
+        if self.is_theme() && !self.updating.get() {
+            if let Ok(design) = self.design_snapshot() {
+                self.typed.scope.set(design.scope());
+            }
+            self.enforce_theme_target();
+        }
         self.greeting
             .restrict_to_artwork(self.typed.scope.get().artwork);
         let pairs = [
@@ -276,6 +359,25 @@ impl Workbench {
     }
 
     pub(super) fn refresh_design_title(&self) {
+        if let Ok(design) = self.design_snapshot()
+            && let Some(theme) = &design.theme
+        {
+            let title = format!(
+                "{} · {}",
+                theme.name,
+                super::theme_workspace::target_label(design.target_hint.unwrap())
+            );
+            self.window().set_title(Some(&format!(
+                "{title} — TermiMochi{}",
+                if self.design_clean() {
+                    ""
+                } else {
+                    " • Modified"
+                }
+            )));
+            self.brand_title.set_text(&title);
+            return;
+        }
         let name = self
             .typed
             .store
@@ -338,6 +440,8 @@ impl Workbench {
                 store.save(&snapshot)?;
                 if save_as {
                     *this.typed.document_id.borrow_mut() = snapshot.id.clone();
+                    if let Some(origin)=this.typed.theme_origin.borrow_mut().as_mut(){origin.id=snapshot.id.clone();}
+                    *this.typed.theme_history.borrow_mut()=Default::default();
                     this.typed.identity.set(NEXT_SESSION.fetch_add(1, Ordering::Relaxed));
                     this.document_use.reset();
                     this.greeting.presentation.verified.borrow_mut().take();
@@ -351,6 +455,9 @@ impl Workbench {
     }
 
     pub(super) fn choose_design_open(self: &Rc<Self>) {
+        self.choose_design_open_mode(false);
+    }
+    fn choose_design_open_mode(self: &Rc<Self>, advanced: bool) {
         let dialog = gtk::FileDialog::builder()
             .title("Open Design or Native Configuration")
             .modal(true)
@@ -372,7 +479,12 @@ impl Workbench {
                 {
                     // Separate controller means existing dialogs, history, workers and
                     // visual approvals can never become authority over the new file.
-                    present(&app, Some(path));
+                    present_with_mode(
+                        &app,
+                        Some(path),
+                        typography_preset::state_directory().join(typography_preset::PRESET_NAME),
+                        advanced,
+                    );
                 }
             },
         );
@@ -385,6 +497,10 @@ impl Workbench {
                 .and_then(|e| e.to_str())
                 .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "txt" | "ans"))
         {
+            if !self.typed.advanced.get() {
+                self.choose_artwork_theme(path.into());
+                return;
+            }
             match DesignDocument::from_workspace(
                 Kind::Artwork,
                 Scope::for_kind(Kind::Artwork),
@@ -429,9 +545,41 @@ impl Workbench {
                         )),
                     }
                 }
+                if !self.typed.advanced.get() && design.theme.is_none() {
+                    let target = design.target_hint.or(match design.kind {
+                        Kind::Palette => Some(TargetHint::Ptyxis),
+                        Kind::KittyAppearance => Some(TargetHint::Kitty),
+                        _ => None,
+                    });
+                    if let Some(target) = target {
+                        match design.into_theme(
+                            target,
+                            path.file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("Imported Theme"),
+                        ) {
+                            Ok(d) => design = d,
+                            Err(e) => {
+                                self.toast(&e);
+                                return;
+                            }
+                        }
+                    } else {
+                        self.choose_import_theme_target(design);
+                        return;
+                    }
+                }
+                let is_v3 =
+                    typography_preset::read_private_with_limit(path, DesignDocument::MAX_BYTES)
+                        .ok()
+                        .flatten()
+                        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                        .is_some_and(|v| v["version"] == 3);
                 self.load_design(design);
                 *self.typed.source_path.borrow_mut() = Some(path.to_owned());
-                if document_store::matches_path::<DesignDocument>(path) {
+                if document_store::matches_path::<DesignDocument>(path)
+                    && (is_v3 || self.typed.advanced.get())
+                {
                     match DocumentStore::open(path.to_owned()) {
                         Ok(store) => *self.typed.store.borrow_mut() = Some(store),
                         Err(e) => self.toast(&e),
@@ -467,7 +615,18 @@ impl Workbench {
                         kind,
                         &this.workspace_snapshot(),
                     ) {
-                        Ok(doc) => this.load_design(doc),
+                        Ok(doc) => {
+                            if this.typed.advanced.get() {
+                                this.load_design(doc)
+                            } else if let Some(target) = doc.target_hint {
+                                match doc.into_theme(target, "Imported Theme") {
+                                    Ok(theme) => this.load_design(theme),
+                                    Err(e) => this.toast(&e),
+                                }
+                            } else {
+                                this.choose_import_theme_target(doc)
+                            }
+                        }
                         Err(e) => this.toast(&e),
                     }
                 }
@@ -476,7 +635,19 @@ impl Workbench {
     }
 
     pub(super) fn load_design(self: &Rc<Self>, design: DesignDocument) {
-        let snapshot = design.project_preview(&self.workspace_snapshot());
+        let references = if design.theme.is_some() {
+            self.typed
+                .theme_reference
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| self.workspace_snapshot())
+        } else {
+            self.workspace_snapshot()
+        };
+        if design.theme.is_some() && self.typed.theme_reference.borrow().is_none() {
+            *self.typed.theme_reference.borrow_mut() = Some(references.clone());
+        }
+        let snapshot = design.project_preview(&references);
         *self.typed.native_reference.borrow_mut() = Some(snapshot.clone());
         self.finish_active_edit();
         self.discard_drafts();
@@ -490,6 +661,17 @@ impl Workbench {
         self.typed.kind.set(design.kind);
         self.typed.scope.set(design.scope());
         self.typed.target.set(design.target_hint);
+        self.typed.advanced.set(design.theme.is_none());
+        if design.theme.is_none() {
+            let p = &self.greeting.presentation;
+            p.target.set_visible(true);
+            p.target.set_sensitive(true);
+            p.shared.set_sensitive(true);
+            if let Some(row) = p.target.parent() {
+                row.set_visible(true);
+            }
+        }
+        self.output_bar.invalidate_context();
         *self.typed.native.borrow_mut() = design.native.clone();
         self.typed.store.borrow_mut().take();
         self.typed.source_path.borrow_mut().take();
@@ -500,6 +682,8 @@ impl Workbench {
         self.greeting.invalidate_output_checks();
         self.detach_greeting_target();
         let updating = self.updating.replace(true);
+        *self.typed.theme_origin.borrow_mut() = design.theme.as_ref().map(|_| design.clone());
+        *self.typed.theme_history.borrow_mut() = Default::default();
         self.workspace_prompt_loaded.set(true);
         self.starship_editor
             .begin_detached(snapshot.starship.clone())
@@ -540,6 +724,20 @@ impl Workbench {
     }
 
     pub(super) fn install_document_actions(this: &Rc<Self>) {
+        let toggle = gtk::Button::builder()
+            .label("Enable Prompt in This Theme")
+            .action_name("win.theme-toggle-prompt")
+            .halign(gtk::Align::Start)
+            .build();
+        if let Some(content) = this
+            .prompt_source_selector
+            .parent()
+            .and_then(|p| p.parent())
+            .and_downcast::<gtk::Box>()
+        {
+            content.insert_child_after(&toggle, content.first_child().as_ref());
+        }
+        *this.typed.prompt_toggle.borrow_mut() = Some(toggle);
         for (name, operation) in [
             ("new-document", 0),
             ("document-copy", 1),
@@ -547,6 +745,11 @@ impl Workbench {
             ("export-native", 3),
             ("document-capabilities", 4),
             ("document-target", 5),
+            ("import-theme", 6),
+            ("theme-settings", 7),
+            ("advanced-document", 8),
+            ("advanced-open", 9),
+            ("theme-toggle-prompt", 10),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let weak = Rc::downgrade(this);
@@ -558,7 +761,18 @@ impl Workbench {
                         2 => this.show_kitty_library(),
                         3 => this.export_native_design(),
                         4 => this.show_document_capabilities(),
-                        _ => this.choose_document_use_target(),
+                        5 => {
+                            if this.is_theme() {
+                                this.convert_theme_target()
+                            } else {
+                                this.choose_document_use_target()
+                            }
+                        }
+                        6 => this.choose_theme_import(),
+                        7 => this.show_theme_settings(),
+                        8 => this.choose_advanced_document(),
+                        9 => this.choose_design_open_mode(true),
+                        _ => this.toggle_theme_prompt(),
                     }
                 }
             });
@@ -663,7 +877,7 @@ impl Workbench {
         Ok(())
     }
 
-    fn open_design_window(&self, design: DesignDocument) {
+    pub(super) fn open_design_window(&self, design: DesignDocument) {
         let Some(app) = self
             .window()
             .application()
@@ -686,6 +900,10 @@ impl Workbench {
     }
 
     fn choose_new_document(self: &Rc<Self>) {
+        self.choose_new_theme();
+    }
+
+    pub(super) fn choose_advanced_document(self: &Rc<Self>) {
         let kinds = [
             Kind::Palette,
             Kind::Typography,
@@ -739,6 +957,10 @@ impl Workbench {
     }
 
     pub(super) fn choose_document_copy(self: &Rc<Self>) {
+        if self.is_theme() {
+            self.convert_theme_target();
+            return;
+        }
         let before = match self.committed_design() {
             Ok(d) => d,
             Err(e) => {

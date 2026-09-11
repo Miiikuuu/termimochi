@@ -1,5 +1,8 @@
 # Typed documents: verification record
 
+Historical v2 baseline. This is not evidence for the theme-workspace correction;
+see [current theme-workspace QA](theme-workspace-qa.md).
+
 This is local implementation/verification evidence, not an online CI result or
 external-user usability study. Ignored, blocked, unavailable, unimplemented and
 not-run checks are not passes. Baseline results are separated from integrated

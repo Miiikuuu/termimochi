@@ -1,5 +1,8 @@
 # Implemented document / target capabilities
 
+Historical v2 / Advanced-tool table. For the current default workflow use the
+[theme workspace capability table](theme-workspace-architecture.md).
+
 Availability is per operation, not one compatibility flag. The GUI's Document
 Capabilities page distinguishes Available, Needs requirement, and Unsupported.
 Local dependencies, visual evidence, selected target and write review are checked
