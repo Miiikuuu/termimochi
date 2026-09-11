@@ -81,3 +81,20 @@ versions; remote/multiplexer behavior. This change did not rerun Kitty/Sixel
 protocol trials or the known isolated Ptyxis user-manager limitation. GTK GIF
 playback is not evidence of animation support in an external terminal. These
 local checks also do not represent a new online CI run: this version is unpushed.
+
+## Pre-merge review follow-up
+
+After the initial push, PR #1 identified repeated Kitty configuration roots
+consuming the shared verification budget more than once. Roots are now
+canonicalized and deduplicated before traversal. Two new tests cover repeated
+defaults, symlink aliases, missing roots, content changes, stable ordering and
+the unchanged shared 4 MiB limit. No real configuration was modified.
+
+Follow-up local results: formatting, strict Clippy, **353 workspace tests**
+(57 opt-in cases ignored), Release build and **3/3 isolated native checks**
+(trial review/recovery, advisory cache safety, resolved destination status).
+Evidence: `target/qa/configuration-roots-workspace-tests.log` and
+`target/qa/termimochi-regression-8he_kwvm/results.json`.
+Updated GUI SHA-256:
+`a1b1e5f95c6d94cc80002741dd3fd33c5a00687a421e6fb2025740faeabf31b9`.
+Online checks on this follow-up must pass separately before merge.

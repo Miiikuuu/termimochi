@@ -223,9 +223,10 @@ impl VerificationKey {
     }
 }
 
-/// Read-only, bounded fingerprint of known target configuration. Not a claim
-/// about compositor state, runtime zoom or includes outside these locations.
-pub(crate) fn environment(terminal: Terminal) -> Result<String, String> {
+fn hash_configuration_roots(
+    paths: Vec<std::path::PathBuf>,
+    hash: &mut impl std::hash::Hasher,
+) -> Result<(), String> {
     use std::{
         hash::{Hash, Hasher},
         path::Path,
@@ -285,8 +286,35 @@ pub(crate) fn environment(terminal: Terminal) -> Result<String, String> {
         }
         Ok(())
     }
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    // XDG, the home fallback and KITTY_CONFIG_DIRECTORY can all name the same
+    // directory, including via symlinks. Charge each canonical root only once.
+    let mut roots = std::collections::BTreeSet::new();
+    for path in paths {
+        match std::fs::canonicalize(&path) {
+            Ok(root) => {
+                roots.insert(root);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Cannot verify target environment {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
     let mut budget = 4 * 1024 * 1024;
+    for path in roots {
+        visit(&path, hash, &mut budget, 6)?;
+    }
+    Ok(())
+}
+
+/// Read-only, bounded fingerprint of known target configuration. Not a claim
+/// about compositor state, runtime zoom or includes outside these locations.
+pub(crate) fn environment(terminal: Terminal) -> Result<String, String> {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
     let home = gtk::glib::home_dir();
     let config = gtk::glib::user_config_dir();
     let paths = match terminal {
@@ -308,9 +336,7 @@ pub(crate) fn environment(terminal: Terminal) -> Result<String, String> {
             vec![]
         }
     };
-    for path in paths {
-        visit(&path, &mut hash, &mut budget, 6)?;
-    }
+    hash_configuration_roots(paths, &mut hash)?;
     for name in [
         "DISPLAY",
         "WAYLAND_DISPLAY",
@@ -328,6 +354,69 @@ pub(crate) fn environment(terminal: Terminal) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn configuration_fingerprint(paths: Vec<std::path::PathBuf>) -> Result<u64, String> {
+        use std::hash::Hasher;
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        hash_configuration_roots(paths, &mut hash)?;
+        Ok(hash.finish())
+    }
+
+    #[test]
+    fn configuration_roots_charge_duplicate_defaults_and_aliases_once() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("kitty");
+        std::fs::create_dir(&config).unwrap();
+        let file = config.join("kitty.conf");
+        std::fs::write(&file, vec![b'#'; 2 * 1024 * 1024]).unwrap();
+        let single = configuration_fingerprint(vec![config.clone()]).unwrap();
+        assert_eq!(
+            configuration_fingerprint(vec![config.clone(); 3]).unwrap(),
+            single
+        );
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&config, &alias).unwrap();
+        assert_eq!(
+            configuration_fingerprint(vec![alias.clone(), config.join("."), config.clone()])
+                .unwrap(),
+            single
+        );
+        assert_eq!(
+            configuration_fingerprint(vec![config.clone(), alias, root.path().join("missing")])
+                .unwrap(),
+            single
+        );
+        std::fs::write(&file, vec![b' '; 2 * 1024 * 1024]).unwrap();
+        assert_ne!(configuration_fingerprint(vec![config]).unwrap(), single);
+    }
+
+    #[test]
+    fn configuration_roots_still_share_the_size_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("a");
+        let b = root.path().join("b");
+        for path in [&a, &b] {
+            std::fs::create_dir(path).unwrap();
+            std::fs::write(path.join("kitty.conf"), vec![b'#'; 2 * 1024 * 1024]).unwrap();
+        }
+        let original = configuration_fingerprint(vec![a.clone(), b.clone()]).unwrap();
+        assert_eq!(
+            configuration_fingerprint(vec![b.clone(), a.clone()]).unwrap(),
+            original
+        );
+        std::fs::write(b.join("extra.conf"), b"#").unwrap();
+        assert!(
+            configuration_fingerprint(vec![a.clone(), b])
+                .unwrap_err()
+                .contains("4 MiB")
+        );
+        std::fs::write(a.join("kitty.conf"), vec![b'#'; 4 * 1024 * 1024 + 1]).unwrap();
+        assert!(
+            configuration_fingerprint(vec![a])
+                .unwrap_err()
+                .contains("4 MiB")
+        );
+    }
     #[test]
     fn resolved_destination_uses_actual_output_and_explicit_pixel_scope() {
         for source in [None, Some(false), Some(true)] {
