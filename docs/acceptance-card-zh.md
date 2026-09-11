@@ -23,14 +23,14 @@ bash scripts/run-isolated.sh
 | --- | --- | --- |
 | 1. 放入作品 | 左侧 Greeting → 打开启用开关 → **Add image / GIF…**，选一张自己的图片/GIF；调整裁剪、去背景，点 **Use Artwork** | 作品进入草稿，原文件不变；日常终端不变。重新点 **Edit Artwork…** 还能编辑原稿。 |
 | 2. 选择样子 | 在 **Display** 选 Image / Character；GIF 还可选 Animation。用 Compact / Standard / Wide 或 Columns 调占位 | 改的是方案里的显示方式。Character 的列数越多通常越细、也越占地方；不是免费的“提高清晰度”。 |
-| 3. 区分缩放 | 在右侧 **Fit preview / 100% occupancy** 间切换；GIF 点 **Play animation** | Columns 和保存状态不变。这里是 GTK 设计预览，不是终端协议兼容性证明。布局/文字的最终效果以真实试用为准。 |
+| 3. 选择观察对象 | 右侧顶部场景选 **Greeting**，再切左侧 Palette 调 Background；GIF 点 **Play animation**。也可独立选 Terminal / Prompt | 左侧只换编辑工具，右侧图片/GIF 保持显示。场景切换不改变保存状态。Fit preview / 100% occupancy 只改观察缩放；这里是 GTK 设计预览，不是终端协议兼容性证明。 |
 | 4. 保存整套 | 随便切到 Palette、Typography、Layout 或 Prompt，按 **Ctrl+S**，在测试会话目录保存为 `my-demo.termimochi.json` | 不管在哪个模块，保存的都是整套。移动原图片后，方案里的原稿仍可编辑。Save 不会应用终端配置。 |
 | 5. 关闭再打开 | 关闭后，运行终端打印的 `bash scripts/run-isolated.sh --session '…'`，用 Open 打开刚保存的方案 | Display、Columns、原稿及其他模块保留；旧的“已验证”不会自动恢复。目标可以记住，共享替换勾选不能记住。 |
-| 6. 真正试用 | 底部 **Greeting target** 选已安装的 Kitty（图片/GIF），点 **Try** | Kitty 展示临时配置，不读写日常 Fastfetch。回到应用点 **Looks correct**；若空白点 **Nothing displayed**，不动点 **Animation broken**。不需要记终端按键。 |
+| 6. 真正试用 | 底部 **Greeting target** 选已安装的 Kitty（图片/GIF），点 **Try Greeting** | 只试用欢迎界面，不是整套字体/配色/提示符。Kitty 展示临时配置，不读写日常 Fastfetch。回到应用点 **Looks correct**；若空白点 **Nothing displayed**，不动点 **Animation broken**。 |
 | 7. 应用测试副本 | **保持 Replace shared greeting with pixels 不勾选** → **Apply Scheme…** → 只勾 Greeting → **Back Up & Apply Selected** | 路径是本次隔离会话 `data/termimochi/targets/kitty/config.jsonc`；结果为 **Installed · not enabled**。这不是失败：素材和独立配置已装好，但没有修改共享配置或开启自启动。 |
 | 8. 重复与恢复 | 改一项信息字段再审阅 Greeting；然后在 **⋮ → Last Application & Recovery…** 中恢复相应应用记录 | 字段修改不会悄悄把图片改为 ANSI。每次结果分项显示；恢复要另一次确认，外部冲突不会被强行覆盖。图片资源会保留，避免破坏备份引用。 |
 
-应用结果会显示准确的 `fastfetch --config '…'` 命令。若要检查已安装的副本，可在支持的目标终端手动运行它；它会运行完整配置中的自定义命令/网络字段，只有确认这些内容安全后才运行。**Try** 则始终使用安全示例信息，不能证明自定义命令正确。
+应用结果会显示准确的 `fastfetch --config '…'` 命令。若要检查已安装的副本，可在支持的目标终端手动运行它；它会运行完整配置中的自定义命令/网络字段，只有确认这些内容安全后才运行。**Try Greeting** 则始终使用安全示例信息，不能证明自定义命令正确。
 
 ## 再做四个防呆动作
 

@@ -1129,7 +1129,7 @@ impl ImageImport {
         }
         workbench.greeting.replace(next, true);
         workbench.greeting_module_button.set_active(true);
-        workbench.toast("Artwork added to the scheme. Choose Display and Columns, then Save or Try. Your terminal configuration is unchanged.");
+        workbench.toast("Artwork added. Choose Greeting in Preview Scene to view it; Save or Try Greeting when ready. Your terminal configuration is unchanged.");
         if let Some(window) = self.window.upgrade() {
             window.close();
         }
@@ -1885,6 +1885,7 @@ mod tests {
             settle();
         }
         this.greeting_module_button.set_active(true);
+        this.preview_scene_selector.set_selected(2);
         settle();
         let import = descendants(window.upcast_ref())
             .into_iter()

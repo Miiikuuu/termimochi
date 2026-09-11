@@ -179,7 +179,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   and 60 seconds per cycle. Importing binary terminal protocol streams and
   animated PNG/WebP remain unsupported.
   See [image export requirements](docs/image-conversion.md#pixel-image-bundles).
-  The main workbench offers **Try in Terminal** (Kitty, Ptyxis or xterm): a
+  The main workbench offers **Try Greeting** (Kitty, Ptyxis or xterm): a
   temporary, safe-field-only trial that leaves your daily configuration alone.
   Confirm the actual picture/motion using GUI feedback, then **Review Scheme &
   Apply…** to back up Fastfetch and install permanent assets with
@@ -349,8 +349,11 @@ that looks balanced elsewhere can therefore become almost unreadable.
 
 ## Editor organization
 
-The activity rail switches properties without replacing the terminal preview.
-The fixed bottom bar keeps **Save**, **Try in Terminal**, **Apply Scheme…**, and **⋮** accessible while
+The activity rail selects what to edit. The independent **Preview Scene** selector
+on the right selects **Terminal**, **Prompt**, or **Greeting** to observe. Switching
+editor modules retains that scene, including an image/GIF while editing Palette.
+Scene selection is session-only and does not modify the saved scheme.
+The fixed bottom bar keeps **Save**, **Try Greeting**, **Apply Scheme…**, and **⋮** accessible while
 properties scroll. **Save** always stores the complete scheme; external
 changes require review and confirmation. The former module-specific Apply,
 Install and Export actions remain under **⋮**, alongside imports, reloads,
@@ -399,7 +402,8 @@ bash scripts/run-isolated.sh
 This creates isolated application state, not a filesystem sandbox; use test copies.
 See the [implementation and verification report](docs/implementation-2026-09-10.md)
 and [acceptance walkthrough (Chinese)](docs/acceptance-card-zh.md). Main Save / Ctrl+S
-always saves the whole scheme. Greeting's main **Try** and **Apply Scheme…** honor
+always saves the whole scheme. **Try Greeting** tests only the greeting, not the
+whole font/color/prompt scheme. Greeting's **Try Greeting** and **Apply Scheme…** honor
 its Display setting; independent image installation does not enable shell startup.
 
 ```bash

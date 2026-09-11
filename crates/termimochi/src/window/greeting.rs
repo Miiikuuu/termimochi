@@ -1558,7 +1558,6 @@ impl Workbench {
         self.greeting_motion.stop();
         let settings = self.greeting.settings();
         if !self.greeting_preview.get()
-            || !self.greeting_module_button.is_active()
             || !settings.enabled
             || self.greeting.invalid.get()
             || settings.opening == Opening::None
@@ -2027,6 +2026,7 @@ pub(super) mod tests {
                 .for_each(|i| i.enabled = i.kind == Info::Os);
             this.greeting.replace(settings.clone(), true);
             this.greeting_module_button.set_active(true);
+            this.preview_scene_selector.set_selected(2);
             settle();
             this.preview_scroll.start();
             settle();
@@ -2217,7 +2217,7 @@ pub(super) mod tests {
                 .clone()
         }
     }
-    pub(super) fn feed(this: &Workbench) -> String {
+    pub(in crate::window) fn feed(this: &Workbench) -> String {
         this.preview_feed
             .borrow()
             .iter()
@@ -2302,6 +2302,7 @@ pub(super) mod tests {
         assert_eq!(this.greeting.settings(), GreetingSettings::starter());
         assert!(!this.greeting.dirty());
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+        this.preview_scene_selector.set_selected(2);
         this.greeting.enabled.set_active(true);
         wait_official(&this);
         assert_eq!(this.greeting.preset.selected(), 1);
@@ -2405,6 +2406,7 @@ pub(super) mod tests {
         window.set_default_size(1320, 850);
         let this = controller(&window);
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+        this.preview_scene_selector.set_selected(2);
         wait_official(&this);
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while this.preview_loading.get() {
@@ -2487,6 +2489,7 @@ pub(super) mod tests {
             settle();
         }
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+        this.preview_scene_selector.set_selected(2);
         let original = this.greeting.settings();
         let layout = this.layout_settings();
         for preset in OfficialPreset::ALL {
@@ -2701,6 +2704,7 @@ pub(super) mod tests {
         settle();
         assert!(this.greeting_module_button.is_active());
         assert!(!this.greeting.dirty());
+        this.preview_scene_selector.set_selected(2);
         assert_eq!(
             this.save_button
                 .menu_model()

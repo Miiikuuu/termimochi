@@ -427,6 +427,7 @@ mod tests {
             settle();
         }
         this.greeting_module_button.set_active(true);
+        this.preview_scene_selector.set_selected(2);
         settle();
         let before = this.greeting.settings();
         let layout = this.layout_settings();

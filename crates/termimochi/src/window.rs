@@ -20,6 +20,7 @@ mod documents;
 mod greeting;
 mod output_bar;
 mod preview_hint;
+mod preview_scene;
 mod preview_scroll;
 mod scheme;
 #[cfg(test)]
@@ -363,6 +364,7 @@ struct Workbench {
     preview_terminal_scrollbar_revealer: gtk::Revealer,
     preview_scroll: Rc<preview_scroll::PreviewScroll>,
     preview_selector: gtk::DropDown,
+    preview_scene_selector: gtk::DropDown,
     prompt_preview_selector: gtk::DropDown,
     prompt_compare_selector: gtk::DropDown,
     appearance_source: gtk::Label,
@@ -852,6 +854,7 @@ fn present_with_preset(
         preview_terminal_scrollbar_revealer: preview.terminal_scrollbar_revealer,
         preview_scroll: preview.scroll,
         preview_selector: preview.selector,
+        preview_scene_selector: preview.scene_selector,
         prompt_preview_selector: preview.prompt_selector,
         prompt_compare_selector: preview.compare_selector,
         appearance_source: preview.appearance_source,
@@ -1027,6 +1030,7 @@ struct PreviewWidgets {
     terminal_scrollbar_revealer: gtk::Revealer,
     scroll: Rc<preview_scroll::PreviewScroll>,
     selector: gtk::DropDown,
+    scene_selector: gtk::DropDown,
     prompt_selector: gtk::DropDown,
     compare_selector: gtk::DropDown,
     appearance_source: gtk::Label,
@@ -2556,6 +2560,13 @@ fn build_preview(
     preview_header.set_valign(gtk::Align::Center);
     preview_header.add_css_class("preview-title-row");
     preview_header.append(&heading);
+    let scene_selector = gtk::DropDown::from_strings(&["Terminal", "Prompt", "Greeting"]);
+    scene_selector.add_css_class("preview-scenario");
+    scene_selector.set_tooltip_text(Some(
+        "Preview scene · independent of the editor tabs on the left",
+    ));
+    scene_selector.update_property(&[gtk::accessible::Property::Label("Preview Scene")]);
+    preview_header.append(&scene_selector);
     let inspect_button = gtk::ToggleButton::with_label("Inspect");
     inspect_button.set_valign(gtk::Align::Center);
     inspect_button.add_css_class("preview-inspect-toggle");
@@ -2813,6 +2824,7 @@ fn build_preview(
         terminal_scrollbar_revealer,
         scroll,
         selector,
+        scene_selector,
         prompt_selector,
         compare_selector,
         appearance_source,
@@ -3377,7 +3389,9 @@ impl Workbench {
     }
 
     fn restore_prompt_settings(&self, settings: PromptSettings) {
-        self.activate_prompt_preview(1);
+        if self.observes_prompt() {
+            self.activate_prompt_preview(1);
+        }
         *self.prompt_settings.borrow_mut() = settings;
         self.refresh_prompt_controls();
         self.redraw_preview_contents();
@@ -3401,7 +3415,9 @@ impl Workbench {
         history.mark_changed();
         history.commit(after.clone());
         drop(history);
-        self.activate_prompt_preview(1);
+        if self.observes_prompt() {
+            self.activate_prompt_preview(1);
+        }
         *self.prompt_settings.borrow_mut() = after;
         self.refresh_prompt_controls();
         self.redraw_preview_contents();
@@ -3820,6 +3836,7 @@ impl Workbench {
 
     fn connect_signals(this: &Rc<Self>) {
         Self::connect_color_targets(this);
+        Self::connect_preview_scene(this);
         let weak = Rc::downgrade(this);
         this.window().connect_close_request(move |_| {
             let Some(this) = weak.upgrade() else {
@@ -3855,19 +3872,15 @@ impl Workbench {
             let weak = Rc::downgrade(this);
             button.connect_toggled(move |_| {
                 if let Some(this) = weak.upgrade() {
-                    this.greeting_motion.stop();
                     this.refresh_editor_menus();
                 }
             });
         }
 
         let weak = Rc::downgrade(this);
-        this.greeting_module_button.connect_toggled(move |button| {
+        this.greeting_module_button.connect_toggled(move |_| {
             if let Some(this) = weak.upgrade() {
                 this.greeting.finish();
-                if button.is_active() && !this.navigating_preview.get() {
-                    this.show_greeting_preview();
-                }
             }
         });
         let weak = Rc::downgrade(this);
@@ -3893,7 +3906,7 @@ impl Workbench {
                 glib::timeout_add_local_once(Duration::from_millis(80), move || {
                     if let Some(this) = weak.upgrade() {
                         this.greeting_redraw_pending.set(false);
-                        if !this.greeting.invalid.get() {
+                        if !this.greeting.invalid.get() && this.greeting_preview.get() {
                             this.show_greeting_preview();
                         }
                     }
@@ -3934,6 +3947,10 @@ impl Workbench {
                     }
                     this.sync_prompt_page();
                     if !this.navigating_preview.get() {
+                        this.preview_prompt_source
+                            .set(this.prompt_source_selector.selected());
+                    }
+                    if !this.navigating_preview.get() && this.observes_prompt() {
                         if this.prompt_source_selector.selected() == 0 {
                             this.activate_prompt_preview(0);
                             this.schedule_copy_preview();
@@ -3953,7 +3970,7 @@ impl Workbench {
                     return;
                 }
                 this.refresh_history_actions();
-                if !this.navigating_preview.get() {
+                if !this.navigating_preview.get() && this.observes_prompt() {
                     this.activate_prompt_preview(0);
                     this.schedule_copy_preview();
                 }
@@ -4184,7 +4201,17 @@ impl Workbench {
         let weak = Rc::downgrade(this);
         this.preview_selector.connect_selected_notify(move |_| {
             if let Some(this) = weak.upgrade() {
-                this.reset_prompt_preview();
+                if this.navigating_preview.get() {
+                    return;
+                }
+                if !this.greeting_preview.get() {
+                    let prompt = this.preview_uses_prompt.get();
+                    this.reset_prompt_preview();
+                    if prompt {
+                        this.activate_prompt_preview(0);
+                        this.schedule_copy_preview();
+                    }
+                }
                 this.refresh_preview();
             }
         });
@@ -4632,6 +4659,8 @@ impl Workbench {
     }
 
     fn redraw_preview_contents(&self) {
+        self.sync_preview_scene();
+        self.refresh_output_bar();
         if !self.greeting_preview.get()
             || !self.preview_input.borrow().text().is_empty()
             || !self.preview_input.borrow().submitted().is_empty()

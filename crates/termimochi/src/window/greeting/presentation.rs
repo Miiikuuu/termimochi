@@ -484,7 +484,7 @@ impl GreetingEditor {
             let height = (width as f64 * image.pixels.height() as f64 / image.pixels.width() as f64)
                 .round() as i32;
             p.picture.set_size_request(width, height);
-            p.caption.set_label(&format!("{} × {} processed px · {columns} columns × {rows} rows\nGTK design composition · verify actual placement in Try",image.pixels.width(),image.pixels.height()));
+            p.caption.set_label(&format!("{} × {} processed px · {columns} columns × {rows} rows\nGTK design composition · verify actual placement in Try Greeting",image.pixels.width(),image.pixels.height()));
         }
         let animated = settings
             .presentation
@@ -586,7 +586,7 @@ impl Workbench {
         }
         let key = self.greeting_verification_key()?;
         let verified = self.greeting.presentation.verified.borrow();
-        let trial=verified.as_ref().filter(|(k,_)|*k==key).map(|(_,t)|t).ok_or("Image / animation has not been verified for this design and target. Use Try in Terminal; the intended effect will NOT be replaced with characters.")?;
+        let trial=verified.as_ref().filter(|(k,_)|*k==key).map(|(_,t)|t).ok_or("Image / animation has not been verified for this design and target. Use Try Greeting; the intended effect will NOT be replaced with characters.")?;
         if trial.protocol != spec.protocol.unwrap() || trial.ansi {
             return Err("Trial output differs from the current design. Try again.".into());
         }
@@ -695,6 +695,7 @@ mod tests {
             assert_eq!(reopened.greeting.presentation.columns, 48);
         }
         this.greeting_module_button.set_active(true);
+        this.preview_scene_selector.set_selected(2);
         settle();
         let saved = this.workspace_snapshot();
         assert!(this.workspace_is_clean());
@@ -703,6 +704,72 @@ mod tests {
         this.greeting.presentation.zoom.set_selected(1);
         this.greeting.presentation.play.set_active(true);
         settle();
+        let prepared = this
+            .greeting
+            .presentation
+            .prepared
+            .borrow()
+            .clone()
+            .unwrap();
+        for module in [
+            &this.palette_module_button,
+            &this.typography_module_button,
+            &this.layout_module_button,
+            &this.prompt_module_button,
+        ] {
+            let started = this.greeting.presentation.started.get();
+            module.set_active(true);
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while this.greeting.presentation.started.get() == started {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "GIF stopped after editor navigation"
+                );
+                settle();
+            }
+            assert!(this.greeting.presentation.canvas.is_mapped());
+            assert!(this.greeting.presentation.play.is_active());
+            assert!(std::sync::Arc::ptr_eq(
+                &prepared,
+                this.greeting
+                    .presentation
+                    .prepared
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+            ));
+        }
+        this.palette_module_button.set_active(true);
+        for rgb in [Rgb::new(21, 39, 57), Rgb::new(230, 240, 250)] {
+            this.apply_color("Background", rgb);
+            settle();
+            let canvas = &this.greeting.presentation.canvas;
+            let snapshot = gtk::Snapshot::new();
+            gtk::WidgetPaintable::new(Some(canvas)).snapshot(
+                &snapshot,
+                f64::from(canvas.width()),
+                f64::from(canvas.height()),
+            );
+            let texture = canvas
+                .native()
+                .unwrap()
+                .renderer()
+                .unwrap()
+                .render_texture(snapshot.to_node().unwrap(), None);
+            let width = texture.width() as usize;
+            let mut bytes = vec![0; width * texture.height() as usize * 4];
+            texture.download(&mut bytes, width * 4);
+            // Sample the empty lower margin, not the caption's antialiased text.
+            let offset = ((texture.height() as usize - 5) * width + 5) * 4;
+            let pixel = u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            assert_eq!(
+                pixel & 0x00ff_ffff,
+                u32::from(rgb.red()) << 16 | u32::from(rgb.green()) << 8 | u32::from(rgb.blue())
+            );
+            assert!(canvas.is_mapped());
+            this.undo_action.activate(None);
+        }
+        this.greeting_module_button.set_active(true);
         this.greeting.root.vadjustment().set_value(80.0);
         assert_eq!(this.workspace_snapshot(), saved);
         assert!(this.workspace_is_clean());

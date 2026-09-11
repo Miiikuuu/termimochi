@@ -512,6 +512,7 @@ mod tests {
             settle();
         }
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+        this.preview_scene_selector.set_selected(2);
         this.greeting.preset.set_selected(0); // retained basic/custom editor
         this.greeting.enabled.set_active(true);
         settle();

@@ -36,14 +36,14 @@ impl OutputBar {
             .css_classes(["tool-menu"])
             .build();
         let trial = gtk::Button::builder()
-            .label("Try")
+            .label("Try Greeting")
             .action_name("win.try-greeting")
             .tooltip_text(
-                "Try the current greeting in the target terminal · no configuration changes",
+                "Try only the greeting in the target terminal, not the whole scheme · no configuration changes",
             )
             .css_classes(["flat"])
             .build();
-        trial.update_property(&[gtk::accessible::Property::Label("Try in Terminal")]);
+        trial.update_property(&[gtk::accessible::Property::Label("Try Greeting")]);
         actions.append(&title);
         actions.append(save);
         actions.append(&trial);
@@ -101,7 +101,7 @@ impl Workbench {
             self.inspect_layer.set_child(Some(&stack));
         }
         if let Some(stack) = self.inspect_layer.child().and_downcast::<gtk::Stack>() {
-            let pixels = self.greeting_module_button.is_active()
+            let pixels = self.greeting_preview.get()
                 && settings.enabled
                 && resolved.as_ref().is_ok_and(|s| s.protocol.is_some());
             stack.set_visible_child_name(if pixels { "pixels" } else { "terminal" });

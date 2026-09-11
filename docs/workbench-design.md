@@ -20,10 +20,17 @@ owns module navigation. The left inspector scrolls independently; its compact
 output bar stays visible below it. The right Design Preview does not move or reset
 when navigating. Diagnostics remain local to the preview.
 
+The right-hand Preview Scene selector owns observation: Terminal, Prompt or
+Greeting. Left editor navigation (including Inspect) never selects a scene.
+Greeting pixels and playback depend on the observed scene, not the active editor.
+Editing a hidden scene does not bring it forward. Scene selection is session-only;
+opening a workspace can still initialize its preview from the loaded design.
+
 The output bar has four entry points:
 
 - **Save / Ctrl+S**: always the complete scheme, regardless of the active module.
-- **Try in Terminal**: current Greeting output and local target; GUI visual feedback.
+- **Try Greeting**: only current Greeting output and local target; GUI visual
+  feedback. It does not trial the entire font/color/prompt scheme.
 - **Apply Scheme…**: review all workspace destinations/scopes and select external
   changes. No checkbox is preselected; palette activation depends on installation.
   Existing review, backup and conflict checks remain mandatory.
