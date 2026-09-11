@@ -11,6 +11,7 @@ mod fields;
 mod image_import;
 mod pixel_export;
 mod presentation;
+mod presentation_work;
 mod startup;
 mod sync;
 
@@ -523,7 +524,9 @@ impl GreetingEditor {
         self.settings.borrow().clone()
     }
     pub fn dirty(&self) -> bool {
-        self.invalid.get() || *self.settings.borrow() != *self.baseline.borrow()
+        self.presentation_pending()
+            || self.invalid.get()
+            || *self.settings.borrow() != *self.baseline.borrow()
     }
     pub fn finish(&self) {
         if !self.invalid.get() {
@@ -536,6 +539,7 @@ impl GreetingEditor {
         })
     }
     fn persist(&self) -> Result<(), String> {
+        self.require_presentation_ready()?;
         self.finish();
         if self.invalid.get() {
             return Err("Fix the greeting fields before saving.".into());
@@ -563,6 +567,7 @@ impl GreetingEditor {
         *self.changed.borrow_mut() = Some(Box::new(changed));
     }
     pub fn replace(&self, settings: GreetingSettings, record: bool) {
+        self.presentation.edits.borrow_mut().cancel();
         self.finish();
         if record && settings != self.settings() {
             let mut history = self.history.borrow_mut();
@@ -576,6 +581,12 @@ impl GreetingEditor {
         self.notify();
     }
     pub fn undo(&self) {
+        if self.presentation_pending() {
+            self.presentation.edits.borrow_mut().cancel();
+            self.refresh();
+            self.notify();
+            return;
+        }
         if self.invalid.replace(false) {
             // TextBuffer replacement first deletes the old contents, then
             // inserts the paste. Do not expose that intermediate empty value
@@ -595,7 +606,7 @@ impl GreetingEditor {
         }
     }
     pub fn redo(&self) {
-        if self.invalid.get() {
+        if self.invalid.get() || self.presentation_pending() {
             return;
         }
         let target = self.history.borrow_mut().redo(self.settings());
@@ -678,6 +689,12 @@ impl GreetingEditor {
         self.updating.set(false);
     }
     pub fn refresh_status(&self) {
+        if self.presentation_pending() {
+            self.status.set_text(
+                "Updating artwork… Save, Try and Apply wait for the result. Undo cancels.",
+            );
+            return;
+        }
         if self.invalid.get() {
             return;
         }
@@ -1820,6 +1837,10 @@ impl Workbench {
         );
     }
     pub(super) fn choose_greeting_export(self: &Rc<Self>, fastfetch: bool) {
+        if let Err(error) = self.greeting.require_presentation_ready() {
+            self.toast(&error);
+            return;
+        }
         let settings = self.greeting.settings();
         if fastfetch
             && settings

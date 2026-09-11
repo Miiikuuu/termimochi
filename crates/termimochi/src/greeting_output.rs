@@ -6,6 +6,8 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod background;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Visual {
@@ -47,6 +49,28 @@ pub(crate) struct OutputSpec {
     pub protocol: Option<Protocol>,
     pub columns: u32,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Destination {
+    SharedCharacter,
+    SharedImage,
+    IndependentImage,
+}
+
+impl OutputSpec {
+    /// Scope follows resolved output, never the raw Auto/Image/Character intent.
+    /// Shared-pixel consent cannot change the destination of character output.
+    pub fn destination(&self, binding: &TargetBinding) -> Destination {
+        if self.protocol.is_none() {
+            Destination::SharedCharacter
+        } else if binding.shared_pixels {
+            Destination::SharedImage
+        } else {
+            Destination::IndependentImage
+        }
+    }
+}
+
 impl Presentation {
     pub fn validate(&self) -> Result<(), String> {
         if !(8..=160).contains(&self.columns) {
@@ -304,6 +328,50 @@ pub(crate) fn environment(terminal: Terminal) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resolved_destination_uses_actual_output_and_explicit_pixel_scope() {
+        for source in [None, Some(false), Some(true)] {
+            let (mut settings, _) = crate::pixel_trial::tests::fixture(source == Some(true));
+            if source.is_none() {
+                settings.editable_artwork = None;
+            }
+            for visual in [
+                Visual::Auto,
+                Visual::Character,
+                Visual::Image,
+                Visual::Animation,
+            ] {
+                settings.presentation.visual = visual;
+                for terminal in Terminal::ALL {
+                    for shared_pixels in [false, true] {
+                        let binding = TargetBinding {
+                            terminal,
+                            shared_pixels,
+                        };
+                        let resolved = settings.presentation.resolve(&settings, terminal);
+                        let character = visual == Visual::Character
+                            || (visual == Visual::Auto && source.is_none());
+                        let invalid = !character
+                            && (source.is_none()
+                                || (visual == Visual::Animation && source == Some(false)));
+                        if invalid {
+                            assert!(resolved.is_err());
+                        } else {
+                            let expected = if character {
+                                Destination::SharedCharacter
+                            } else if shared_pixels {
+                                Destination::SharedImage
+                            } else {
+                                Destination::IndependentImage
+                            };
+                            assert_eq!(resolved.unwrap().destination(&binding), expected);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn legacy_recipe_migration_and_reediting_do_not_resize_or_forget_style() {
         use crate::{

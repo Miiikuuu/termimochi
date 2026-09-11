@@ -11,13 +11,16 @@ type PreparedAction = (
 );
 
 pub(in crate::window) struct PresentationEditor {
+    pub(super) edits: RefCell<super::presentation_work::EditTask>,
+    pub(super) checks: RefCell<super::presentation_work::OutputChecks>,
+    pub(super) check_completed: RefCell<Option<Box<dyn Fn()>>>,
     pub root: gtk::Box,
     pub visual: gtk::DropDown,
     pub width: gtk::SpinButton,
     style: gtk::DropDown,
     protocol: gtk::DropDown,
     fallback: gtk::DropDown,
-    note: gtk::Label,
+    pub(super) note: gtk::Label,
     pub target_bar: gtk::Box,
     pub target: gtk::DropDown,
     pub shared: gtk::CheckButton,
@@ -199,6 +202,9 @@ impl PresentationEditor {
                 .build(),
         );
         Self {
+            edits: RefCell::new(super::presentation_work::edit_task()),
+            checks: RefCell::new(super::presentation_work::OutputChecks::new()),
+            check_completed: RefCell::new(None),
             root,
             visual,
             width,
@@ -231,6 +237,10 @@ impl PresentationEditor {
         }
     }
     pub fn refresh(&self, settings: &GreetingSettings) {
+        let edit = self.edits.borrow();
+        let intent = edit
+            .input()
+            .map_or(&settings.presentation, |request| &request.intent);
         let gif = settings
             .editable_artwork
             .as_ref()
@@ -247,45 +257,40 @@ impl PresentationEditor {
         {
             self.visual.set_model(Some(&gtk::StringList::new(labels)));
         }
-        self.visual
-            .set_selected(match settings.presentation.visual {
-                Visual::Auto => 0,
-                Visual::Image => 1,
-                Visual::Character => 2,
-                Visual::Animation => {
-                    if gif {
-                        3
-                    } else {
-                        gtk::INVALID_LIST_POSITION
-                    }
+        self.visual.set_selected(match intent.visual {
+            Visual::Auto => 0,
+            Visual::Image => 1,
+            Visual::Character => 2,
+            Visual::Animation => {
+                if gif {
+                    3
+                } else {
+                    gtk::INVALID_LIST_POSITION
                 }
-            });
-        self.width.set_value(settings.presentation.columns.into());
+            }
+        });
+        self.width.set_value(intent.columns.into());
         self.width
             .set_sensitive(settings.editable_artwork.is_some());
         self.style.set_sensitive(
-            settings.presentation.visual == Visual::Character
-                && settings.editable_artwork.is_some(),
+            intent.visual == Visual::Character && settings.editable_artwork.is_some(),
         );
-        self.style
-            .set_selected(match settings.presentation.character_style {
-                crate::greeting_image::Style::Detail => 0,
-                crate::greeting_image::Style::Ascii => 1,
-                crate::greeting_image::Style::HalfBlocks => 2,
-            });
-        self.protocol
-            .set_selected(match settings.presentation.protocol {
-                None => 0,
-                Some(crate::greeting_image::pixel_export::Protocol::Kitty) => 1,
-                Some(crate::greeting_image::pixel_export::Protocol::KittyAnimation) => 2,
-                Some(crate::greeting_image::pixel_export::Protocol::Sixel) => 3,
-            });
+        self.style.set_selected(match intent.character_style {
+            crate::greeting_image::Style::Detail => 0,
+            crate::greeting_image::Style::Ascii => 1,
+            crate::greeting_image::Style::HalfBlocks => 2,
+        });
+        self.protocol.set_selected(match intent.protocol {
+            None => 0,
+            Some(crate::greeting_image::pixel_export::Protocol::Kitty) => 1,
+            Some(crate::greeting_image::pixel_export::Protocol::KittyAnimation) => 2,
+            Some(crate::greeting_image::pixel_export::Protocol::Sixel) => 3,
+        });
         self.fallback.set_selected(u32::from(
-            settings.presentation.fallback == greeting_output::Fallback::PortableCharacter,
+            intent.fallback == greeting_output::Fallback::PortableCharacter,
         ));
-        self.note.set_label(if settings.presentation.visual == Visual::Character { "More columns = more detail and more terminal space. Preview zoom does not change the design." } else { "Columns set terminal occupancy, not source resolution. Image / animation support remains unverified until tried." });
-        self.shared
-            .set_visible(settings.presentation.visual != Visual::Character);
+        self.note.set_label(if edit.input().is_some() { "Updating artwork… Undo cancels the pending edit." } else if intent.visual == Visual::Character { "More columns = more detail and more terminal space. Preview zoom does not change the design." } else { "Columns set terminal occupancy, not source resolution. Image / animation support remains unverified until tried." });
+        self.shared.set_visible(intent.visual != Visual::Character);
     }
     fn intent(&self) -> Presentation {
         use crate::greeting_image::{Style, pixel_export::Protocol};
@@ -322,13 +327,7 @@ impl GreetingEditor {
             if this.updating.get() {
                 return;
             }
-            match greeting_output::edit(&this.settings(), this.presentation.intent()) {
-                Ok(next) => this.replace(next, true),
-                Err(error) => {
-                    this.refresh();
-                    this.presentation.note.set_label(&error);
-                }
-            }
+            this.queue_presentation_edit(this.presentation.intent());
         };
         for control in [
             &this.presentation.visual,
@@ -404,6 +403,7 @@ impl GreetingEditor {
             let Some(this) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
+            this.poll_presentation_work();
             let p = &this.presentation;
             let allocation = (p.canvas.width(), p.canvas.height());
             if p.canvas.is_mapped() && p.allocation.replace(allocation) != allocation {
@@ -553,30 +553,17 @@ impl PresentationEditor {
 }
 impl Workbench {
     pub(in crate::window) fn greeting_verification_key(&self) -> Result<VerificationKey, String> {
-        let terminal = self.greeting.presentation.binding.borrow().terminal;
-        let executable = terminal
-            .executable()
-            .and_then(|p| std::fs::metadata(p).ok())
-            .map(|m| (m.len(), m.modified().ok()));
-        VerificationKey::new(
-            &self.greeting.settings(),
-            terminal,
-            format!(
-                "{:?}|{:?}|{}x{}|{}|{}",
-                executable,
-                self.typography_settings(),
-                self.preview_terminal.char_width(),
-                self.preview_terminal.char_height(),
-                self.preview_terminal.scale_factor(),
-                greeting_output::environment(terminal)?
-            ),
-        )
+        self.greeting.require_presentation_ready()?;
+        // Safety boundary: explicit trials/review never authorize from the UI cache.
+        self.greeting_check_input().verification_key()
     }
     pub(in crate::window) fn prepare_greeting_action(&self) -> Result<PreparedAction, String> {
+        self.greeting.require_presentation_ready()?;
         use crate::scheme_apply::Action;
         let settings = self.greeting.settings();
         let binding = self.greeting.presentation.binding.borrow().clone();
         let spec = settings.presentation.resolve(&settings, binding.terminal)?;
+        let destination = spec.destination(&binding);
         let (shared, source) = self.prepare_scheme_fastfetch()?;
         let before = |t: &crate::fastfetch_apply::Target| {
             t.expected
@@ -584,7 +571,7 @@ impl Workbench {
                 .map(|b| String::from_utf8_lossy(b).into_owned())
                 .unwrap_or_else(|| "No file".into())
         };
-        if spec.protocol.is_none() {
+        if destination == greeting_output::Destination::SharedCharacter {
             return Ok((
                 format!(
                     "Character greeting · shared configuration: {}\nEvery terminal reading this file is affected. Imported commands/network modules are retained, NOT executed by Apply. Shell startup is unchanged.",
@@ -603,7 +590,7 @@ impl Workbench {
         if trial.protocol != spec.protocol.unwrap() || trial.ansi {
             return Err("Trial output differs from the current design. Try again.".into());
         }
-        let independent = !binding.shared_pixels;
+        let independent = destination == greeting_output::Destination::IndependentImage;
         let target = if independent {
             crate::fastfetch_apply::Target::open(glib::user_data_dir().join(format!(
                 "termimochi/targets/{}/config.jsonc",
@@ -721,6 +708,11 @@ mod tests {
         assert!(this.workspace_is_clean());
         let intent = this.greeting.settings().presentation;
         this.greeting.presentation.width.set_value(40.0);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while this.greeting.presentation_pending() {
+            assert!(std::time::Instant::now() < deadline);
+            settle();
+        }
         assert_eq!(this.greeting.settings().presentation.columns, 40);
         this.greeting.undo();
         assert_eq!(this.greeting.settings().presentation, intent);

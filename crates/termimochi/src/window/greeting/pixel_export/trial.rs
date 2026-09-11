@@ -32,21 +32,9 @@ impl PixelExport {
                             .set_label("Trial stopped. No daily configuration was changed.");
                     } else if ansi {
                         if let Some(workbench) = this.workbench.upgrade() {
-                            let mut intent = workbench.greeting.settings().presentation;
-                            intent.visual = crate::greeting_output::Visual::Character;
-                            intent.protocol = None;
-                            match crate::greeting_output::edit(
-                                &workbench.greeting.settings(),
-                                intent,
-                            ) {
-                                Ok(next) => {
-                                    workbench.greeting.replace(next, true);
-                                    if let Some(window) = this.window.upgrade() {
-                                        window.close();
-                                    }
-                                    workbench.show_greeting_trial();
-                                }
-                                Err(error) => this.status.set_label(&error),
+                            workbench.greeting.queue_character_trial();
+                            if let Some(window) = this.window.upgrade() {
+                                window.close();
                             }
                         }
                     } else {

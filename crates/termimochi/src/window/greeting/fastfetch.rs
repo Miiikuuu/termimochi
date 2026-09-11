@@ -22,6 +22,7 @@ impl Workbench {
     pub(in crate::window) fn prepare_scheme_fastfetch(
         &self,
     ) -> Result<(fastfetch_apply::Target, String), String> {
+        self.greeting.require_presentation_ready()?;
         let settings = self.greeting.settings();
         let source = settings.fastfetch_config()?;
         let target = self

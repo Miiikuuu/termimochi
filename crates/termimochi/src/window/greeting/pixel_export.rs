@@ -642,6 +642,15 @@ mod tests {
         let key = workbench.greeting_verification_key().unwrap();
         *workbench.greeting.presentation.verified.borrow_mut() = Some((key.clone(), trial.clone()));
         let (detail, _, action) = workbench.prepare_greeting_action().unwrap();
+        workbench.refresh_output_bar();
+        assert!(
+            workbench
+                .greeting
+                .presentation
+                .state
+                .text()
+                .contains("Independent image · shared greeting unchanged")
+        );
         assert!(detail.contains("shared Fastfetch is untouched"));
         assert!(matches!(
             action,
@@ -713,6 +722,15 @@ mod tests {
                 crate::greeting_output::select_character(&mut next);
                 workbench.greeting.replace(next, true);
             }
+            workbench.refresh_output_bar();
+            assert!(
+                workbench
+                    .greeting
+                    .presentation
+                    .state
+                    .text()
+                    .contains("Shared greeting · affects every reader")
+            );
             workbench.request_scheme_apply();
             settle();
             let review = gtk::Window::list_toplevels()

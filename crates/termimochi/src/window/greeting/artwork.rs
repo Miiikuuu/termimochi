@@ -40,6 +40,10 @@ fn exported_art(settings: &GreetingSettings) -> Result<Artwork, String> {
 
 impl Workbench {
     pub(super) fn art_draft_matches(&self, before: &GreetingSettings) -> bool {
+        if let Err(error) = self.greeting.require_presentation_ready() {
+            self.toast(&error);
+            return false;
+        }
         if self.greeting.invalid.get() || &self.greeting.settings() != before {
             self.toast("Greeting changed while the dialog was open. Import again to keep your latest edits.");
             false
@@ -207,6 +211,10 @@ impl Workbench {
         self.toast("Plain-text editing enabled. Undo restores the original colors.");
     }
     pub(in crate::window) fn choose_greeting_art_export(self: &Rc<Self>, ansi: bool) {
+        if let Err(error) = self.greeting.require_presentation_ready() {
+            self.toast(&error);
+            return;
+        }
         if self.greeting.invalid.get() {
             self.toast("Fix the invalid field before exporting.");
             return;

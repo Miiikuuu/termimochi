@@ -3172,6 +3172,7 @@ impl Workbench {
         self.refresh_workspace_title();
         self.greeting.refresh_status();
         if !self.greeting.invalid.get()
+            && !self.greeting.presentation_pending()
             && self
                 .workspace_baseline
                 .borrow()
@@ -3182,10 +3183,16 @@ impl Workbench {
         }
         if self.greeting_module_button.is_active() {
             let history = self.greeting.history.borrow();
-            self.undo_action
-                .set_enabled(self.greeting.invalid.get() || history.can_undo());
-            self.redo_action
-                .set_enabled(!self.greeting.invalid.get() && history.can_redo());
+            self.undo_action.set_enabled(
+                self.greeting.presentation_pending()
+                    || self.greeting.invalid.get()
+                    || history.can_undo(),
+            );
+            self.redo_action.set_enabled(
+                !self.greeting.presentation_pending()
+                    && !self.greeting.invalid.get()
+                    && history.can_redo(),
+            );
             return;
         }
         if self.layout_module_button.is_active() {
@@ -3864,6 +3871,12 @@ impl Workbench {
             }
         });
         let weak = Rc::downgrade(this);
+        this.greeting.connect_output_checked(move || {
+            if let Some(this) = weak.upgrade() {
+                this.refresh_output_bar();
+            }
+        });
+        let weak = Rc::downgrade(this);
         this.greeting.connect_changed(move || {
             let Some(this) = weak.upgrade() else {
                 return;
@@ -3872,7 +3885,6 @@ impl Workbench {
                 return;
             }
             this.refresh_history_actions();
-            this.refresh_output_bar();
             this.schedule_fastfetch_sync();
             this.ensure_official_greeting_preview();
             this.schedule_diagnostics();
@@ -3894,6 +3906,8 @@ impl Workbench {
             if window.is_active()
                 && let Some(this) = weak.upgrade()
             {
+                this.greeting.invalidate_output_checks();
+                this.refresh_output_bar();
                 this.schedule_fastfetch_sync();
             }
         });
@@ -4731,8 +4745,12 @@ impl Workbench {
         }
         // Keep the menu available even for invalid fields: Reload and Restore
         // are recovery actions. Individual write actions stay disabled.
-        self.save_action
-            .set_enabled(valid && !self.has_draft() && !self.greeting.invalid.get());
+        self.save_action.set_enabled(
+            valid
+                && !self.has_draft()
+                && !self.greeting.invalid.get()
+                && !self.greeting.presentation_pending(),
+        );
         if self.has_unsaved_setup() {
             self.save_button.add_css_class("save-ready");
         } else {

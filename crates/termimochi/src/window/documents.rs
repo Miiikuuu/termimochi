@@ -325,6 +325,7 @@ impl Workbench {
 
     pub(super) fn workspace_is_clean(&self) -> bool {
         !self.has_draft()
+            && !self.greeting.presentation_pending()
             && !self.greeting.invalid.get()
             && !self.starship_editor.invalid()
             && self
@@ -368,6 +369,7 @@ impl Workbench {
     }
 
     pub(super) fn committed_workspace(&self) -> Result<Workspace, String> {
+        self.greeting.require_presentation_ready()?;
         self.greeting.finish();
         self.settle_active_edit();
         self.committed_typography()?;

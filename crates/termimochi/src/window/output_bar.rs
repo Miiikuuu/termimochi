@@ -83,6 +83,7 @@ impl Workbench {
         }
         let binding = presentation.binding.borrow();
         let settings = self.greeting.settings();
+        let resolved = settings.presentation.resolve(&settings, binding.terminal);
         presentation.cells.set([
             self.preview_terminal.char_width().max(1) as u32,
             self.preview_terminal.char_height().max(1) as u32,
@@ -102,10 +103,7 @@ impl Workbench {
         if let Some(stack) = self.inspect_layer.child().and_downcast::<gtk::Stack>() {
             let pixels = self.greeting_module_button.is_active()
                 && settings.enabled
-                && settings
-                    .presentation
-                    .resolve(&settings, binding.terminal)
-                    .is_ok_and(|s| s.protocol.is_some());
+                && resolved.as_ref().is_ok_and(|s| s.protocol.is_some());
             stack.set_visible_child_name(if pixels { "pixels" } else { "terminal" });
             if pixels {
                 let text: String = self
@@ -127,25 +125,40 @@ impl Workbench {
                 presentation.fields.set_tooltip_text(Some("Design information from the existing safe preview. Imported commands are not executed; Try uses safe sample fields."));
             }
         }
-        let verified = self.greeting_verification_key().ok().is_some_and(|key| {
-            presentation
-                .verified
-                .borrow()
+        let checked = self.cached_greeting_check();
+        let verified = !self.greeting.presentation_pending()
+            && checked
                 .as_ref()
-                .is_some_and(|(k, _)| *k == key)
-        });
-        let destination = if settings.presentation.visual
-            == crate::greeting_output::Visual::Character
-            || binding.shared_pixels
-        {
-            "Shared greeting · affects every reader"
+                .and_then(|c| c.key.as_ref().ok())
+                .is_some_and(|key| {
+                    presentation
+                        .verified
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|(k, _)| k == key)
+                });
+        use crate::greeting_output::Destination;
+        let destination = if self.greeting.presentation_pending() {
+            "Updating artwork… Save, Try and Apply wait for the result.".to_owned()
         } else {
-            "Independent image · shared greeting unchanged"
+            match &resolved {
+                Ok(spec) => match spec.destination(&binding) {
+                    Destination::SharedCharacter | Destination::SharedImage => {
+                        "Shared greeting · affects every reader".to_owned()
+                    }
+                    Destination::IndependentImage => {
+                        "Independent image · shared greeting unchanged".to_owned()
+                    }
+                },
+                Err(error) => format!("Output unavailable: {error}"),
+            }
         };
         let deployment = presentation.deployed.borrow();
         let applied = match deployment.as_ref() {
-            Some((design, target, file, independent))
-                if *design == settings && *target == *binding && file.check().is_ok() =>
+            Some((design, target, _, independent))
+                if *design == settings
+                    && *target == *binding
+                    && checked.as_ref().is_some_and(|c| c.deployment_matches) =>
             {
                 if *independent {
                     "Installed · not enabled"
@@ -153,12 +166,14 @@ impl Workbench {
                     "Greeting applied"
                 }
             }
+            Some(_) if checked.is_none() => "Checking applied configuration…",
             Some(_) => "Greeting has pending changes / target differs",
             None => "Application not compared · review before applying",
         };
-        let profile = crate::scheme_apply::activation::profile()
-            .map(|(_, name)| name)
-            .unwrap_or_else(|_| "unavailable".into());
+        let profile = checked
+            .as_ref()
+            .map(|c| c.profile.as_str())
+            .unwrap_or("checking…");
         presentation.state.set_label(&format!(
             "{} · {}\n{}\n{applied}\nPtyxis profile: {profile} · font is global",
             if self.workspace_is_clean() {
@@ -168,6 +183,8 @@ impl Workbench {
             },
             if verified {
                 "Visual check confirmed"
+            } else if checked.is_none() {
+                "Checking target environment…"
             } else {
                 "Visual check unverified"
             },
@@ -355,6 +372,67 @@ impl Workbench {
 mod tests {
     use super::*;
     use crate::window::greeting::tests::{controller, descendants, settle};
+
+    #[test]
+    #[ignore = "isolated GTK/VTE: resolved output status agrees with the reviewed action"]
+    fn resolved_greeting_destination_matches_status_and_review() {
+        use crate::{greeting_output::Visual, scheme_apply::Action};
+        assert_eq!(std::env::var("GSETTINGS_BACKEND").as_deref(), Ok("memory"));
+        adw::init().unwrap();
+        gio::resources_register_include!("termimochi.gresource").unwrap();
+        let app = adw::Application::builder()
+            .application_id("io.github.miiikuuu.termimochi.OutputDestinationTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        let window = app.active_window().unwrap();
+        let this = controller(&window);
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while this.preview_loading.get() {
+            assert!(std::time::Instant::now() < deadline);
+            settle();
+        }
+        let daily = root.path().join("config.jsonc");
+        let original = "// untouched\n{}";
+        std::fs::write(&daily, original).unwrap();
+        this.accept_scheme_fastfetch(crate::fastfetch_apply::Target::open(daily.clone()).unwrap());
+        let mut settings = this.greeting.settings();
+        settings.editable_artwork = None;
+        for visual in [Visual::Auto, Visual::Character] {
+            settings.presentation.visual = visual;
+            this.greeting.replace(settings.clone(), false);
+            for shared in [false, true] {
+                this.greeting.presentation.shared.set_active(shared);
+                this.refresh_output_bar();
+                let status = this.greeting.presentation.state.text();
+                assert!(
+                    status.contains("Shared greeting · affects every reader"),
+                    "{status}"
+                );
+                assert!(!status.contains("Independent image"));
+                let (detail, _, action) = this.prepare_greeting_action().unwrap();
+                assert!(detail.contains("Character greeting · shared configuration"));
+                let Action::Fastfetch { target, .. } = action else {
+                    panic!("resolved characters must prepare the shared character action");
+                };
+                assert_eq!(target.path, daily);
+            }
+        }
+        settings.presentation.visual = Visual::Image;
+        this.greeting.replace(settings, false);
+        this.refresh_output_bar();
+        let error = this.prepare_greeting_action().err().unwrap();
+        let status = this.greeting.presentation.state.text();
+        assert!(
+            status.contains(&format!("Output unavailable: {error}")),
+            "{status}"
+        );
+        assert!(!status.contains("shared greeting unchanged"));
+        assert_eq!(std::fs::read_to_string(daily).unwrap(), original);
+        window.destroy();
+    }
 
     fn commands(menu: &gio::MenuModel) -> Vec<String> {
         let mut result = Vec::new();
