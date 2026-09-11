@@ -16,7 +16,8 @@ impl OutputBar {
         &self.more
     }
     pub fn new(save: &gtk::MenuButton) -> Self {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         root.add_css_class("editor-output-bar");
         let title = gtk::Label::builder()
             .label("Palette")
@@ -34,10 +35,21 @@ impl OutputBar {
             .tooltip_text("Import, export and recovery")
             .css_classes(["tool-menu"])
             .build();
-        root.append(&title);
-        root.append(save);
-        root.append(&primary);
-        root.append(&more);
+        let trial = gtk::Button::builder()
+            .label("Try Greeting")
+            .action_name("win.try-greeting")
+            .tooltip_text(
+                "Try only the greeting in the target terminal, not the whole scheme · no configuration changes",
+            )
+            .css_classes(["flat"])
+            .build();
+        trial.update_property(&[gtk::accessible::Property::Label("Try Greeting")]);
+        actions.append(&title);
+        actions.append(save);
+        actions.append(&trial);
+        actions.append(&primary);
+        actions.append(&more);
+        root.append(&actions);
         Self {
             root,
             title,
@@ -65,6 +77,119 @@ impl Workbench {
     }
 
     pub(super) fn refresh_output_bar(&self) {
+        let presentation = &self.greeting.presentation;
+        if presentation.target_bar.parent().is_none() {
+            self.output_bar.root.prepend(&presentation.target_bar);
+        }
+        let binding = presentation.binding.borrow();
+        let settings = self.greeting.settings();
+        let resolved = settings.presentation.resolve(&settings, binding.terminal);
+        presentation.cells.set([
+            self.preview_terminal.char_width().max(1) as u32,
+            self.preview_terminal.char_height().max(1) as u32,
+        ]);
+        if presentation.canvas.parent().is_none()
+            && let Some(terminal) = self.inspect_layer.child()
+        {
+            self.inspect_layer.set_child(None::<&gtk::Widget>);
+            let stack = gtk::Stack::builder()
+                .vhomogeneous(false)
+                .hhomogeneous(false)
+                .build();
+            stack.add_named(&terminal, Some("terminal"));
+            stack.add_named(&presentation.canvas, Some("pixels"));
+            self.inspect_layer.set_child(Some(&stack));
+        }
+        if let Some(stack) = self.inspect_layer.child().and_downcast::<gtk::Stack>() {
+            let pixels = self.greeting_preview.get()
+                && settings.enabled
+                && resolved.as_ref().is_ok_and(|s| s.protocol.is_some());
+            stack.set_visible_child_name(if pixels { "pixels" } else { "terminal" });
+            if pixels {
+                let text: String = self
+                    .greeting_parts_for_width(160)
+                    .into_iter()
+                    .filter(|(_, part)| *part != crate::greeting::GreetingPart::Artwork)
+                    .map(|(text, _)| text)
+                    .collect();
+                let plain = crate::greeting_art::Artwork::parse(&text)
+                    .map(|a| a.plain)
+                    .unwrap_or_else(|_| "Field preview unavailable · Try uses safe samples".into());
+                presentation.fields.set_label(
+                    &plain
+                        .lines()
+                        .map(str::trim_start)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+                presentation.fields.set_tooltip_text(Some("Design information from the existing safe preview. Imported commands are not executed; Try uses safe sample fields."));
+            }
+        }
+        let checked = self.cached_greeting_check();
+        let verified = !self.greeting.presentation_pending()
+            && checked
+                .as_ref()
+                .and_then(|c| c.key.as_ref().ok())
+                .is_some_and(|key| {
+                    presentation
+                        .verified
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|(k, _)| k == key)
+                });
+        use crate::greeting_output::Destination;
+        let destination = if self.greeting.presentation_pending() {
+            "Updating artwork… Save, Try and Apply wait for the result.".to_owned()
+        } else {
+            match &resolved {
+                Ok(spec) => match spec.destination(&binding) {
+                    Destination::SharedCharacter | Destination::SharedImage => {
+                        "Shared greeting · affects every reader".to_owned()
+                    }
+                    Destination::IndependentImage => {
+                        "Independent image · shared greeting unchanged".to_owned()
+                    }
+                },
+                Err(error) => format!("Output unavailable: {error}"),
+            }
+        };
+        let deployment = presentation.deployed.borrow();
+        let applied = match deployment.as_ref() {
+            Some((design, target, _, independent))
+                if *design == settings
+                    && *target == *binding
+                    && checked.as_ref().is_some_and(|c| c.deployment_matches) =>
+            {
+                if *independent {
+                    "Installed · not enabled"
+                } else {
+                    "Greeting applied"
+                }
+            }
+            Some(_) if checked.is_none() => "Checking applied configuration…",
+            Some(_) => "Greeting has pending changes / target differs",
+            None => "Application not compared · review before applying",
+        };
+        let profile = checked
+            .as_ref()
+            .map(|c| c.profile.as_str())
+            .unwrap_or("checking…");
+        presentation.state.set_label(&format!(
+            "{} · {}\n{}\n{applied}\nPtyxis profile: {profile} · font is global",
+            if self.workspace_is_clean() {
+                "Scheme saved"
+            } else {
+                "Scheme unsaved"
+            },
+            if verified {
+                "Visual check confirmed"
+            } else if checked.is_none() {
+                "Checking target environment…"
+            } else {
+                "Visual check unverified"
+            },
+            destination
+        ));
         let module = self.output_module();
         let designer =
             self.prompt_source_selector.selected() == 1 || self.starship_editor.detached.get();
@@ -117,9 +242,17 @@ impl Workbench {
         // Prompt's main action already owns writing/exporting Starship. Save in
         // that module instead offers a workspace snapshot, without a duplicate.
         if module != EditorModule::Prompt {
-            let item = gio::MenuItem::new(Some(save_label), Some("win.save"));
+            let item = gio::MenuItem::new(
+                Some(save_label),
+                Some(match module {
+                    EditorModule::Palette => "win.save-theme",
+                    EditorModule::Typography => "win.save-font-preset",
+                    EditorModule::Layout => "win.save-layout",
+                    _ => "win.save-greeting",
+                }),
+            );
             set_menu_verb_icon(&item, "termimochi-save-symbolic");
-            save.append_item(&item);
+            more.append_item(&item);
         }
         save.append(
             Some("Save Workspace"),
@@ -148,7 +281,7 @@ impl Workbench {
         );
         match module {
             EditorModule::Palette => {
-                more.append(Some("Save Theme As…"), Some("win.save-as"));
+                more.append(Some("Save Theme As…"), Some("win.export-theme"));
                 let exports = gio::Menu::new();
                 for format in ExportFormat::ALL {
                     exports.append(
@@ -218,7 +351,7 @@ impl Workbench {
                 more.append(Some("Terminal Startup…"), Some("win.greeting-startup"));
             }
         }
-        bar.title.set_text(module.label());
+        bar.title.set_text("");
         bar.primary.set_label("Apply Scheme…");
         bar.primary.set_action_name(Some("win.apply-scheme"));
         bar.primary.set_tooltip_text(Some("Review destinations and choose which workspace modules to apply. Saving never applies external settings."));
@@ -230,7 +363,7 @@ impl Workbench {
             ))]);
         self.save_button.set_menu_model(Some(&save));
         self.save_button
-            .set_tooltip_text(Some("Save the current preset or a complete workspace"));
+            .set_tooltip_text(Some("Save the complete scheme · Ctrl+S"));
         bar.more.set_menu_model(Some(&more));
     }
 }
@@ -239,6 +372,67 @@ impl Workbench {
 mod tests {
     use super::*;
     use crate::window::greeting::tests::{controller, descendants, settle};
+
+    #[test]
+    #[ignore = "isolated GTK/VTE: resolved output status agrees with the reviewed action"]
+    fn resolved_greeting_destination_matches_status_and_review() {
+        use crate::{greeting_output::Visual, scheme_apply::Action};
+        assert_eq!(std::env::var("GSETTINGS_BACKEND").as_deref(), Ok("memory"));
+        adw::init().unwrap();
+        gio::resources_register_include!("termimochi.gresource").unwrap();
+        let app = adw::Application::builder()
+            .application_id("io.github.miiikuuu.termimochi.OutputDestinationTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        let window = app.active_window().unwrap();
+        let this = controller(&window);
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while this.preview_loading.get() {
+            assert!(std::time::Instant::now() < deadline);
+            settle();
+        }
+        let daily = root.path().join("config.jsonc");
+        let original = "// untouched\n{}";
+        std::fs::write(&daily, original).unwrap();
+        this.accept_scheme_fastfetch(crate::fastfetch_apply::Target::open(daily.clone()).unwrap());
+        let mut settings = this.greeting.settings();
+        settings.editable_artwork = None;
+        for visual in [Visual::Auto, Visual::Character] {
+            settings.presentation.visual = visual;
+            this.greeting.replace(settings.clone(), false);
+            for shared in [false, true] {
+                this.greeting.presentation.shared.set_active(shared);
+                this.refresh_output_bar();
+                let status = this.greeting.presentation.state.text();
+                assert!(
+                    status.contains("Shared greeting · affects every reader"),
+                    "{status}"
+                );
+                assert!(!status.contains("Independent image"));
+                let (detail, _, action) = this.prepare_greeting_action().unwrap();
+                assert!(detail.contains("Character greeting · shared configuration"));
+                let Action::Fastfetch { target, .. } = action else {
+                    panic!("resolved characters must prepare the shared character action");
+                };
+                assert_eq!(target.path, daily);
+            }
+        }
+        settings.presentation.visual = Visual::Image;
+        this.greeting.replace(settings, false);
+        this.refresh_output_bar();
+        let error = this.prepare_greeting_action().err().unwrap();
+        let status = this.greeting.presentation.state.text();
+        assert!(
+            status.contains(&format!("Output unavailable: {error}")),
+            "{status}"
+        );
+        assert!(!status.contains("shared greeting unchanged"));
+        assert_eq!(std::fs::read_to_string(daily).unwrap(), original);
+        window.destroy();
+    }
 
     fn commands(menu: &gio::MenuModel) -> Vec<String> {
         let mut result = Vec::new();

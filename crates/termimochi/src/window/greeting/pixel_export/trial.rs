@@ -10,7 +10,7 @@ fn visual(value: Visual) -> &'static str {
 }
 
 impl PixelExport {
-    fn terminal(&self) -> Terminal {
+    pub(super) fn terminal(&self) -> Terminal {
         Terminal::ALL[self.target.selected().min(2) as usize]
     }
 
@@ -30,7 +30,19 @@ impl PixelExport {
                         this.invalidate_trial();
                         this.status
                             .set_label("Trial stopped. No daily configuration was changed.");
+                    } else if ansi {
+                        if let Some(workbench) = this.workbench.upgrade() {
+                            workbench.greeting.queue_character_trial();
+                            if let Some(window) = this.window.upgrade() {
+                                window.close();
+                            }
+                        }
                     } else {
+                        let ansi = this
+                            .before
+                            .presentation
+                            .resolve(&this.before, this.terminal())
+                            .is_ok_and(|s| s.protocol.is_none());
                         this.start_trial(ansi);
                     }
                 }
@@ -42,6 +54,25 @@ impl PixelExport {
                 this.review_install();
             }
         });
+        for (button, key) in self.feedback.iter().zip(*b"ynnt") {
+            let weak = Rc::downgrade(self);
+            button.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    let result = this
+                        .trial
+                        .borrow()
+                        .as_ref()
+                        .ok_or("No active trial".to_owned())
+                        .and_then(|trial| trial.respond(key));
+                    if let Err(error) = result {
+                        this.status.set_label(&error);
+                    }
+                    for button in &this.feedback {
+                        button.set_sensitive(false);
+                    }
+                }
+            });
+        }
         self.invalidate_trial();
     }
 
@@ -65,13 +96,21 @@ impl PixelExport {
         });
         self.ansi_test
             .set_sensitive(available && installed && !self.trial_running.get());
-        self.target.set_sensitive(!self.writing.get());
+        self.target
+            .set_sensitive(!self.trial_mode && !self.writing.get());
+        self.protocol
+            .set_sensitive(!self.trial_mode && !self.writing.get());
+        self.columns
+            .set_sensitive(!self.trial_mode && !self.writing.get());
         let verified = self
             .trial
             .borrow()
             .as_ref()
             .and_then(|t| t.assessment().ok())
-            .is_some_and(|r| r.done && r.visual == Visual::Confirmed);
+            .is_some_and(|r| r.done && r.visual == Visual::Confirmed)
+            && self.workbench.upgrade().is_some_and(|w| {
+                self.key.is_some() && self.key == w.greeting_verification_key().ok()
+            });
         self.install
             .set_sensitive(available && verified && !self.trial_running.get());
         if !installed {
@@ -80,6 +119,17 @@ impl PixelExport {
     }
 
     fn show_assessment(&self, assessment: &Assessment) {
+        let ready = !assessment.done
+            && assessment.asset_hash.is_some()
+            && (assessment.message.starts_with("Does the animation")
+                || assessment.message.starts_with("Is the artwork"));
+        for (index, button) in self.feedback.iter().enumerate() {
+            button.set_sensitive(if index == 3 {
+                !assessment.done && assessment.message.starts_with("No conclusive")
+            } else {
+                ready && (index != 2 || self.protocol() == Protocol::KittyAnimation)
+            });
+        }
         self.capabilities.set_label(&format!(
             "Kitty static: {}\nAnimation: {}\nSixel: {}\nCurrent output: {}{}",
             assessment.kitty.label(),
@@ -93,7 +143,10 @@ impl PixelExport {
         ));
     }
 
-    fn start_trial(self: &Rc<Self>, ansi: bool) {
+    pub(super) fn start_trial(self: &Rc<Self>, ansi: bool) {
+        if !self.trial_mode {
+            return;
+        }
         if self.writing.get() || self.closed.get() {
             return;
         }
@@ -107,6 +160,10 @@ impl PixelExport {
             return;
         };
         self.invalidate_trial();
+        // A new trial supersedes old positive evidence, including if launch or
+        // the user's new visual assessment fails. Never fall back to old approval.
+        workbench.greeting.presentation.verified.borrow_mut().take();
+        workbench.refresh_output_bar();
         let generation = self.trial_generation.get();
         self.writing.set(true);
         self.export.set_sensitive(false);
@@ -165,7 +222,7 @@ impl PixelExport {
             });
             match result {
                 Ok(trial) => {
-                    *this.trial.borrow_mut() = Some(trial);
+                    *this.trial.borrow_mut() = Some(Rc::new(trial));
                     this.trial_running.set(true);
                     this.status.set_label("Test window opened. Follow its prompts; successful export or process exit is not proof of rendering.");
                     this.watch_trial(generation);
@@ -194,12 +251,22 @@ impl PixelExport {
                 this.status.set_label("Trial timed out or its terminal was closed. Output remains unverified; retry or choose ANSI fallback.");
                 return glib::ControlFlow::Break;
             }
-            let result = this.trial.borrow().as_ref().map(Trial::assessment);
+            let result = this.trial.borrow().as_ref().map(|trial| trial.assessment());
             match result {
                 Some(Ok(assessment)) => {
                     this.show_assessment(&assessment);
                     this.status.set_label(&assessment.message);
                     if assessment.done {
+                        if assessment.visual == Visual::Confirmed
+                            && let Some(workbench) = this.workbench.upgrade()
+                            && this.key == workbench.greeting_verification_key().ok()
+                            && let Some(key) = this.key.clone()
+                            && let Some(trial) = this.trial.borrow().as_ref()
+                        {
+                            *workbench.greeting.presentation.verified.borrow_mut() =
+                                Some((key, trial.clone()));
+                            workbench.refresh_output_bar();
+                        }
                         this.trial_running.set(false);
                         this.refresh_trial_controls();
                         return glib::ControlFlow::Break;
@@ -218,37 +285,14 @@ impl PixelExport {
     }
 
     fn review_install(self: &Rc<Self>) {
-        if self.writing.get() || self.trial_running.get() {
+        if !self.trial_mode || self.writing.get() || self.trial_running.get() {
             return;
         }
-        let Some(workbench) = self.workbench.upgrade() else {
-            return;
-        };
-        if !workbench.art_draft_matches(&self.before) {
-            return;
-        }
-        let plan: Result<_, String> = (|| {
-            let target = workbench.prepare_scheme_fastfetch()?.0;
-            let trial = self.trial.borrow();
-            let trial = trial
-                .as_ref()
-                .ok_or("Run and visually confirm a trial first.")?;
-            let plan = trial.install_plan(
-                &glib::user_data_dir().join("termimochi/image-greetings"),
-                target,
-            )?;
-            Ok((plan, trial.terminal.label(), trial.ansi))
-        })();
-        match plan {
-            Ok((plan, terminal, ansi)) => {
-                // Close this modal only after handing its immutable tested data
-                // to the standard before/after confirmation; no config write yet.
-                workbench.review_pixel_install(plan, self.before.clone(), terminal, ansi);
-                if let Some(window) = self.window.upgrade() {
-                    window.close();
-                }
+        if let Some(workbench) = self.workbench.upgrade() {
+            if let Some(window) = self.window.upgrade() {
+                window.close();
             }
-            Err(error) => self.status.set_label(&error),
+            workbench.request_scheme_apply();
         }
     }
 }

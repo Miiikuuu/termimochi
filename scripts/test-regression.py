@@ -23,13 +23,20 @@ def main():
     parser.add_argument("--filter", action="append", default=[],
                         help="Test-name substring; repeat to match any of several names")
     args = parser.parse_args()
+    if not args.display.startswith(":") or args.display.split(".")[0] in (":0", ":1"):
+        parser.error("Use a dedicated Xvfb display (never the user's :0 / :1 desktop)")
     repo = Path(__file__).resolve().parent.parent
     output = Path(tempfile.mkdtemp(prefix="termimochi-regression-"))
     print(f"Logs: {output}", flush=True)
     build = subprocess.run(["cargo", "test", "-p", "termimochi", "--locked", "--no-run",
-                            "--message-format=json"], cwd=repo, check=True,
+                            "--message-format=json"], cwd=repo, check=False,
                            stdout=subprocess.PIPE, text=True)
     artifacts = [json.loads(line) for line in build.stdout.splitlines()]
+    if build.returncode:
+        for item in artifacts:
+            if item.get("reason") == "compiler-message":
+                print(item["message"].get("rendered", item["message"]["message"]), flush=True)
+        raise SystemExit(build.returncode)
     binary = next(item["executable"] for item in artifacts
                   if item.get("reason") == "compiler-artifact" and item.get("executable")
                   and item["profile"]["test"] and item["target"]["name"] == "termimochi")
@@ -62,8 +69,17 @@ def main():
             case = output / name
             case.mkdir()
             env = os.environ.copy()
-            # Per-case XDG state and an in-memory settings backend keep writes
-            # off the user's profile. HOME/fonts/toolchain remain unchanged.
+            # Build with the normal toolchain, then isolate each GUI process's
+            # HOME as well as XDG state. Never source the user's startup files.
+            isolated_home = case / "home"
+            isolated_home.mkdir()
+            env["HOME"] = str(isolated_home)
+            # AF_UNIX paths (notably Ptyxis' child helper) have a 108-byte
+            # limit. A deeply nested report path is not a valid runtime root.
+            runtime = Path(tempfile.mkdtemp(prefix="termimochi-runtime-", dir="/tmp"))
+            env["XDG_RUNTIME_DIR"] = str(runtime)
+            for key in ("WAYLAND_DISPLAY", "SWAYSOCK", "GNOME_KEYRING_CONTROL", "SSH_AUTH_SOCK"):
+                env.pop(key, None)
             for key in ("CONFIG", "DATA", "STATE", "CACHE"):
                 directory = case / key.lower()
                 directory.mkdir()

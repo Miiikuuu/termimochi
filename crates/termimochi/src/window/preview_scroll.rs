@@ -279,6 +279,7 @@ mod tests {
             settle();
         }
         this.greeting_module_button.set_active(true);
+        this.preview_scene_selector.set_selected(2);
         this.greeting.replace(
             crate::greeting::GreetingSettings {
                 enabled: true,

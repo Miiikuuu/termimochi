@@ -512,6 +512,7 @@ mod tests {
             settle();
         }
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+        this.preview_scene_selector.set_selected(2);
         this.greeting.preset.set_selected(0); // retained basic/custom editor
         this.greeting.enabled.set_active(true);
         settle();
@@ -636,29 +637,21 @@ mod tests {
 
         this.request_fastfetch_apply();
         crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow_mut().clear());
-        let run = gtk::Window::list_toplevels()
-            .into_iter()
-            .flat_map(|w| descendants(&w))
-            .find_map(|w| {
-                w.downcast::<gtk::CheckButton>().ok().filter(|w| {
-                    w.label().as_deref() == Some("Run Fastfetch in a new terminal after applying")
-                })
-            })
-            .unwrap();
-        assert!(
-            !run.is_active(),
-            "Imported commands must never opt into automatic execution"
-        );
+        super::super::tests::select_scheme_greeting();
         respond("Cancel");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), source);
         assert!(!this.greeting.fastfetch_state.exists());
         this.request_fastfetch_apply();
         std::fs::write(&target, "// external\n{}").unwrap();
-        respond("Back Up & Apply");
+        super::super::tests::select_scheme_greeting();
+        respond("Back Up & Apply Selected");
+        respond("Close");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "// external\n{}");
         std::fs::write(&target, &source).unwrap();
         this.request_fastfetch_apply();
-        respond("Back Up & Apply");
+        super::super::tests::select_scheme_greeting();
+        respond("Back Up & Apply Selected");
+        respond("Close");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), edited);
         assert!(!sentinel.exists());
         assert!(crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().is_empty()));
@@ -678,8 +671,10 @@ mod tests {
         );
         this.open_workspace_path(&workspace);
         assert_eq!(this.greeting.settings(), saved);
-        this.request_fastfetch_restore();
-        respond("Restore Configuration");
+        this.show_last_scheme_application();
+        respond("Restore This Application…");
+        respond("Restore Changes");
+        respond("Close");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), source);
         assert!(crate::fastfetch_apply::prepare_restore(&this.greeting.fastfetch_state).is_err());
         assert!(!sentinel.exists());

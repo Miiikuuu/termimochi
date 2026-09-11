@@ -24,10 +24,10 @@ that looks balanced elsewhere can therefore become almost unreadable.
 - Document-wide undo/redo with coalesced drag and text-edit transactions.
 - VS Code-style Activity Rail for switching the left-side Palette (`Ctrl+1`),
   Typography (`Ctrl+2`), Layout (`Ctrl+3`), Prompt (`Ctrl+4`) and Greeting (`Ctrl+5`) modules while
-  the right-side Live Preview and diagnostics remain mounted.
+  the right-side Design Preview and diagnostics remain mounted.
 - Live VTE typography controls for installed monospace families, point size,
   weight, line height and cell width, with fallback-safe Nerd icon checks.
-- Typography presets: **Save → Save Typography Preset** (or `Ctrl+S` on Typography) remembers
+- Typography presets: **⋮ → Save Typography Preset** remembers
   all five font settings for the next launch. Open and export portable
   `.termimochi-font.json` files; typography edits have their own Undo/Redo.
   **⋮ → Typography — Apply…** confirms the app-wide font and target-profile spacing,
@@ -35,16 +35,17 @@ that looks balanced elsewhere can therefore become almost unreadable.
   **⋮** menu offers **Restore Previous Typography**. Saving alone never applies.
 - Live layout controls for content padding, rows and columns, cursor behavior,
   tab and scrollbar chrome, and preview-window spacing.
-- Layout presets: **Save → Save Layout Preset** (`Ctrl+S` on Layout) restores all eight
+- Layout presets: **⋮ → Save Layout Preset** restores all eight
   settings next launch, with independent Undo/Redo and portable
   `.termimochi-layout.json` import/export. **⋮ → Layout — Apply…** backs up and
   applies global cursor, scrollbar and new-window grid settings; exact padding,
   tab bar and preview-window spacing remain preview-only. The **⋮** menu offers
   **Restore Previous Layout**. Remembered window sizing is disabled only after
   explicit Apply confirmation, so the chosen grid can take effect.
-- Complete setups: the bottom bar's **Save → Save Workspace**
+- Complete setups: the bottom bar's **Save** and `Ctrl+S`, in every module,
   stores colors, typography, layout, greetings, Designer modules and imported Starship
-  text in one `.termimochi.json` file. Use **Open Workspace…** (or launch
+  text, retained image/GIF originals and Greeting display intent in one
+  `.termimochi.json` file. Use **Open Workspace…** (or launch
   `termimochi my-setup.termimochi.json`) to restore it. Opening never applies
   terminal settings. Workspace prompts reopen detached; export them with
   **Save As** instead of overwriting this machine's Starship configuration.
@@ -94,7 +95,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   emoji and kaomoji, with bounded grapheme-aware clipping
   and a stacked fallback in narrow previews. Text controls and invalid artwork
   are rejected, with independent Undo/Redo and unsaved-change protection.
-- The **Import Artwork…** button in Greeting accepts **PNG / JPG / WebP / SVG** images
+- The **Add image / GIF…** button in Greeting accepts **PNG / JPG / WebP / SVG** images
   and UTF-8/ASCII `.txt` / `.ans` logos. Images open a live conversion draft:
   start with **ANSI Detail** at 64 columns for recognizable color areas and corners,
   or choose **ASCII** / **Half blocks**. Adjust **Max columns**, optionally invert
@@ -114,7 +115,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   [image conversion guide](docs/image-conversion.md) for usage and algorithm references.
   Click **Use Artwork** to replace only the logo;
   Cancel leaves the greeting unchanged and Undo restores the previous artwork.
-  The artwork toolbar keeps **Import Artwork…** readable at narrow widths, with
+  The artwork toolbar keeps **Add image / GIF…** readable at narrow widths, with
   export/text editing in the adjacent **⋮** menu. Colored artwork has a fitted
   ANSI thumbnail; click it or the expand icon for a larger **Artwork Preview**.
   Turn **Fit** off there to inspect full-size characters with scrolling. Plain
@@ -163,8 +164,8 @@ that looks balanced elsewhere can therefore become almost unreadable.
   parent folder; a new folder contains `logo.png`, `config.jsonc` and instructions.
   Run `fastfetch --config config.jsonc` from that folder in a compatible terminal.
   This does not install or activate the bundle. Its checkerboard preview shows
-  pixels, not terminal protocol support; Live Preview and normal Apply remain
-  ANSI. Sixel additionally includes a generated transparent `logo.sixel` and
+  pixels, not terminal protocol support. Main Greeting Apply now honors the
+  scheme's saved Display setting. Sixel additionally includes a generated transparent `logo.sixel` and
   `config-ansi.jsonc` fallback, avoiding ImageMagick's black-background conversion.
   Its fixed pixel size follows the preview font/DPI; re-export after changing the
   target font or DPI. Sixel uses up to 256 colors and binary transparency.
@@ -178,17 +179,19 @@ that looks balanced elsewhere can therefore become almost unreadable.
   and 60 seconds per cycle. Importing binary terminal protocol streams and
   animated PNG/WebP remain unsupported.
   See [image export requirements](docs/image-conversion.md#pixel-image-bundles).
-  The same dialog now offers **Test in Terminal** (Kitty, Ptyxis or xterm): a
+  The main workbench offers **Try Greeting** (Kitty, Ptyxis or xterm): a
   temporary, safe-field-only trial that leaves your daily configuration alone.
-  Confirm the actual picture/motion in that terminal, then **Review Install… →
-  Install & Apply** to back up Fastfetch and install permanent assets with
+  Confirm the actual picture/motion using GUI feedback, then **Review Scheme &
+  Apply…** to back up Fastfetch and install permanent assets with
   absolute paths. Static Kitty, animation and Sixel have separate verification
-  states; unknown is not supported-by-assumption. **Test ANSI Fallback** is an
+  states; unknown is not supported-by-assumption. Switching to **Character** is an
   explicit alternative. See [terminal trials and installation](docs/pixel-trials.md).
-  Installation updates the reviewed Fastfetch file for every terminal using it;
-  it does not automatically select image versus ANSI output per terminal.
-  A Kitty image configuration can leave a blank logo in Ptyxis; test and install
-  the ANSI fallback to return to character output.
+  Images default to an independent managed config, leaving shared Fastfetch
+  untouched and reporting **Installed · not enabled**. Shared pixel replacement
+  requires a separate opt-in and warns that every reader is affected. A Kitty
+  image configuration can leave a blank logo in Ptyxis; choose Character explicitly
+  and review Greeting application, or restore the previous application record.
+  Automatic per-terminal startup routing is not implemented.
   Managed Kitty PNG/GIF installs also include a reviewed startup settling guard,
   preventing the tested cold-start blank-image race without clearing the terminal
   or consuming early keystrokes. Reinstall previously applied image configurations
@@ -217,7 +220,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   outside references are refused; no path is passed to Fastfetch for expansion.
   This preview resolves relative paths from the config directory, while Fastfetch
   itself uses its working directory. The original path remains in config exports.
-  Use **Import Artwork…** to replace it with embedded, sanitized `data-raw` text
+  Use **Add image / GIF…** (also accepts text artwork) to replace it with embedded, sanitized `data-raw` text
   for portable Fastfetch output. Original imported ANSI controls remain in the
   source until this explicit replacement; the preview alone does not clean it.
 - **Review & Apply…** shows the exact destination and Before/After text, then
@@ -267,7 +270,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Optional **Fade in / Line by line / Shimmer** openings can be replayed with
   the play button. Motion is **preview only**, respects system reduced motion,
   and never changes terminal text; Fastfetch exports remain static.
-- **Save → Save Greeting Preset** (`Ctrl+S` on Greeting) restores the greeting next launch.
+- **⋮ → Save Greeting Preset** restores the greeting next launch; main Save / `Ctrl+S` saves the complete scheme.
   Import/export `.termimochi-greeting.json` presets, or **Export Fastfetch…** to
   `config.jsonc` or a separate `.fastfetch.jsonc` file. Basic, unstyled custom preview
   needs no Fastfetch installation; field overrides, official presets and imports
@@ -346,13 +349,16 @@ that looks balanced elsewhere can therefore become almost unreadable.
 
 ## Editor organization
 
-The activity rail switches properties without replacing the terminal preview.
-The fixed bottom bar keeps **Save**, **Apply Scheme…**, and **⋮** accessible while
-properties scroll. **Save** stores presets or a complete workspace; external
+The activity rail selects what to edit. The independent **Preview Scene** selector
+on the right selects **Terminal**, **Prompt**, or **Greeting** to observe. Switching
+editor modules retains that scene, including an image/GIF while editing Palette.
+Scene selection is session-only and does not modify the saved scheme.
+The fixed bottom bar keeps **Save**, **Try Greeting**, **Apply Scheme…**, and **⋮** accessible while
+properties scroll. **Save** always stores the complete scheme; external
 changes require review and confirmation. The former module-specific Apply,
 Install and Export actions remain under **⋮**, alongside imports, reloads,
 restores, and **Last Application & Recovery…**.
-Prompt's Save menu and `Ctrl+S` both save a workspace; `Ctrl+Shift+S` saves a
+Every module's Save menu and `Ctrl+S` save a workspace; `Ctrl+Shift+S` saves a
 workspace under a new name. `Ctrl+O` opens a workspace, not a palette. Only the
 explicit **Apply…** / **Export…** actions write Starship files.
 
@@ -385,6 +391,20 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgio-2.0-d
 ```
 
 ## Run
+
+To inspect the unified scheme workflow without using your daily configuration:
+
+```bash
+cargo build --workspace --release --locked
+bash scripts/run-isolated.sh
+```
+
+This creates isolated application state, not a filesystem sandbox; use test copies.
+See the [implementation and verification report](docs/implementation-2026-09-10.md)
+and [acceptance walkthrough (Chinese)](docs/acceptance-card-zh.md). Main Save / Ctrl+S
+always saves the whole scheme. **Try Greeting** tests only the greeting, not the
+whole font/color/prompt scheme. Greeting's **Try Greeting** and **Apply Scheme…** honor
+its Display setting; independent image installation does not enable shell startup.
 
 ```bash
 cargo run -p termimochi
@@ -512,13 +532,17 @@ python3 scripts/test-regression.py --display :91 --scale 1 --scale 2
 
 This requires Fastfetch, Bubblewrap, `prlimit`, Ptyxis, `dbus-run-session`, `xwininfo`,
 and the X11 libraries used by the pointer driver. Each case uses a separate
-process, private D-Bus session and temporary XDG directories; the terminal-launch
+process, private D-Bus session, HOME and XDG directories; the terminal-launch
 test opens Ptyxis on the test display only. The runner pins the test and SVG-worker builds,
 enforces per-case timeouts and writes logs plus `results.json` under `/tmp`.
 Use `--filter extreme_settings` for the cross-module extreme-value/rapid-switch
 test. Ordinary tests additionally cover a 672-case artwork/layout matrix and
 1,024 seeded terminal-control streams. These checks supplement, not replace,
 manual testing on real desktop compositors.
+
+Ptyxis builds requiring `systemd-run --user --scope` may be unable to spawn under a
+fully private runtime without a user manager. Keep these cases environment-blocked;
+do not connect the runner to your real desktop bus to make the report green.
 
 ## Repository structure
 

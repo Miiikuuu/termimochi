@@ -5,6 +5,9 @@ use std::{sync::Arc, thread};
 mod trial;
 
 struct PixelExport {
+    trial_mode: bool,
+    key: Option<crate::greeting_output::VerificationKey>,
+    feedback: Vec<gtk::Button>,
     window: glib::WeakRef<gtk::Window>,
     workbench: std::rc::Weak<Workbench>,
     before: GreetingSettings,
@@ -26,7 +29,7 @@ struct PixelExport {
     ansi_test: gtk::Button,
     install: gtk::Button,
     capabilities: gtk::Label,
-    trial: RefCell<Option<crate::pixel_trial::Trial>>,
+    trial: RefCell<Option<Rc<crate::pixel_trial::Trial>>>,
     trial_generation: Cell<u64>,
     trial_running: Cell<bool>,
     image: RefCell<Option<Arc<PixelImage>>>,
@@ -38,6 +41,12 @@ struct PixelExport {
 
 impl Workbench {
     pub(in crate::window) fn show_pixel_export(self: &Rc<Self>) {
+        self.show_pixel_output(false);
+    }
+    pub(in crate::window) fn show_greeting_trial(self: &Rc<Self>) {
+        self.show_pixel_output(true);
+    }
+    fn show_pixel_output(self: &Rc<Self>, trial_mode: bool) {
         if let Some(window) = self.greeting.pixel_export_window.upgrade() {
             window.present();
             return;
@@ -51,11 +60,22 @@ impl Workbench {
             self.toast("Enable Greeting before exporting an image greeting.");
             return;
         }
-        let Some(source) = before.editable_artwork.clone() else {
+        let source = before.editable_artwork.clone();
+        if source.is_none() && !trial_mode {
             self.toast("Import a PNG, JPG, WebP, SVG or GIF first. Text and ANSI logos have no original pixels to export.");
             return;
         };
-        let is_gif = source.image.is_gif();
+        let is_gif = source.as_ref().is_some_and(|s| s.image.is_gif());
+        let spec = match before.presentation.resolve(
+            &before,
+            self.greeting.presentation.binding.borrow().terminal,
+        ) {
+            Ok(spec) => spec,
+            Err(error) => {
+                self.toast(&error);
+                return;
+            }
+        };
         let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
         for set in [
             gtk::Widget::set_margin_top,
@@ -68,7 +88,11 @@ impl Workbench {
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         header.append(
             &gtk::Label::builder()
-                .label("Image Greeting")
+                .label(if trial_mode {
+                    "Try in Terminal"
+                } else {
+                    "Export a Copy"
+                })
                 .xalign(0.0)
                 .hexpand(true)
                 .css_classes(["heading"])
@@ -76,6 +100,7 @@ impl Workbench {
         );
         let cancel = gtk::Button::with_label("Cancel");
         let export = gtk::Button::with_label("Export Folder…");
+        export.set_visible(!trial_mode);
         export.add_css_class("suggested-action");
         export.set_sensitive(false);
         header.append(&cancel);
@@ -118,13 +143,15 @@ impl Workbench {
         } else {
             &["Kitty · Direct PNG", "Sixel"]
         });
-        if is_gif {
-            protocol.set_selected(2);
-        }
+        protocol.set_selected(match spec.protocol {
+            Some(Protocol::KittyAnimation) => 2,
+            Some(Protocol::Sixel) => 1,
+            _ => 0,
+        });
         protocol.set_hexpand(true);
         protocol.update_property(&[gtk::accessible::Property::Label("Image protocol")]);
         let columns = gtk::SpinButton::with_range(8.0, 120.0, 1.0);
-        columns.set_value(32.0);
+        columns.set_value(before.presentation.columns.into());
         columns.update_property(&[gtk::accessible::Property::Label("Maximum logo columns")]);
         options.append(&protocol);
         options.append(&gtk::Label::new(Some("Max columns")));
@@ -144,7 +171,10 @@ impl Workbench {
         )]);
         target_row.append(&target);
         let test = gtk::Button::with_label("Test in Terminal");
-        let ansi_test = gtk::Button::with_label("Test ANSI Fallback");
+        let ansi_test = gtk::Button::with_label("Use Character & Try");
+        ansi_test.set_tooltip_text(Some(
+            "Explicitly changes the scheme to Character output; Undo restores the image intent.",
+        ));
         target_row.append(&test);
         target_row.append(&ansi_test);
         let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
@@ -152,6 +182,34 @@ impl Workbench {
         wheel.connect_scroll(|_, _, _| glib::Propagation::Stop);
         target_row.add_controller(wheel);
         content.append(&target_row);
+        target_row.set_visible(trial_mode);
+        target.set_selected(
+            crate::pixel_trial::Terminal::ALL
+                .iter()
+                .position(|t| *t == self.greeting.presentation.binding.borrow().terminal)
+                .unwrap() as u32,
+        );
+        options.set_visible(!trial_mode);
+        let feedback_row = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .max_children_per_line(2)
+            .build();
+        let feedback: Vec<_> = [
+            "Looks correct",
+            "Nothing displayed",
+            "Animation broken",
+            "Try unverified output",
+        ]
+        .into_iter()
+        .map(|label| {
+            let button = gtk::Button::with_label(label);
+            button.set_sensitive(false);
+            feedback_row.insert(&button, -1);
+            button
+        })
+        .collect();
+        feedback_row.set_visible(trial_mode);
+        content.append(&feedback_row);
         let playback = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let play = gtk::ToggleButton::with_label("Play");
         play.set_tooltip_text(Some("Play or pause a looping preview of the exported GIF. Playback starts only when requested."));
@@ -173,11 +231,12 @@ impl Workbench {
         let requirements = gtk::Label::builder().wrap(true).xalign(0.0).build();
         content.append(&requirements);
         let note = gtk::Label::builder().wrap(true).xalign(0.0)
-            .label("This canvas is a GTK image preview, not terminal protocol rendering. Test opens a temporary, safe-field-only configuration in the selected terminal; daily config and startup remain unchanged. Ordinary Apply still uses ANSI.")
+            .label(if trial_mode {"The terminal uses safe sample information, NOT your imported commands. Look at that terminal, then give feedback here. This GTK image is only a design reference. Shared settings and shell startup are untouched."} else {"Creates a portable copy only. Use the main workbench's Try and Apply actions for your terminal; this GTK canvas is not protocol verification."})
             .css_classes(["dim-label"]).build();
         content.append(&note);
         let capabilities = gtk::Label::builder().wrap(true).xalign(0.0).build();
         content.append(&capabilities);
+        capabilities.set_visible(trial_mode);
         let status = gtk::Label::builder()
             .wrap(true)
             .selectable(true)
@@ -185,20 +244,33 @@ impl Workbench {
             .label("Preparing image…")
             .build();
         content.append(&status);
-        let install = gtk::Button::with_label("Review Install…");
+        let install = gtk::Button::with_label("Review Scheme & Apply…");
+        install.set_visible(trial_mode);
         install.set_halign(gtk::Align::End);
         install.set_sensitive(false);
         install.set_tooltip_text(Some("Available after visual confirmation in the target terminal. Review managed asset paths and Fastfetch changes before applying."));
         content.append(&install);
         let window = gtk::Window::builder()
-            .title("Export Image Greeting")
+            .title(if trial_mode {
+                "Try in Terminal"
+            } else {
+                "Export Image Greeting"
+            })
             .transient_for(&self.window())
             .modal(true)
             .default_width(740)
             .default_height(800)
-            .child(&content)
+            .child(
+                &gtk::ScrolledWindow::builder()
+                    .child(&content)
+                    .hscrollbar_policy(gtk::PolicyType::Never)
+                    .build(),
+            )
             .build();
         let this = Rc::new(PixelExport {
+            trial_mode,
+            key: self.greeting_verification_key().ok(),
+            feedback,
             window: window.downgrade(),
             workbench: Rc::downgrade(self),
             before,
@@ -303,7 +375,11 @@ impl Workbench {
         this.refresh();
         let (send, receive) = mpsc::channel();
         thread::spawn(move || {
-            let _ = send.send(pixel_export::prepare(&source));
+            let _ = send.send(if let Some(source) = source {
+                pixel_export::prepare(&source)
+            } else {
+                pixel_export::placeholder()
+            });
         });
         let weak = Rc::downgrade(&this);
         glib::timeout_add_local(Duration::from_millis(40), move || {
@@ -323,6 +399,14 @@ impl Workbench {
                     this.show_frame(0);
                     this.export.set_sensitive(true);
                     this.refresh();
+                    if this.trial_mode {
+                        let ansi = this
+                            .before
+                            .presentation
+                            .resolve(&this.before, this.terminal())
+                            .is_ok_and(|s| s.protocol.is_none());
+                        this.start_trial(ansi);
+                    }
                 }
                 Ok(Err(error)) => this.status.set_label(&error),
                 Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
@@ -513,10 +597,9 @@ mod tests {
     #[test]
     #[ignore = "requires isolated GTK/VTE; trial install gate, invalidation, review cancellation and restore"]
     fn pixel_trial_review_gate_cancel_apply_and_restore() {
-        use super::super::tests::respond;
         use crate::{
-            fastfetch_apply,
-            pixel_trial::{self, Trial},
+            fastfetch_apply, pixel_trial,
+            scheme_apply::{Action, Item, Plan, Status},
         };
         adw::init().unwrap();
         gio::resources_register_include!("termimochi.gresource").unwrap();
@@ -529,74 +612,158 @@ mod tests {
         present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
         let window = app.active_window().unwrap();
         let workbench = controller(&window);
-        let (settings, image) = pixel_trial::tests::fixture(false);
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while workbench.preview_loading.get() {
+            assert!(std::time::Instant::now() < deadline);
+            settle();
+        }
+        let (mut settings, image) = pixel_trial::tests::fixture(false);
+        settings.presentation.visual = crate::greeting_output::Visual::Image;
         workbench.greeting.replace(settings.clone(), false);
+        workbench.greeting.presentation.target.set_selected(1);
         let daily = root.path().join("config.jsonc");
         let original = "// user's exact content\n{\"modules\":[\"os\"]}";
         std::fs::write(&daily, original).unwrap();
         workbench.accept_scheme_fastfetch(fastfetch_apply::Target::open(daily.clone()).unwrap());
-        let managed = glib::user_data_dir().join("termimochi/image-greetings");
-        assert!(!managed.exists());
-        for apply in [false, true] {
-            let (dialog, editor) = draft(&workbench);
-            let deadline = std::time::Instant::now() + Duration::from_secs(15);
-            while !editor.export.is_sensitive() {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "{}",
-                    editor.status.text()
-                );
-                settle();
+        assert!(
+            workbench.prepare_greeting_action().is_err(),
+            "unverified image must not become ANSI"
+        );
+        let trial = Rc::new(
+            pixel_trial::Trial::prepare(
+                root.path(),
+                &settings,
+                &image,
+                pixel_trial::tests::options(Protocol::Kitty, false),
+            )
+            .unwrap(),
+        );
+        pixel_trial::tests::confirm(&trial); // UI/transaction fixture only; native motion is tested separately.
+        let key = workbench.greeting_verification_key().unwrap();
+        *workbench.greeting.presentation.verified.borrow_mut() = Some((key.clone(), trial.clone()));
+        let (detail, _, action) = workbench.prepare_greeting_action().unwrap();
+        workbench.refresh_output_bar();
+        assert!(
+            workbench
+                .greeting
+                .presentation
+                .state
+                .text()
+                .contains("Independent image · shared greeting unchanged")
+        );
+        assert!(detail.contains("shared Fastfetch is untouched"));
+        assert!(matches!(
+            action,
+            Action::ImageGreeting {
+                independent: true,
+                ..
             }
-            assert!(!editor.install.is_sensitive());
-            let prepare = || {
-                Trial::prepare(
-                    root.path(),
-                    &settings,
-                    &image,
-                    pixel_trial::tests::options(Protocol::Kitty, false),
-                )
-                .unwrap()
-            };
-            let trial = prepare();
-            let cancelled = trial.directory.clone();
-            pixel_trial::tests::confirm(&trial);
-            *editor.trial.borrow_mut() = Some(trial);
-            editor.refresh_trial_controls();
-            assert!(editor.install.is_sensitive());
-            editor
-                .columns
-                .set_value(f64::from(editor.columns.value_as_int() + 1));
-            assert!(!editor.install.is_sensitive());
-            assert!(!cancelled.exists());
-            let trial = prepare();
-            let temporary = trial.directory.clone();
-            pixel_trial::tests::confirm(&trial);
-            *editor.trial.borrow_mut() = Some(trial);
-            editor.refresh_trial_controls();
-            editor.install.emit_clicked();
-            settle();
-            assert!(!dialog.is_visible());
-            assert!(!temporary.exists());
-            assert_eq!(std::fs::read_to_string(&daily).unwrap(), original);
-            assert!(!managed.exists());
-            respond(if apply { "Install & Apply" } else { "Cancel" });
-            if !apply {
-                assert_eq!(std::fs::read_to_string(&daily).unwrap(), original);
-                assert!(!managed.exists());
-            }
-        }
-        let installed =
-            crate::fastfetch_document::value(&std::fs::read_to_string(&daily).unwrap()).unwrap();
-        let asset = PathBuf::from(installed["logo"]["source"].as_str().unwrap());
-        assert!(asset.starts_with(&managed) && asset.is_file());
-        assert!(asset.parent().unwrap().join("config-ansi.jsonc").is_file());
-        let restore =
-            fastfetch_apply::prepare_restore(&workbench.greeting.fastfetch_state).unwrap();
-        fastfetch_apply::restore(&restore, &workbench.greeting.fastfetch_state).unwrap();
+        ));
+        drop(action);
+        workbench.request_fastfetch_apply();
+        settle();
+        super::super::tests::respond("Cancel");
         assert_eq!(std::fs::read_to_string(&daily).unwrap(), original);
-        assert!(asset.is_file());
-        window.destroy();
+        // Size edits expire this evidence; undo restores the exact design identity.
+        let mut edited = settings.clone();
+        edited.presentation.columns = 48;
+        workbench.greeting.replace(edited, true);
+        assert!(workbench.prepare_greeting_action().is_err());
+        workbench.greeting.undo();
+        assert!(workbench.prepare_greeting_action().is_ok());
+        let (detail, versions, action) = workbench.prepare_greeting_action().unwrap();
+        let mut plan = Plan::new(root.path(), "isolated Kitty".into(), None);
+        plan.items.push(Item {
+            id: "fastfetch",
+            title: "Greeting".into(),
+            detail,
+            versions,
+            action: Some(action),
+        });
+        let (directory, mut report) = plan.apply(&[true]).unwrap();
+        assert_eq!(report.items[0].status, Status::NotEnabled);
+        assert_eq!(std::fs::read_to_string(&daily).unwrap(), original);
+        let installed = report.items[0].path.as_ref().unwrap().clone();
+        let source = std::fs::read_to_string(&installed).unwrap();
+        assert_eq!(
+            crate::fastfetch_document::value(&source).unwrap()["logo"]["type"],
+            "kitty-direct"
+        );
+        // Reapplying through any entry still produces an image plan, including field-only edits.
+        let mut fields = settings.clone();
+        fields.items[0].enabled = !fields.items[0].enabled;
+        workbench.greeting.replace(fields, true);
+        let (_, _, action) = workbench.prepare_greeting_action().unwrap();
+        assert!(matches!(action, Action::ImageGreeting { .. }));
+        drop(action);
+        report.restore(&directory).unwrap();
+        assert_eq!(report.items[0].status, Status::Restored);
+        assert!(!installed.exists());
+        // Explicit character mode is undoable and is the ONLY route back to ANSI.
+        let mut character = workbench.greeting.settings();
+        character.presentation.visual = crate::greeting_output::Visual::Character;
+        workbench.greeting.replace(character, true);
+        assert!(matches!(
+            workbench.prepare_greeting_action().unwrap().2,
+            Action::Fastfetch { .. }
+        ));
+        workbench.greeting.undo();
+        assert!(matches!(
+            workbench.prepare_greeting_action().unwrap().2,
+            Action::ImageGreeting { .. }
+        ));
+        // Use the actual common review callback: refresh its shared snapshot so
+        // repeat image application and an explicit character switch do not
+        // mistake this application's own write for an external conflict.
+        workbench.greeting.presentation.shared.set_active(true);
+        for character in [false, false, true] {
+            if character {
+                let mut next = workbench.greeting.settings();
+                crate::greeting_output::select_character(&mut next);
+                workbench.greeting.replace(next, true);
+            }
+            workbench.refresh_output_bar();
+            assert!(
+                workbench
+                    .greeting
+                    .presentation
+                    .state
+                    .text()
+                    .contains("Shared greeting · affects every reader")
+            );
+            workbench.request_scheme_apply();
+            settle();
+            let review = gtk::Window::list_toplevels()
+                .into_iter()
+                .filter_map(|w| w.downcast::<gtk::Window>().ok())
+                .find(|w| w.title().as_deref() == Some("Apply This Scheme"))
+                .unwrap();
+            let check = super::super::tests::descendants(review.upcast_ref())
+                .into_iter()
+                .find(|w| w.widget_name() == "scheme-fastfetch")
+                .unwrap()
+                .downcast::<gtk::CheckButton>()
+                .unwrap();
+            assert!(check.is_sensitive());
+            check.set_active(true);
+            super::super::tests::respond("Back Up & Apply Selected");
+            settle();
+            let (_, applied) =
+                crate::scheme_apply::Report::latest(&typography_preset::state_directory()).unwrap();
+            let row = applied.items.iter().find(|r| r.id == "fastfetch").unwrap();
+            assert!(
+                matches!(row.status, Status::Applied | Status::Unchanged),
+                "{}",
+                row.detail
+            );
+            super::super::tests::respond("Close");
+            assert!(workbench.prepare_greeting_action().is_ok());
+            let value = crate::fastfetch_document::value(&std::fs::read_to_string(&daily).unwrap())
+                .unwrap();
+            assert_eq!(value["logo"]["type"] == "kitty-direct", !character);
+        }
+        window.close();
+        settle();
     }
 
     #[test]
@@ -628,6 +795,7 @@ mod tests {
             .unwrap();
         settings.enabled = true;
         settings.editable_artwork = Some(source);
+        settings.presentation.visual = crate::greeting_output::Visual::Animation;
         workbench.greeting.replace(settings.clone(), false);
         let (dialog, editor) = draft(&workbench);
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
@@ -690,6 +858,144 @@ mod tests {
         settle();
         assert!(editor.closed.get());
         window.destroy();
+    }
+
+    #[test]
+    #[ignore = "isolated GTK + real Kitty: main trial, moving pixels, GUI feedback and shared-scope review"]
+    fn native_gui_animation_feedback_uses_the_frozen_scheme() {
+        use crate::greeting_output::Visual;
+        assert_eq!(std::env::var("GSETTINGS_BACKEND").as_deref(), Ok("memory"));
+        adw::init().unwrap();
+        gio::resources_register_include!("termimochi.gresource").unwrap();
+        let app = adw::Application::builder()
+            .application_id("io.github.miiikuuu.termimochi.NativeFeedbackTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
+        let window = app.active_window().unwrap();
+        let workbench = controller(&window);
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while workbench.preview_loading.get() {
+            assert!(std::time::Instant::now() < deadline);
+            settle();
+        }
+        let (mut settings, _) = crate::pixel_trial::tests::fixture(true);
+        settings.presentation.visual = Visual::Animation;
+        settings.presentation.columns = 24;
+        workbench.greeting.replace(settings, false);
+        workbench.greeting.presentation.target.set_selected(1);
+        workbench.show_greeting_trial();
+        settle();
+        let dialog = workbench.greeting.pixel_export_window.upgrade().unwrap();
+        let editor = unsafe {
+            dialog
+                .data::<Rc<PixelExport>>("termimochi-pixel-export")
+                .unwrap()
+                .as_ref()
+                .clone()
+        };
+        assert!(editor.trial_mode && !editor.export.is_visible());
+        let deadline = std::time::Instant::now() + Duration::from_secs(35);
+        while !editor.feedback[0].is_sensitive() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{}",
+                editor.status.text()
+            );
+            settle();
+        }
+        assert!(!editor.install.is_sensitive());
+        let result = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../scripts/test-pixel-trial.py"
+            ))
+            .arg("--observe-existing")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        println!("{}", String::from_utf8_lossy(&result.stdout));
+        editor.feedback[0].emit_clicked();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !editor.install.is_sensitive() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{}",
+                editor.status.text()
+            );
+            settle();
+        }
+        assert!(workbench.greeting.presentation.verified.borrow().is_some());
+        let kitty_config = glib::user_config_dir().join("kitty");
+        std::fs::create_dir_all(&kitty_config).unwrap();
+        std::fs::write(kitty_config.join("kitty.conf"), "font_size 17\n").unwrap();
+        assert!(
+            workbench.prepare_greeting_action().is_err(),
+            "target font changes expire approval"
+        );
+        // Rebind this test's confirmed artifact only for the remaining scope UI
+        // assertions; the next real trial below must clear it and report failure.
+        *workbench.greeting.presentation.verified.borrow_mut() = Some((
+            workbench.greeting_verification_key().unwrap(),
+            editor.trial.borrow().as_ref().unwrap().clone(),
+        ));
+        assert!(matches!(
+            workbench.prepare_greeting_action().unwrap().2,
+            crate::scheme_apply::Action::ImageGreeting {
+                independent: true,
+                ..
+            }
+        ));
+        // Shared replacement requires a separate, explicit local choice.
+        workbench.greeting.presentation.shared.set_active(true);
+        let (detail, _, action) = workbench.prepare_greeting_action().unwrap();
+        assert!(detail.contains("ALL terminals") && detail.contains("SHARED"));
+        assert!(matches!(
+            action,
+            crate::scheme_apply::Action::ImageGreeting {
+                independent: false,
+                ..
+            }
+        ));
+        drop(action);
+        // A new failed trial must supersede this successful confirmation.
+        editor.start_trial(false);
+        assert!(workbench.greeting.presentation.verified.borrow().is_none());
+        assert!(workbench.prepare_greeting_action().is_err());
+        let deadline = std::time::Instant::now() + Duration::from_secs(35);
+        while !editor.feedback[2].is_sensitive() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{}",
+                editor.status.text()
+            );
+            settle();
+        }
+        editor.feedback[2].emit_clicked();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while editor.trial_running.get() {
+            assert!(std::time::Instant::now() < deadline);
+            settle();
+        }
+        assert!(!editor.install.is_sensitive());
+        assert!(workbench.greeting.presentation.verified.borrow().is_none());
+        assert!(workbench.prepare_greeting_action().is_err());
+        dialog.close();
+        settle();
+        assert!(
+            !glib::user_config_dir()
+                .join("fastfetch/config.jsonc")
+                .exists()
+        );
+        assert!(!glib::home_dir().join(".bashrc").exists());
+        window.close();
+        settle();
     }
 
     fn draft(workbench: &Rc<Workbench>) -> (gtk::Window, Rc<PixelExport>) {

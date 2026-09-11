@@ -370,6 +370,40 @@ pub(crate) fn find_settings(schema_id: &str, path: Option<&str>) -> Option<gio::
     ))
 }
 
+/// No writes: approval expires when the configured profile or global font changes.
+pub(crate) fn verification_environment() -> String {
+    fn values(settings: &gio::Settings) -> String {
+        settings
+            .settings_schema()
+            .map(|schema| {
+                let mut keys = schema.list_keys();
+                keys.sort();
+                keys.iter()
+                    .map(|key| format!("{key}={}", settings.value(key)))
+                    .collect::<Vec<_>>()
+                    .join(";")
+            })
+            .unwrap_or_default()
+    }
+    let mut snapshot = String::new();
+    if let Some(global) = find_settings("org.gnome.Ptyxis", None) {
+        snapshot.push_str(&values(&global));
+        if let Some(uuid) =
+            current_profile_uuid_from(&global, std::env::var("PTYXIS_PROFILE").ok().as_deref())
+            && let Some(profile) = find_settings(
+                "org.gnome.Ptyxis.Profile",
+                Some(&format!("/org/gnome/Ptyxis/Profiles/{uuid}/")),
+            )
+        {
+            snapshot.push_str(&values(&profile));
+        }
+    }
+    if let Some(desktop) = find_settings("org.gnome.desktop.interface", None) {
+        snapshot.push_str(&values(&desktop));
+    }
+    snapshot
+}
+
 fn setting_boolean(settings: &gio::Settings, key: &str) -> Option<bool> {
     setting_value(settings, key).and_then(|value| value.get())
 }

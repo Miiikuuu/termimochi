@@ -17,12 +17,20 @@ References:
 
 The header owns brand, opening files and undo/redo. The existing activity rail
 owns module navigation. The left inspector scrolls independently; its compact
-output bar stays visible below it. The right Live Preview does not move or reset
+output bar stays visible below it. The right Design Preview does not move or reset
 when navigating. Diagnostics remain local to the preview.
 
-The output bar has three entry points:
+The right-hand Preview Scene selector owns observation: Terminal, Prompt or
+Greeting. Left editor navigation (including Inspect) never selects a scene.
+Greeting pixels and playback depend on the observed scene, not the active editor.
+Editing a hidden scene does not bring it forward. Scene selection is session-only;
+opening a workspace can still initialize its preview from the loaded design.
 
-- **Save**: current document/preset and complete workspace options, explicitly named.
+The output bar has four entry points:
+
+- **Save / Ctrl+S**: always the complete scheme, regardless of the active module.
+- **Try Greeting**: only current Greeting output and local target; GUI visual
+  feedback. It does not trial the entire font/color/prompt scheme.
 - **Apply Scheme…**: review all workspace destinations/scopes and select external
   changes. No checkbox is preselected; palette activation depends on installation.
   Existing review, backup and conflict checks remain mandatory.
@@ -41,9 +49,17 @@ Light/Dark appearance. Exact padding, tab bar and window spacing are preview-onl
 File replacements expose before/after text. See [Applying a scheme](apply-scheme.md)
 for outcome and recovery semantics.
 
-Prompt's Save menu and Ctrl+S both save workspace snapshots. Ctrl+Shift+S saves
+Every module's Save menu and Ctrl+S save workspace snapshots. Ctrl+Shift+S saves
 a workspace under another name; Ctrl+O opens a workspace. Starship writes are
 explicit Apply / Export actions, never a side effect of the generic Save shortcut.
+
+Greeting's normal editor owns Display, Columns and character style. Protocol and
+fallback preferences are advanced options; preview zoom/playback are session-only.
+The Greeting pixel canvas is a GTK composition, not a VTE graphics-protocol test.
+Other modules retain their VTE testing scenes. The output bar separately reports
+saved state, current-session visual approval and deployment comparison. Local target
+selection is remembered, but shared-pixel replacement consent is never remembered
+or embedded in a scheme. Image output defaults to an independent managed config.
 
 ## Shared color editing
 
@@ -64,6 +80,36 @@ and field in its existing source editor. Artwork pixel adjustments stay in the
 image editor unless explicitly requested.
 
 ## Verification
+
+### Continuous Greeting edits and advisory checks
+
+Display, width and character-style edits are drafts until conversion completes.
+Inputs are debounced for 150 ms; each editor retains at most one running
+conversion and one replaceable pending request. Decoding/conversion uses owned
+data on a worker; GTK updates and history commits stay on the main thread.
+Undo cancels a pending draft. Opening/replacing a design or destroying its window
+invalidates late results; cancellation never starts a second concurrent decoder.
+Concurrent field edits are retained by rebasing the latest conversion request.
+Save, export, Try and Apply refuse pending drafts rather than use stale artwork.
+The explicit character-fallback trial also waits for its conversion to complete.
+
+The output bar uses a bounded background check and a two-second advisory cache
+for target environment, deployed-file comparison and profile information. Target,
+design and preview font/cell changes invalidate the matching snapshot; returning
+to the window forces a refresh. Expired/missing results display a checking state.
+Check completion updates status only, without changing the document revision or
+restarting preview/discovery work. Explicit trial/review authorization still
+performs a fresh check and does not trust a cached positive result. These fresh
+safety-boundary checks remain synchronous; this is not a rewrite of every I/O path.
+
+This follows GNOME's [main-context guidance](https://developer.gnome.org/documentation/tutorials/main-contexts.html):
+keep blocking work out of recurring UI callbacks and return results to the UI
+context. Tests cover a deliberately delayed worker plus a live GTK heartbeat,
+coalescing/cancellation, save guards, undo/redo, stale-result rejection and an
+external configuration change immediately after a positive cached check.
+The injected delay verifies event-loop liveness, not a real-user latency benchmark.
+
+### Workbench regression scope
 
 Check all five modules, minimum window size and 1x/2x scaling. Every former
 command remains reachable. Output actions route to the right module and cancel

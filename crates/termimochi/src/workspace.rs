@@ -61,6 +61,9 @@ impl Workspace {
 impl Document for Workspace {
     const SUFFIX: &'static str = ".termimochi.json";
     const MAX_BYTES: u64 = crate::greeting_image::source::DOCUMENT_LIMIT;
+    fn migrate(&mut self, bytes: &[u8]) -> Result<(), String> {
+        crate::greeting_output::migrate(&mut self.greeting, bytes)
+    }
     fn validate(&self) -> Result<(), String> {
         if self.kind != "termimochi-workspace" || self.version != 1 {
             return Err("Unsupported TermiMochi workspace.".into());
@@ -83,6 +86,28 @@ impl Document for Workspace {
 mod tests {
     use super::*;
     use crate::document_store::{DocumentStore, decode, encode};
+    #[test]
+    fn presentation_survives_scheme_roundtrip_and_legacy_stays_character() {
+        let settings = crate::greeting::GreetingSettings::default();
+        let mut legacy = serde_json::to_value(&settings).unwrap();
+        legacy.as_object_mut().unwrap().remove("presentation");
+        let migrated: crate::greeting::GreetingSettings =
+            serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(migrated).unwrap()["presentation"]["visual"],
+            "character"
+        );
+        legacy["presentation"] = serde_json::json!({"visual":"animation", "columns":48,
+            "character_style":"half_blocks", "protocol":null, "fallback":"ask"});
+        let design: crate::greeting::GreetingSettings =
+            serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(design).unwrap()["presentation"],
+            legacy["presentation"]
+        );
+        assert!(legacy.get("target").is_none());
+        assert!(legacy.get("verified").is_none());
+    }
     #[test]
     fn workspace_roundtrip_preserves_all_modules_and_literal_starship_contents() {
         let palette =

@@ -10,6 +10,8 @@ mod fastfetch;
 mod fields;
 mod image_import;
 mod pixel_export;
+mod presentation;
+mod presentation_work;
 mod startup;
 mod sync;
 
@@ -51,6 +53,7 @@ impl HistorySnapshot for GreetingSettings {
 
 type Changed = Box<dyn Fn()>;
 pub(super) struct GreetingEditor {
+    pub presentation: presentation::PresentationEditor,
     pub root: gtk::ScrolledWindow,
     fields: fields::FieldInspector,
     appearance_group: gtk::Box,
@@ -215,6 +218,13 @@ impl GreetingEditor {
         message.add_css_class("typography-control");
         message.update_property(&[gtk::accessible::Property::Label("Welcome Text")]);
         content.append(&message);
+        let presentation = presentation::PresentationEditor::new(
+            fastfetch_state
+                .parent()
+                .unwrap()
+                .join("greeting-target.json"),
+        );
+        content.append(&presentation.root);
         let logo = layout_drop_down(
             &Logo::ALL.map(Logo::label),
             settings.logo.index(),
@@ -261,7 +271,7 @@ impl GreetingEditor {
         let art_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let import_content = gtk::Box::new(gtk::Orientation::Horizontal, 7);
         import_content.append(&gtk::Image::from_icon_name("document-open-symbolic"));
-        let import_label = gtk::Label::new(Some("Import Artwork…"));
+        let import_label = gtk::Label::new(Some("Add image / GIF…"));
         import_label.set_hexpand(true);
         import_label.set_xalign(0.0);
         import_content.append(&import_label);
@@ -271,7 +281,7 @@ impl GreetingEditor {
             .css_classes(["artwork-import"])
             .hexpand(true)
             .build();
-        import_art.update_property(&[gtk::accessible::Property::Label("Import Artwork")]);
+        import_art.update_property(&[gtk::accessible::Property::Label("Add image or GIF")]);
         import_art.set_tooltip_text(Some(
             "Choose PNG, JPG, WebP, SVG, GIF, TXT or ANSI artwork.",
         ));
@@ -305,6 +315,8 @@ impl GreetingEditor {
             .css_classes(["flat"])
             .build();
         content.append(&edit_image);
+        content.reorder_child_after(&art_actions, Some(&message));
+        content.reorder_child_after(&edit_image, Some(&art_actions));
         let artwork = gtk::TextView::builder()
             .monospace(true)
             .wrap_mode(gtk::WrapMode::None)
@@ -372,7 +384,7 @@ impl GreetingEditor {
         motion.append(&opening);
         motion.append(&replay);
         content.append(&layout_group(
-            "Preview",
+            "Demo settings · preview only",
             [
                 layout_row("Width", &columns),
                 layout_row("Opening¹", &motion),
@@ -447,6 +459,7 @@ impl GreetingEditor {
             .child(&content)
             .build();
         let this = Rc::new_cyclic(|weak| Self {
+            presentation,
             root,
             fields,
             appearance_group,
@@ -500,6 +513,7 @@ impl GreetingEditor {
         this.refresh();
         Self::connect(&this);
         Self::connect_field_inspector(&this);
+        Self::connect_presentation(&this);
         if let Some(notice) = notice {
             this.status
                 .set_text(&format!("Saved greeting unavailable: {notice}"));
@@ -510,14 +524,22 @@ impl GreetingEditor {
         self.settings.borrow().clone()
     }
     pub fn dirty(&self) -> bool {
-        self.invalid.get() || *self.settings.borrow() != *self.baseline.borrow()
+        self.presentation_pending()
+            || self.invalid.get()
+            || *self.settings.borrow() != *self.baseline.borrow()
     }
     pub fn finish(&self) {
         if !self.invalid.get() {
             self.history.borrow_mut().commit(self.settings());
         }
     }
+    pub(super) fn retain_applied_preset(&self) -> Result<(), String> {
+        self.persist().inspect_err(|error| {
+            self.sync.save_failed("Greeting applied; local preset could not be saved. Save the complete scheme to keep the design.", error);
+        })
+    }
     fn persist(&self) -> Result<(), String> {
+        self.require_presentation_ready()?;
         self.finish();
         if self.invalid.get() {
             return Err("Fix the greeting fields before saving.".into());
@@ -545,6 +567,7 @@ impl GreetingEditor {
         *self.changed.borrow_mut() = Some(Box::new(changed));
     }
     pub fn replace(&self, settings: GreetingSettings, record: bool) {
+        self.presentation.edits.borrow_mut().cancel();
         self.finish();
         if record && settings != self.settings() {
             let mut history = self.history.borrow_mut();
@@ -558,6 +581,12 @@ impl GreetingEditor {
         self.notify();
     }
     pub fn undo(&self) {
+        if self.presentation_pending() {
+            self.presentation.edits.borrow_mut().cancel();
+            self.refresh();
+            self.notify();
+            return;
+        }
         if self.invalid.replace(false) {
             // TextBuffer replacement first deletes the old contents, then
             // inserts the paste. Do not expose that intermediate empty value
@@ -577,7 +606,7 @@ impl GreetingEditor {
         }
     }
     pub fn redo(&self) {
-        if self.invalid.get() {
+        if self.invalid.get() || self.presentation_pending() {
             return;
         }
         let target = self.history.borrow_mut().redo(self.settings());
@@ -588,6 +617,8 @@ impl GreetingEditor {
     fn refresh(&self) {
         self.updating.set(true);
         let settings = self.settings();
+        self.presentation.refresh(&settings);
+        self.refresh_pixel_design();
         self.enabled.set_active(settings.enabled);
         let mut labels = vec!["Custom design"];
         labels.extend(OfficialPreset::CHOICES.map(OfficialPreset::label));
@@ -658,6 +689,12 @@ impl GreetingEditor {
         self.updating.set(false);
     }
     pub fn refresh_status(&self) {
+        if self.presentation_pending() {
+            self.status.set_text(
+                "Updating artwork… Save, Try and Apply wait for the result. Undo cancels.",
+            );
+            return;
+        }
         if self.invalid.get() {
             return;
         }
@@ -953,6 +990,7 @@ impl GreetingEditor {
         let logo = Logo::ALL[(self.logo.selected() as usize).min(Logo::ALL.len() - 1)];
         if settings.logo != logo {
             settings.editable_artwork = None;
+            crate::greeting_output::select_character(&mut settings);
         }
         settings.logo = logo;
         settings.position = Position::ALL[self.position.selected().min(3) as usize];
@@ -967,6 +1005,7 @@ impl GreetingEditor {
             .into();
         if text != settings.custom_logo {
             settings.editable_artwork = None;
+            crate::greeting_output::select_character(&mut settings);
             settings.custom_art = None;
             settings.custom_logo = text;
         }
@@ -1376,7 +1415,7 @@ impl Workbench {
             .map(|(text, _)| text)
             .collect()
     }
-    fn greeting_parts_for_width(
+    pub(super) fn greeting_parts_for_width(
         &self,
         columns: usize,
     ) -> Vec<(String, crate::greeting::GreetingPart)> {
@@ -1519,7 +1558,6 @@ impl Workbench {
         self.greeting_motion.stop();
         let settings = self.greeting.settings();
         if !self.greeting_preview.get()
-            || !self.greeting_module_button.is_active()
             || !settings.enabled
             || self.greeting.invalid.get()
             || settings.opening == Opening::None
@@ -1798,6 +1836,23 @@ impl Workbench {
         );
     }
     pub(super) fn choose_greeting_export(self: &Rc<Self>, fastfetch: bool) {
+        if let Err(error) = self.greeting.require_presentation_ready() {
+            self.toast(&error);
+            return;
+        }
+        let settings = self.greeting.settings();
+        if fastfetch
+            && settings
+                .presentation
+                .resolve(
+                    &settings,
+                    self.greeting.presentation.binding.borrow().terminal,
+                )
+                .is_ok_and(|s| s.protocol.is_some())
+        {
+            self.show_pixel_export();
+            return;
+        }
         self.greeting.finish();
         if self.greeting.invalid.get() {
             self.toast("Fix the greeting fields before exporting.");
@@ -1971,6 +2026,7 @@ pub(super) mod tests {
                 .for_each(|i| i.enabled = i.kind == Info::Os);
             this.greeting.replace(settings.clone(), true);
             this.greeting_module_button.set_active(true);
+            this.preview_scene_selector.set_selected(2);
             settle();
             this.preview_scroll.start();
             settle();
@@ -2140,6 +2196,18 @@ pub(super) mod tests {
             .emit_clicked();
         settle();
     }
+    pub(super) fn select_scheme_greeting() {
+        settle();
+        let check = gtk::Window::list_toplevels()
+            .into_iter()
+            .flat_map(|w| descendants(&w))
+            .find(|w| w.widget_name() == "scheme-fastfetch")
+            .unwrap()
+            .downcast::<gtk::CheckButton>()
+            .unwrap();
+        assert!(check.is_sensitive(), "Greeting plan must be reviewable");
+        check.set_active(true);
+    }
     pub(in crate::window) fn controller(window: &gtk::Window) -> Rc<Workbench> {
         unsafe {
             window
@@ -2149,7 +2217,7 @@ pub(super) mod tests {
                 .clone()
         }
     }
-    pub(super) fn feed(this: &Workbench) -> String {
+    pub(in crate::window) fn feed(this: &Workbench) -> String {
         this.preview_feed
             .borrow()
             .iter()
@@ -2234,6 +2302,7 @@ pub(super) mod tests {
         assert_eq!(this.greeting.settings(), GreetingSettings::starter());
         assert!(!this.greeting.dirty());
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+        this.preview_scene_selector.set_selected(2);
         this.greeting.enabled.set_active(true);
         wait_official(&this);
         assert_eq!(this.greeting.preset.selected(), 1);
@@ -2337,6 +2406,7 @@ pub(super) mod tests {
         window.set_default_size(1320, 850);
         let this = controller(&window);
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+        this.preview_scene_selector.set_selected(2);
         wait_official(&this);
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while this.preview_loading.get() {
@@ -2419,6 +2489,7 @@ pub(super) mod tests {
             settle();
         }
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+        this.preview_scene_selector.set_selected(2);
         let original = this.greeting.settings();
         let layout = this.layout_settings();
         for preset in OfficialPreset::ALL {
@@ -2633,12 +2704,13 @@ pub(super) mod tests {
         settle();
         assert!(this.greeting_module_button.is_active());
         assert!(!this.greeting.dirty());
+        this.preview_scene_selector.set_selected(2);
         assert_eq!(
             this.save_button
                 .menu_model()
                 .unwrap()
                 .item_attribute_value(0, "label", None),
-            Some("Save Greeting Preset".to_variant())
+            Some("Save Workspace".to_variant())
         );
         this.greeting.enabled.set_active(true);
         this.greeting.message.set_text("Hello 你好 🦀");
@@ -2767,7 +2839,7 @@ pub(super) mod tests {
             settle();
         }
 
-        this.save_action.activate(None);
+        this.save_greeting_preset(); // Explicit secondary preset action.
         assert!(!this.greeting.dirty());
         let saved = this.greeting.settings();
         let path = root.path().join(PRESET_NAME);

@@ -40,6 +40,10 @@ fn exported_art(settings: &GreetingSettings) -> Result<Artwork, String> {
 
 impl Workbench {
     pub(super) fn art_draft_matches(&self, before: &GreetingSettings) -> bool {
+        if let Err(error) = self.greeting.require_presentation_ready() {
+            self.toast(&error);
+            return false;
+        }
         if self.greeting.invalid.get() || &self.greeting.settings() != before {
             self.toast("Greeting changed while the dialog was open. Import again to keep your latest edits.");
             false
@@ -143,6 +147,7 @@ impl Workbench {
             self.toast(&error);
             return;
         }
+        crate::greeting_output::select_character(&mut next);
         let detail = format!(
             "{} lines · {} cells wide\n\nOnly the logo will change. Colors are preserved; unsupported controls are removed. Other fields and comments stay intact. Imported configurations embed a portable text copy. Nothing is applied to your terminal. Undo restores the previous logo.{}",
             art.plain.lines().count(),
@@ -200,11 +205,16 @@ impl Workbench {
         }
         settings.custom_art = None;
         settings.editable_artwork = None;
+        crate::greeting_output::select_character(&mut settings);
         self.greeting.replace(settings, true);
         self.greeting.artwork.grab_focus();
         self.toast("Plain-text editing enabled. Undo restores the original colors.");
     }
     pub(in crate::window) fn choose_greeting_art_export(self: &Rc<Self>, ansi: bool) {
+        if let Err(error) = self.greeting.require_presentation_ready() {
+            self.toast(&error);
+            return;
+        }
         if self.greeting.invalid.get() {
             self.toast("Fix the invalid field before exporting.");
             return;
@@ -417,6 +427,7 @@ mod tests {
             settle();
         }
         this.greeting_module_button.set_active(true);
+        this.preview_scene_selector.set_selected(2);
         settle();
         let before = this.greeting.settings();
         let layout = this.layout_settings();

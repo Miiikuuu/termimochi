@@ -1,27 +1,32 @@
 # Image/GIF terminal trials and installation
 
-Open **Bottom bar ⋮ → Export → Export Image Greeting…** after accepting an
-editable PNG/JPG/WebP/SVG/GIF source and enabling Greeting.
+Import an editable PNG/JPG/WebP/SVG/GIF source in **Greeting**, enable it, and
+choose **Display** and **Columns** in the normal editor. Save preserves these
+choices and the original source in the complete `.termimochi.json` scheme.
 
-1. Choose the output protocol, maximum columns and target terminal: Kitty,
-   Ptyxis or xterm. Missing terminal executables are not installed automatically.
-2. Click **Test in Terminal**. A new terminal opens with temporary files and
+1. Choose Image, Animation (GIF only), Character, or Recommended. Protocol hints
+   live in **Advanced · output compatibility**. Choose the persistent **Greeting
+   target** in the workbench: Kitty, Ptyxis or xterm. This is a local selection,
+   not portable approval or proof of support. Missing executables are not installed.
+2. Click the main **Try in Terminal** button. A new terminal opens with temporary files and
    absolute asset paths. Your active Fastfetch configuration and shell startup
    files are untouched. The test uses your artwork/layout with fixed safe sample
    fields, not arbitrary imported commands or network modules.
-3. Follow the terminal prompt. A missing/ambiguous protocol response stays
-   **Unverified**; press **T** only if you want to try that output anyway.
-   Confirm actual appearance with **Y**, reject broken output with **N**, or
-   leave unverified with **Q**. For GIF, check actual movement, placement and
+3. Use the GUI feedback: **Looks correct**, **Nothing displayed**, or **Animation
+   broken**. A missing/ambiguous response stays **Unverified**; **Try unverified
+   output** explicitly attempts it anyway. Terminal T/Y/N/Q remain fallback keys.
+   For GIF, check actual movement, placement and
    transparent-frame trails. A successful process exit does not confirm anything.
-4. After visual confirmation, **Review Install…** shows the selected Fastfetch
+4. After visual confirmation, **Review Scheme & Apply…** (or main **Apply Scheme…**) shows the selected Fastfetch
    target, permanent asset directory, ANSI fallback path and complete Before/After
    configuration. Review imported commands here: the full configuration retains
    them, even though the trial did not run them. Cancel writes nothing.
-5. **Install & Apply** writes private immutable assets under
+5. Select Greeting, then **Back Up & Apply Selected** writes private immutable assets under
    `$XDG_DATA_HOME/termimochi/image-greetings/` (normally
-   `~/.local/share/termimochi/image-greetings/`), then backs up and replaces the
-   reviewed Fastfetch configuration. External changes block replacement.
+   `~/.local/share/termimochi/image-greetings/`). By default the config is independent:
+   `$XDG_DATA_HOME/termimochi/targets/<terminal>/config.jsonc`. The shared Fastfetch
+   file is untouched, and the result says **Installed · not enabled**. External
+   changes block replacement. Reapplying uses the same plan and backup mechanisms.
 
 Pixel configurations explicitly set `display.pipe` to `false`; otherwise
 Fastfetch can silently substitute a builtin logo under a pipe/`NO_COLOR` policy.
@@ -46,7 +51,7 @@ the tested Kitty version; it is not a promise about every compositor or later re
 The guard references the installed TermiMochi executable by absolute path. Keep
 that executable available; moving/uninstalling it removes this protection.
 Previously installed configurations are not rewritten automatically: repeat
-**Test in Terminal → Review Install… → Install & Apply** to adopt the guard.
+**Try in Terminal → Review Scheme & Apply…** to adopt the guard.
 Portable export bundles and manually authored configurations are unchanged.
 
 ## Capability states and fallback
@@ -68,42 +73,53 @@ Terminal identity is not a Sixel feature bit. Legacy/ambiguous DA replies stay
 unverified for Sixel. Animation confirmation is independent of both static states.
 Multiplexers, remote sessions, fonts, DPI and different builds can change results.
 
-**Test ANSI Fallback** follows the same temporary-test and reviewed-install flow
-without requiring pixel support. It uses the accepted character artwork; GIF
+**Use Character & Try** explicitly edits the scheme's display intent and starts
+the same temporary-test flow without requiring pixel support. It uses the accepted character artwork; GIF
 fallback is a still. This remains available when the selected pixel output is
 unavailable or visually broken. Managed pixel installations also keep
 `config-ansi.jsonc` alongside their assets for an explicit manual fallback.
 There is no silent terminal-name-based switching.
 
-**Known limitation: the installation target is a shared Fastfetch file, not a
-terminal-specific profile.** Selecting Kitty for a trial does not restrict the
-installed configuration to Kitty. If Ptyxis or another incompatible terminal
-reads the same file, the image area can be blank. To return to character output,
-select **Ptyxis → Test ANSI Fallback**, confirm with **Y**, then choose
-**Review Install… → Install & Apply**. Changing the target dropdown alone does
-not change the daily configuration. Automatic per-terminal image/ANSI selection
-is not implemented yet.
+**Shared replacement is an explicit opt-in.** Checking **Replace shared greeting
+with pixels** changes the proposed destination, not the file itself. Review warns
+that **all terminals reading that file** are affected: incompatible terminals can
+show a blank image. It is never checked automatically or remembered on reopening.
+To return a shared file to characters, select **Display → Character**, choose
+Greeting in **Apply Scheme…**, and confirm. To undo an application exactly, use
+**Last Application & Recovery…**. Changing the terminal dropdown alone writes no
+daily configuration. Automatic per-terminal startup routing is not implemented.
 
 Sixel trials resize the generated raster to queried target cell dimensions. If
 cell size is unverified, preview-derived sizing remains and must be checked
 visually. Changing target, protocol or maximum columns discards the previous
-confirmation. Test again after changing the artwork, target font or DPI.
+confirmation. Approval is tied to artwork, occupancy, layout, protocol, executable,
+known Kitty/Xterm config files or Ptyxis profile/global settings, and preview cell
+geometry. A fresh trial always clears older approval, even if it fails. Known
+configuration changes invalidate it; imported field-only edits retain image
+evidence but their commands are still untested. Restarting/reopening never restores
+approval. Retest after runtime zoom, external include changes, X resource reloads,
+remote/multiplexer changes or compositor DPI changes: those cannot all be observed.
 
 ## Recovery and boundaries
 
-- **Restore Previous Configuration** uses the existing Fastfetch backup/conflict
+- **Last Application & Recovery… → Restore This Application…** uses the existing Fastfetch backup/conflict
   checks. Successful restoration returns the exact prior file, or removes only
   the configuration newly created by this installation.
 - Managed assets are deliberately retained during restore and uncertain failures:
   a saved configuration/backup can still reference them. Do not delete directories
   still referenced by active files or backups. Automatic garbage collection is
   not included.
-- Closing/stopping a trial removes only its own temporary tree. No running user
-  terminal is reused or killed. Failed/unconfirmed trials cannot be installed.
-- The GTK checkerboard and embedded VTE are unchanged: the main Live Preview,
-  ordinary Greeting Apply and Apply Scheme's Greeting component still use ANSI.
-  Applying those later can replace the image configuration; review Before/After.
-- Save Preset/Workspace still only saves the editable workspace. Portable
+- Closing/stopping an unconfirmed trial removes only its own temporary tree.
+  A confirmed artifact may be retained for this app session so unified Apply can
+  reuse it; it is not portable approval. No running user terminal is reused or
+  killed. Failed/unconfirmed trials cannot be installed.
+- The Greeting **Design Preview** shows processed pixels/GIF playback in a GTK
+  composition. It is not a native Kitty/Sixel renderer. Other modules keep VTE
+  testing scenes. All Greeting application paths now honor the saved display
+  intent; none silently substitute ANSI for an unverified image.
+- Main Save / Ctrl+S always saves the complete scheme. Module presets are explicit
+  secondary commands. Legacy documents stay character output and retain source
+  recipes and size. Portable
   **Export Folder…** remains separate and retains its documented relative paths.
 - The full configuration is not executed automatically after installation.
   Trials require the system `/usr/bin/fastfetch` and a selected installed terminal.

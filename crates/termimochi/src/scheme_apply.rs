@@ -22,6 +22,10 @@ const FILE_LIMIT: u64 = 256 * 1024;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) enum Action {
+    ImageGreeting {
+        plan: crate::pixel_trial::InstallPlan,
+        independent: bool,
+    },
     Palette {
         installer: PtyxisInstaller,
         name: String,
@@ -241,6 +245,7 @@ impl Plan {
 impl Action {
     fn path(&self) -> Option<PathBuf> {
         match self {
+            Self::ImageGreeting { plan, .. } => Some(plan.target.path.clone()),
             Self::Palette {
                 installer, name, ..
             } => Some(installer.palette_dir().join(name)),
@@ -251,6 +256,7 @@ impl Action {
     }
     fn undo(&self) -> Option<Undo> {
         Some(match self {
+            Self::ImageGreeting { .. } => Undo::Fastfetch,
             Self::Palette {
                 installer, name, ..
             } => Undo::Palette {
@@ -272,6 +278,30 @@ impl Action {
 
     fn apply(self, directory: &Path) -> Result<(Status, bool, String), String> {
         match self {
+            Self::ImageGreeting { plan, independent } => {
+                let changed = plan.target.expected.as_deref() != Some(plan.config.as_bytes());
+                let path = plan.target.path.clone();
+                plan.apply(directory)?;
+                Ok((
+                    if independent {
+                        Status::NotEnabled
+                    } else if changed {
+                        Status::Applied
+                    } else {
+                        Status::Unchanged
+                    },
+                    changed,
+                    format!(
+                        "{}\n{}",
+                        path.display(),
+                        if independent {
+                            "Independent image configuration installed. Shared Fastfetch and shell startup unchanged. Run Fastfetch with this explicit --config path in the tested terminal."
+                        } else {
+                            "Shared configuration replaced: every terminal reading this file is affected. Shell startup unchanged."
+                        }
+                    ),
+                ))
+            }
             Self::Palette {
                 installer,
                 name,

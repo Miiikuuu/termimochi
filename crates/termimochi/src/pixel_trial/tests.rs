@@ -125,6 +125,88 @@ fn query_ack_does_not_verify_animation_and_timeouts_remain_unknown() {
 }
 
 #[test]
+fn gui_feedback_cannot_approve_before_render_or_overwrite_pending_response() {
+    let root = tempfile::tempdir().unwrap();
+    let (settings, image) = fixture(false);
+    let trial = Trial::prepare(
+        root.path(),
+        &settings,
+        &image,
+        options(Protocol::Kitty, false),
+    )
+    .unwrap();
+    assert!(trial.respond(b'y').is_err());
+    let mut assessment = Assessment {
+        message: "No conclusive response".into(),
+        ..Default::default()
+    };
+    let save = |assessment: &Assessment| {
+        typography_preset::write_private(
+            &trial.directory.join("result.json"),
+            &serde_json::to_vec(assessment).unwrap(),
+        )
+        .unwrap()
+    };
+    save(&assessment);
+    assert!(trial.respond(b'y').is_err());
+    trial.respond(b't').unwrap();
+    assert!(trial.respond(b'q').is_err());
+    std::fs::remove_file(trial.directory.join("gui-response")).unwrap();
+    assessment.message = "Is the artwork visible?".into();
+    assessment.asset_hash = Some(1);
+    save(&assessment);
+    assert!(trial.respond(b't').is_err());
+    trial.respond(b'n').unwrap();
+    assert_eq!(
+        std::fs::read(trial.directory.join("gui-response")).unwrap(),
+        b"visual:n"
+    );
+    assessment.done = true;
+    save(&assessment);
+    assert!(trial.respond(b'y').is_err());
+}
+
+#[test]
+fn verified_pixels_merge_current_jsonc_fields_and_commands_without_running_them() {
+    let root = tempfile::tempdir().unwrap();
+    let (settings, image) = fixture(false);
+    let trial = Trial::prepare(
+        root.path(),
+        &settings,
+        &image,
+        options(Protocol::Kitty, false),
+    )
+    .unwrap();
+    confirm(&trial);
+    let current = "// retained comment\n{\"future\":{\"deep\":[1,true,null]},\"general\":{\"preRun\":\"touch NEVER_RUN\"},\"modules\":[{\"type\":\"command\",\"text\":\"touch NEVER_RUN\",\"future\":42}]}";
+    let plan = trial
+        .install_plan(
+            &root.path().join("managed"),
+            fastfetch_apply::Target::open(root.path().join("config.jsonc")).unwrap(),
+        )
+        .unwrap()
+        .with_current_fields(current)
+        .unwrap();
+    assert!(plan.config.contains("// retained comment"));
+    let merged = crate::fastfetch_document::value(&plan.config).unwrap();
+    let before = crate::fastfetch_document::value(current).unwrap();
+    assert_eq!(merged["future"], before["future"]);
+    assert_eq!(merged["modules"], before["modules"]);
+    assert!(
+        merged["general"]["preRun"]
+            .as_str()
+            .unwrap()
+            .ends_with("touch NEVER_RUN")
+    );
+    assert_eq!(merged["logo"]["type"], "kitty-direct");
+    assert!(!root.path().join("NEVER_RUN").exists());
+    assert!(
+        plan.with_current_fields("{\"general\":{\"preRun\":42}}")
+            .is_err()
+    );
+}
+
+#[test]
 fn trial_is_temporary_absolute_and_cancellation_never_touches_daily_config() {
     let root = tempfile::tempdir().unwrap();
     let (settings, image) = fixture(false);

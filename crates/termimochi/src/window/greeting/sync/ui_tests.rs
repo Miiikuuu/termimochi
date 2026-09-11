@@ -61,6 +61,7 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     let window = app.active_window().unwrap();
     let this = controller(&window);
     gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+    this.preview_scene_selector.set_selected(2);
     wait_sync(&this);
     assert!(
         this.greeting.sync.difference.is_visible(),
@@ -126,6 +127,7 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     let window = app.active_window().unwrap();
     let this = controller(&window);
     gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+    this.preview_scene_selector.set_selected(2);
     wait_sync(&this);
     assert_eq!(this.greeting.settings(), loaded);
     assert!(!this.greeting.sync.root.is_visible());
@@ -142,7 +144,9 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     assert!(crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().is_empty()));
     this.request_fastfetch_apply();
     std::fs::write(&external, "// external conflict\n{}").unwrap();
-    respond("Back Up & Apply");
+    super::super::tests::select_scheme_greeting();
+    respond("Back Up & Apply Selected");
+    respond("Close");
     assert_eq!(saved(&greeting_path), loaded);
     assert_eq!(
         std::fs::read_to_string(&external).unwrap(),
@@ -151,14 +155,16 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     assert!(crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().is_empty()));
     std::fs::write(&external, &source).unwrap();
     this.request_fastfetch_apply();
-    respond("Back Up & Apply");
+    super::super::tests::select_scheme_greeting();
+    respond("Back Up & Apply Selected");
+    respond("Close");
     wait_sync(&this);
     assert_eq!(saved(&greeting_path), transparent);
     assert!(!this.greeting.dirty());
     assert!(!this.greeting.sync.root.is_visible());
     assert_eq!(
         crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().clone()),
-        vec![external.clone()]
+        Vec::<PathBuf>::new() // Running the complete config now needs its own result-page confirmation.
     );
 
     // External success + local read-only failure is visible, keeps the draft
@@ -169,7 +175,9 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     this.greeting.replace(next.clone(), true);
     std::fs::set_permissions(&greeting_path, std::fs::Permissions::from_mode(0o400)).unwrap();
     this.request_fastfetch_apply();
-    respond("Back Up & Apply");
+    super::super::tests::select_scheme_greeting();
+    respond("Back Up & Apply Selected");
+    respond("Close");
     wait_sync(&this);
     assert!(this.greeting.sync.save_failure.is_visible());
     assert!(this.greeting.sync.root.is_visible());
@@ -191,7 +199,9 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     let other = crate::document_store::encode(&GreetingPreset::new(old)).unwrap();
     std::fs::write(&greeting_path, &other).unwrap();
     this.request_fastfetch_apply();
-    respond("Back Up & Apply");
+    super::super::tests::select_scheme_greeting();
+    respond("Back Up & Apply Selected");
+    respond("Close");
     assert!(this.greeting.sync.save_failure.is_visible());
     assert_eq!(std::fs::read(&greeting_path).unwrap(), other);
     this.save_greeting_preset();
@@ -209,7 +219,9 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
         .unwrap();
     this.greeting.replace(last.clone(), true);
     this.request_fastfetch_apply();
-    respond("Back Up & Apply");
+    super::super::tests::select_scheme_greeting();
+    respond("Back Up & Apply Selected");
+    respond("Close");
     assert_eq!(std::fs::read(&external).unwrap(), before);
     assert_eq!(saved(&greeting_path), last);
     window.destroy();
@@ -219,6 +231,7 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     let window = app.active_window().unwrap();
     let this = controller(&window);
     gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+    this.preview_scene_selector.set_selected(2);
     wait_sync(&this);
     assert_eq!(this.greeting.settings(), last);
     assert!(!this.greeting.sync.root.is_visible());
@@ -312,6 +325,7 @@ fn real_applied_artwork_replaces_stale_preview() {
     window.set_default_size(1320, 850);
     let this = controller(&window);
     gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
+    this.preview_scene_selector.set_selected(2);
     wait_sync(&this);
     assert!(this.greeting.sync.difference.is_visible());
     if let Some(path) = std::env::var_os("TERMIMOCHI_SYNC_NOTICE_SCREENSHOT") {
