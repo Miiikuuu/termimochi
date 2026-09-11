@@ -41,9 +41,15 @@ struct PixelExport {
 
 impl Workbench {
     pub(in crate::window) fn show_pixel_export(self: &Rc<Self>) {
+        if !self.require_document_action("export-pixel-greeting") {
+            return;
+        }
         self.show_pixel_output(false);
     }
     pub(in crate::window) fn show_greeting_trial(self: &Rc<Self>) {
+        if !self.require_document_action("try-greeting") {
+            return;
+        }
         self.show_pixel_output(true);
     }
     fn show_pixel_output(self: &Rc<Self>, trial_mode: bool) {
@@ -543,13 +549,23 @@ impl PixelExport {
         let Some(image) = self.image.borrow().clone() else {
             return;
         };
+        let settings = match workbench.design_snapshot().and_then(|document| {
+            document
+                .greeting_output()
+                .ok_or_else(|| "This document does not own artwork or Greeting output.".into())
+        }) {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.status.set_label(&error);
+                return;
+            }
+        };
         self.writing.set(true);
         self.export.set_sensitive(false);
         self.protocol.set_sensitive(false);
         self.columns.set_sensitive(false);
         self.refresh_trial_controls();
         self.status.set_label("Exporting image greeting…");
-        let settings = self.before.clone();
         let protocol = self.protocol();
         let columns = self.columns.value_as_int() as u32;
         let cell_size = self.cell_size;
@@ -587,7 +603,7 @@ impl PixelExport {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{controller, settle};
+    use super::super::tests::{greeting_controller as controller, settle};
     use super::*;
     use crate::greeting_image::{
         Adjustments, Options, Style,

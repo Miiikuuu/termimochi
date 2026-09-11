@@ -361,7 +361,7 @@ impl Workbench {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::window::greeting::tests::{controller, feed, settle};
+    use crate::window::greeting::tests::{feed, project_controller as controller, settle};
 
     #[test]
     fn transcript_measurement_includes_unicode_wraps_but_not_csi() {

@@ -617,11 +617,17 @@ impl Workbench {
         self.greeting_check_input().verification_key()
     }
     pub(in crate::window) fn prepare_greeting_action(&self) -> Result<PreparedAction, String> {
+        self.typed
+            .scope
+            .get()
+            .require(crate::design_document::Action::Greeting)?;
         self.greeting.require_presentation_ready()?;
         use crate::scheme_apply::Action;
         let settings = self.greeting.settings();
         let binding = self.greeting.presentation.binding.borrow().clone();
         let spec = settings.presentation.resolve(&settings, binding.terminal)?;
+        self.design_snapshot()?
+            .require_greeting_target(spec.protocol)?;
         let destination = spec.destination(&binding);
         let (shared, source) = self.prepare_scheme_fastfetch()?;
         let before = |t: &crate::fastfetch_apply::Target| {
@@ -686,7 +692,7 @@ impl Workbench {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::window::greeting::tests::{controller, settle};
+    use crate::window::greeting::tests::{project_controller as controller, settle};
     #[test]
     #[ignore = "isolated GTK: every main Save, GIF reopen, undo, session zoom, minimum and common windows"]
     fn scheme_presentation_save_reopen_zoom_and_main_actions() {
@@ -699,7 +705,7 @@ mod tests {
             .build();
         app.register(None::<&gio::Cancellable>).unwrap();
         let root = tempfile::tempdir().unwrap();
-        let scheme = root.path().join("animated.termimochi.json");
+        let scheme = root.path().join("animated.termimochi-design.json");
         let active = glib::user_config_dir().join("fastfetch/config.jsonc");
         std::fs::create_dir_all(active.parent().unwrap()).unwrap();
         std::fs::write(&active, "// sentinel\n{}").unwrap();
@@ -718,8 +724,8 @@ mod tests {
         settings.presentation.columns = 48;
         this.greeting.replace(settings.clone(), true);
         this.greeting.presentation.target.set_selected(1);
-        this.save_workspace_path(scheme.clone(), this.committed_workspace().unwrap())
-            .unwrap();
+        *this.typed.store.borrow_mut() = Some(DocumentStore::open(scheme.clone()).unwrap());
+        this.save_design(false);
         for (index, module) in [
             EditorModule::Palette,
             EditorModule::Typography,
@@ -741,17 +747,16 @@ mod tests {
             settle();
             assert!(this.save_action.is_enabled());
             this.save_action.activate(None);
-            let reopened = DocumentStore::<Workspace>::open(scheme.clone())
-                .unwrap()
-                .document()
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                reopened.greeting.message,
-                format!("Save from module {index}")
-            );
-            assert_eq!(reopened.greeting.presentation.visual, Visual::Animation);
-            assert_eq!(reopened.greeting.presentation.columns, 48);
+            let reopened =
+                DocumentStore::<crate::design_document::DesignDocument>::open(scheme.clone())
+                    .unwrap()
+                    .document()
+                    .unwrap()
+                    .unwrap();
+            let greeting = reopened.components.greeting.unwrap();
+            assert_eq!(greeting.message, format!("Save from module {index}"));
+            assert_eq!(greeting.presentation.visual, Visual::Animation);
+            assert_eq!(greeting.presentation.columns, 48);
         }
         this.greeting_module_button.set_active(true);
         this.preview_scene_selector.set_selected(3);

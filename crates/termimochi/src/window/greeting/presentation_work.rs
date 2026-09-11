@@ -243,7 +243,7 @@ impl Workbench {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::window::greeting::tests::{controller, settle};
+    use crate::window::greeting::tests::{greeting_controller as controller, settle};
 
     fn ready(test: &str) -> (tempfile::TempDir, gtk::Window, Rc<Workbench>) {
         assert_eq!(std::env::var("GSETTINGS_BACKEND").as_deref(), Ok("memory"));

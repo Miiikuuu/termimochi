@@ -16,6 +16,7 @@ use termimochi_core::{
 use vte::prelude::*;
 
 mod color_targets;
+mod document_use;
 mod documents;
 mod full_session;
 mod greeting;
@@ -26,6 +27,10 @@ mod preview_scroll;
 mod scheme;
 #[cfg(test)]
 mod stress_tests;
+mod typed_documents;
+mod typed_kitty;
+#[cfg(test)]
+mod typed_tests;
 
 use crate::{
     color_picker::{ColorPicker, ColorSwatch, scroll_parent_vertically},
@@ -318,6 +323,8 @@ struct PreviewChunk {
 type InitialPromptKey = (u64, PathBuf, usize, u32);
 
 struct Workbench {
+    typed: typed_documents::TypedSession,
+    document_use: document_use::DocumentUseBinding,
     window: glib::WeakRef<adw::ApplicationWindow>,
     toast_overlay: adw::ToastOverlay,
     brand_title: gtk::Label,
@@ -523,11 +530,8 @@ fn present_with_preset(
         gtk::IconTheme::for_display(&display)
             .add_resource_path(&format!("{}/icons", crate::RESOURCE_BASE));
     }
-    let initial_workspace = initial_path
-        .as_ref()
-        .filter(|path| document_store::matches_path::<Workspace>(path))
-        .cloned();
-    let initial_path = initial_path.filter(|_| initial_workspace.is_none());
+    let initial_document = initial_path;
+    let initial_path: Option<PathBuf> = None;
     let layout_path = preset_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -810,6 +814,8 @@ fn present_with_preset(
     window_ref.set(Some(&window));
     install_editor_module_actions(&window, &editor_workspace);
     let workbench = Rc::new(Workbench {
+        typed: typed_documents::TypedSession::new(),
+        document_use: document_use::DocumentUseBinding::new(),
         window: window_ref,
         toast_overlay,
         brand_title: brand_name,
@@ -981,6 +987,7 @@ fn present_with_preset(
     });
 
     Workbench::install_actions(&workbench);
+    Workbench::install_document_actions(&workbench);
     Workbench::connect_signals(&workbench);
     Workbench::connect_greeting_motion(&workbench);
     workbench.refresh_all();
@@ -1005,8 +1012,10 @@ fn present_with_preset(
     if let Some(notice) = layout_notice {
         workbench.toast(&notice);
     }
-    if let Some(path) = initial_workspace {
-        workbench.open_workspace_path(&path);
+    if let Some(path) = initial_document {
+        workbench.open_design_path(&path);
+    } else {
+        workbench.initialize_design();
     }
     workbench.schedule_fastfetch_sync();
     // The window owns the controller. The controller only keeps a weak window
@@ -2463,6 +2472,9 @@ fn install_editor_module_actions(
         };
         let action = gio::SimpleAction::new(module.action_name(), None);
         action.connect_activate(move |_, _| {
+            if !button.is_sensitive() || !button.is_visible() {
+                return;
+            }
             if !button.is_active() {
                 // Moving focus settles an in-progress field edit before its
                 // page is hidden. Repeating the current module shortcut stays
@@ -3189,7 +3201,7 @@ impl Workbench {
     }
 
     fn refresh_history_actions(&self) {
-        self.refresh_prompt_save_actions();
+        self.refresh_document_scope();
         self.refresh_output_bar();
         self.refresh_workspace_title();
         self.greeting.refresh_status();
@@ -3584,6 +3596,9 @@ impl Workbench {
                     }
                     return;
                 }
+                if !this.require_document_action("diagnostic-module") {
+                    return;
+                }
                 this.prompt_module_button.set_active(true);
                 this.prompt_source_selector.set_selected(0);
                 this.starship_editor.open_finding(id, message);
@@ -3651,6 +3666,9 @@ impl Workbench {
             let weak = Rc::downgrade(this);
             action.connect_activate(move |_, _| {
                 if let Some(this) = weak.upgrade() {
+                    if !this.require_document_action(name) {
+                        return;
+                    }
                     match operation {
                         0 => this.save_layout_preset(),
                         1 => this.choose_layout_export(),
@@ -3680,6 +3698,9 @@ impl Workbench {
             let weak = Rc::downgrade(this);
             action.connect_activate(move |_, _| {
                 if let Some(this) = weak.upgrade() {
+                    if !this.require_document_action(name) {
+                        return;
+                    }
                     match operation {
                         0 => this.save_greeting_preset(),
                         1 => this.choose_greeting_export(false),
@@ -3708,6 +3729,9 @@ impl Workbench {
             let weak = Rc::downgrade(this);
             action.connect_activate(move |_, _| {
                 if let Some(this) = weak.upgrade() {
+                    if !this.require_document_action(name) {
+                        return;
+                    }
                     match operation {
                         0 => this.load_fastfetch_path(crate::fastfetch_apply::default_path()),
                         1 => this.choose_fastfetch_import(),
@@ -3737,6 +3761,9 @@ impl Workbench {
             let weak = Rc::downgrade(this);
             action.connect_activate(move |_, _| {
                 if let Some(this) = weak.upgrade() {
+                    if !this.require_document_action(name) {
+                        return;
+                    }
                     match operation {
                         0 => this.save_typography_preset(),
                         1 => this.choose_typography_export(),
@@ -3767,6 +3794,9 @@ impl Workbench {
             let weak = Rc::downgrade(this);
             action.connect_activate(move |_, _| {
                 if let Some(this) = weak.upgrade() {
+                    if !this.require_document_action(name) {
+                        return;
+                    }
                     match operation {
                         0 => this.request_starship_save(),
                         1 => this.request_starship_restore(),
@@ -3781,6 +3811,9 @@ impl Workbench {
         let weak = Rc::downgrade(this);
         reload_terminal.connect_activate(move |_, _| {
             if let Some(this) = weak.upgrade() {
+                if !this.require_document_action("reload-terminal") {
+                    return;
+                }
                 this.confirm_typography_discard(|this| {
                     this.confirm_layout_discard(|this| {
                         this.confirm_discard(|this| this.reload_terminal_appearance())
@@ -4775,37 +4808,45 @@ impl Workbench {
             .lookup_action("save-starship")
             .and_downcast::<gio::SimpleAction>()
         {
-            action.set_enabled(designer || (loaded && valid));
+            action.set_enabled(
+                self.allows_document_action("save-starship") && (designer || (loaded && valid)),
+            );
         }
         if let Some(action) = self
             .window()
             .lookup_action("restore-starship")
             .and_downcast::<gio::SimpleAction>()
         {
-            action.set_enabled(!designer && loaded && !self.starship_editor.detached.get());
+            action.set_enabled(
+                self.allows_document_action("restore-starship")
+                    && !designer
+                    && loaded
+                    && !self.starship_editor.detached.get(),
+            );
         }
         if let Some(action) = self
             .window()
             .lookup_action("reload-starship")
             .and_downcast::<gio::SimpleAction>()
         {
-            action.set_enabled(!designer && !self.starship_editor.detached.get());
+            action.set_enabled(
+                self.allows_document_action("reload-starship")
+                    && !designer
+                    && !self.starship_editor.detached.get(),
+            );
         }
         if let Some(action) = self
             .window()
             .lookup_action("export-starship")
             .and_downcast::<gio::SimpleAction>()
         {
-            action.set_enabled(designer || (loaded && valid));
+            action.set_enabled(
+                self.allows_document_action("export-starship") && (designer || (loaded && valid)),
+            );
         }
         // Keep the menu available even for invalid fields: Reload and Restore
         // are recovery actions. Individual write actions stay disabled.
-        self.save_action.set_enabled(
-            valid
-                && !self.has_draft()
-                && !self.greeting.invalid.get()
-                && !self.greeting.presentation_pending(),
-        );
+        self.save_action.set_enabled(self.document_inputs_valid());
         if self.has_unsaved_setup() {
             self.save_button.add_css_class("save-ready");
         } else {
@@ -5715,6 +5756,16 @@ impl Workbench {
     }
 
     fn inspect_preview_target(&self, target: PreviewTarget) {
+        if matches!(
+            target,
+            PreviewTarget::GreetingMessage
+                | PreviewTarget::GreetingFields
+                | PreviewTarget::GreetingField(_)
+        ) && !self.typed.scope.get().greeting
+        {
+            self.toast("Preview reference — system fields and welcome text are not owned by this artwork document.");
+            return;
+        }
         let module = match target {
             PreviewTarget::Ansi(_) => EditorModule::Palette,
             PreviewTarget::GreetingArtwork
@@ -5730,6 +5781,10 @@ impl Workbench {
             | PreviewTarget::PromptSegment(_)
             | PreviewTarget::PromptCharacter => EditorModule::Prompt,
         };
+        if !self.owns_module(module) {
+            self.toast("Preview reference — this content does not belong to this document.");
+            return;
+        }
         self.navigating_preview.set(true);
         match target {
             PreviewTarget::Prompt => self.prompt_source_selector.set_selected(0),
@@ -5913,6 +5968,9 @@ impl Workbench {
     }
 
     fn save_typography_preset(&self) {
+        if !self.require_document_action("save-typography") {
+            return;
+        }
         let result = self.committed_typography().and_then(|settings| {
             let mut store = self.typography_store.borrow_mut();
             let store = store
@@ -5974,6 +6032,9 @@ impl Workbench {
     }
 
     fn choose_typography_export(self: &Rc<Self>) {
+        if !self.require_document_action("export-typography") {
+            return;
+        }
         let settings = match self.committed_typography() {
             Ok(settings) => settings,
             Err(error) => {
@@ -6008,30 +6069,6 @@ impl Workbench {
         });
     }
 
-    fn choose_typography_open(self: &Rc<Self>) {
-        let dialog = Self::typography_file_dialog("Open Typography Preset");
-        let weak = Rc::downgrade(self);
-        dialog.open(Some(&self.window()), gio::Cancellable::NONE, move |result| {
-            let Some(this) = weak.upgrade() else { return; };
-            match result {
-                Ok(file) => {
-                    let outcome = file.path().ok_or("Only local presets can be opened.".to_owned())
-                        .and_then(PresetStore::open).and_then(|store| store.settings())
-                        .and_then(|settings| settings.ok_or("The preset file no longer exists.".to_owned()));
-                    match outcome {
-                        Ok(settings) => this.confirm_typography_discard(move |this| {
-                            this.set_typography_settings(&settings, true);
-                            this.toast("Typography preset opened. Save Preset to remember it for the next launch.");
-                        }),
-                        Err(error) => this.toast(&format!("Could not open preset: {error}")),
-                    }
-                }
-                Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
-                Err(error) => this.toast(&format!("Could not open preset: {error}")),
-            }
-        });
-    }
-
     fn confirm_typography_discard(self: &Rc<Self>, action: impl FnOnce(Rc<Self>) + 'static) {
         if !self.typography_dirty() || self.workspace_is_clean() {
             action(self.clone());
@@ -6060,6 +6097,9 @@ impl Workbench {
     }
 
     fn request_typography_apply(self: &Rc<Self>) {
+        if !self.require_document_action("apply-typography") {
+            return;
+        }
         let prepared = self.committed_typography().and_then(|settings| {
             let font = self.preview_terminal.pango_context().load_font(&settings.font_description())
                 .ok_or("The selected font is unavailable. Install it or select an installed family.")?;
@@ -6076,6 +6116,10 @@ impl Workbench {
                 return;
             }
         };
+        let reviewed_identity = self.typed.identity.get();
+        let reviewed_target = self.typed.target.get();
+        let reviewed_scope = self.typed.scope.get();
+        let reviewed_settings = self.typography_settings();
         let dialog = gtk::AlertDialog::builder()
             .message("Apply typography to Ptyxis?")
             .detail(request.detail())
@@ -6095,6 +6139,15 @@ impl Workbench {
                 let Some(this) = weak.upgrade() else {
                     return;
                 };
+                if this.typed.identity.get() != reviewed_identity
+                    || this.typed.target.get() != reviewed_target
+                    || this.typed.scope.get() != reviewed_scope
+                    || !this.allows_document_action("apply-typography")
+                    || this.committed_typography().ok().as_ref() != Some(&reviewed_settings)
+                {
+                    this.toast("Document, target or typography changed during review. Review again; nothing was applied.");
+                    return;
+                }
                 match request.apply(&typography_preset::state_directory()) {
                     Ok(Some(backup)) => this.toast(&format!(
                         "Typography applied to Ptyxis. Backup: {}",
@@ -6110,6 +6163,9 @@ impl Workbench {
     }
 
     fn request_typography_restore(self: &Rc<Self>) {
+        if !self.require_document_action("restore-typography") {
+            return;
+        }
         let request = match RestoreRequest::load(&typography_preset::state_directory()) {
             Ok(request) => request,
             Err(error) => {
@@ -6582,6 +6638,11 @@ impl Workbench {
     }
 
     fn refresh_deployment(&self) {
+        if !self.allows_document_action("install-ptyxis") {
+            self.install_action.set_enabled(false);
+            self.rollback_action.set_enabled(false);
+            return;
+        }
         // Rollback remains actionable even without a receipt so the request
         // can explain why there is nothing to restore instead of looking dead.
         self.rollback_action.set_enabled(true);
@@ -6614,6 +6675,9 @@ impl Workbench {
     }
 
     fn request_install(self: &Rc<Self>) {
+        if !self.require_document_action("install-ptyxis") {
+            return;
+        }
         self.settle_active_edit();
         if !self.require_valid_name() {
             return;
@@ -6699,6 +6763,9 @@ impl Workbench {
     }
 
     fn request_rollback(self: &Rc<Self>) {
+        if !self.require_document_action("rollback-ptyxis") {
+            return;
+        }
         let Some(installer) = &self.ptyxis_installer else {
             self.toast("Could not locate the rollback directory");
             return;
@@ -6773,6 +6840,9 @@ impl Workbench {
     }
 
     fn request_starship_save(self: &Rc<Self>) {
+        if !self.require_document_action("save-starship") {
+            return;
+        }
         if self.prompt_source_selector.selected() == 1 || self.starship_editor.detached.get() {
             self.choose_starship_export();
             return;
@@ -6859,6 +6929,9 @@ impl Workbench {
     }
 
     fn request_starship_restore(self: &Rc<Self>) {
+        if !self.require_document_action("restore-starship") {
+            return;
+        }
         let binding = self.starship_editor.file.borrow().clone();
         let (file, backup) = match binding.and_then(|file| {
             let backup = file.latest_backup()?;
@@ -6899,6 +6972,9 @@ impl Workbench {
     }
 
     fn request_starship_reload(self: &Rc<Self>) {
+        if !self.require_document_action("reload-starship") {
+            return;
+        }
         if !self.starship_editor.dirty() {
             self.reload_starship_from_disk();
             return;
@@ -6964,6 +7040,9 @@ impl Workbench {
     }
 
     fn choose_starship_export(self: &Rc<Self>) {
+        if !self.require_document_action("export-starship") {
+            return;
+        }
         let copy = self.prompt_source_selector.selected() == 0;
         let document = self.starship_editor.document();
         if copy && self.starship_editor.invalid() {
@@ -7077,6 +7156,9 @@ impl Workbench {
     }
 
     fn choose_export(self: &Rc<Self>, format: ExportFormat) {
+        if !self.require_document_action("export-theme") {
+            return;
+        }
         self.settle_active_edit();
         if !self.require_valid_name() {
             return;
@@ -7152,60 +7234,7 @@ impl Workbench {
     }
 
     fn choose_open(self: &Rc<Self>) {
-        if self.prompt_module_button.is_active() {
-            self.choose_workspace_open();
-            return;
-        }
-        if self.greeting_module_button.is_active() {
-            self.choose_greeting_open();
-            return;
-        }
-        if self.layout_module_button.is_active() {
-            self.choose_layout_open();
-            return;
-        }
-        if self.typography_module_button.is_active() {
-            self.choose_typography_open();
-            return;
-        }
-        self.settle_active_edit();
-        self.confirm_discard(|this| this.show_open_dialog());
-    }
-
-    fn show_open_dialog(self: &Rc<Self>) {
-        let filter = gtk::FileFilter::new();
-        filter.set_name(Some("Ptyxis palette"));
-        filter.add_pattern("*.palette");
-        let filters = gio::ListStore::new::<gtk::FileFilter>();
-        filters.append(&filter);
-        let dialog = gtk::FileDialog::builder()
-            .title("Open Theme")
-            .accept_label("Open")
-            .modal(true)
-            .filters(&filters)
-            .default_filter(&filter)
-            .build();
-        let weak = Rc::downgrade(self);
-        dialog.open(
-            Some(&self.window()),
-            gio::Cancellable::NONE,
-            move |result| {
-                let Some(this) = weak.upgrade() else {
-                    return;
-                };
-                match result {
-                    Ok(file) => {
-                        if let Some(path) = file.path() {
-                            this.open_path(&path);
-                        } else {
-                            this.toast("Only local files can be opened");
-                        }
-                    }
-                    Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
-                    Err(error) => this.toast(&format!("Could not open: {error}")),
-                }
-            },
-        );
+        self.choose_design_open();
     }
 
     fn confirm_discard<F>(self: &Rc<Self>, action: F)
@@ -7239,14 +7268,6 @@ impl Workbench {
                 }
             },
         );
-    }
-
-    fn prompt_has_unexported_changes(&self) -> bool {
-        self.starship_editor.dirty()
-            || has_unexported_prompt_changes(
-                &self.prompt_settings.borrow(),
-                &self.last_exported_prompt.borrow(),
-            )
     }
 
     fn confirm_close_discard(self: &Rc<Self>) {
@@ -7482,41 +7503,14 @@ impl Workbench {
         });
     }
 
-    fn open_path(&self, path: &Path) {
-        match PtyxisPalette::from_file(path) {
-            Ok(palette) => {
-                // File dialogs can briefly restore focus to the previous
-                // picker field before completing. End that old transaction
-                // before replacing the document and clearing its history.
-                self.finish_active_edit();
-                let preferred_variant = preferred_ui_variant();
-                let active_variant = if palette.variant(preferred_variant).is_some() {
-                    preferred_variant
-                } else if palette.variant(Variant::Light).is_some() {
-                    Variant::Light
-                } else {
-                    Variant::Dark
-                };
-                *self.model.borrow_mut() = Model::new(
-                    palette,
-                    active_variant,
-                    Some(path.to_owned()),
-                    "Local File".to_owned(),
-                );
-                self.history.borrow_mut().clear();
-                *self.selected_color_key.borrow_mut() = "Foreground".to_owned();
-                self.refresh_all();
-                self.toast("Theme opened");
-            }
-            Err(error) => self.toast(&format!("Invalid theme format: {error}")),
-        }
-    }
-
     fn save(self: &Rc<Self>) {
-        self.save_workspace();
+        self.save_design(false);
     }
 
     fn save_theme(self: &Rc<Self>) {
+        if !self.require_document_action("save-theme") {
+            return;
+        }
         self.settle_active_edit();
         if !self.require_valid_name() {
             return;
@@ -7530,10 +7524,13 @@ impl Workbench {
     }
 
     fn choose_save_as(self: &Rc<Self>) {
-        self.choose_workspace_save_as();
+        self.save_design(true);
     }
 
     fn choose_theme_save_as(self: &Rc<Self>) {
+        if !self.require_document_action("export-theme") {
+            return;
+        }
         self.settle_active_edit();
         if !self.require_valid_name() {
             return;
@@ -7649,6 +7646,7 @@ fn save_button_state(dirty: bool, has_path: bool, inputs_valid: bool) -> (bool, 
     (enabled, emphasized)
 }
 
+#[cfg(test)]
 fn has_unexported_prompt_changes(current: &PromptSettings, last_exported: &PromptSettings) -> bool {
     current != last_exported
 }
@@ -7816,13 +7814,7 @@ mod tests {
         let preset_path = fixture.path().join(typography_preset::PRESET_NAME);
         present_with_preset(&app, None, preset_path.clone());
         let window = app.active_window().unwrap();
-        let this = unsafe {
-            window
-                .data::<Rc<Workbench>>("termimochi-workbench")
-                .unwrap()
-                .as_ref()
-                .clone()
-        };
+        let this = greeting::tests::project_controller(&window);
         let settle = || {
             let start = std::time::Instant::now();
             while start.elapsed() < Duration::from_millis(350) {
@@ -8081,13 +8073,7 @@ mod tests {
         window.destroy();
         present_with_preset(&app, None, preset_path);
         let restored_window = app.active_window().unwrap();
-        let restored = unsafe {
-            restored_window
-                .data::<Rc<Workbench>>("termimochi-workbench")
-                .unwrap()
-                .as_ref()
-                .clone()
-        };
+        let restored = greeting::tests::project_controller(&restored_window);
         settle();
         assert_eq!(
             restored.typography_settings(),
@@ -8133,13 +8119,7 @@ mod tests {
         app.register(None::<&gio::Cancellable>).unwrap();
         present(&app, None);
         let window = app.active_window().unwrap();
-        let this = unsafe {
-            window
-                .data::<Rc<Workbench>>("termimochi-workbench")
-                .unwrap()
-                .as_ref()
-                .clone()
-        };
+        let this = greeting::tests::project_controller(&window);
         let settle = || {
             let start = std::time::Instant::now();
             while start.elapsed() < Duration::from_millis(400) {
@@ -8312,13 +8292,7 @@ mod tests {
         present(&app, None);
         let window = app.active_window().unwrap();
         // present stores exactly this Rc under this private key.
-        let this = unsafe {
-            window
-                .data::<Rc<Workbench>>("termimochi-workbench")
-                .unwrap()
-                .as_ref()
-                .clone()
-        };
+        let this = greeting::tests::project_controller(&window);
         let settle = || {
             let start = std::time::Instant::now();
             while start.elapsed() < Duration::from_millis(350) {
@@ -8414,6 +8388,8 @@ mod tests {
                 // its first row, not the caret-following viewport at the end.
                 this.preview_terminal_viewport.vadjustment().set_value(0.0);
                 settle();
+                window.set_title(Some("TermiMochi point-to-edit test"));
+                gtk::prelude::WidgetExt::display(&window).flush();
                 let native = terminal.native().unwrap();
                 let (dx, dy) = native.surface_transform();
                 let native = native.dynamic_cast::<gtk::Widget>().unwrap();

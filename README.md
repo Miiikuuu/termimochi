@@ -13,6 +13,16 @@ that looks balanced elsewhere can therefore become almost unreadable.
 
 ## Current MVP
 
+- Typed native documents: open a palette, `kitty.conf`, Starship, Fastfetch,
+  font/layout preset, artwork, or explicit project. Only owned components are
+  editable and eligible for output. **Save / Ctrl+S** saves the current
+  `.termimochi-design.json` design, never preview references or system settings.
+  **New Document…**, **Create Project / Convert Copy…**, **Choose Use Target…** and
+  **Document Capabilities…** are in **⋮**. See the
+  [capability table](docs/typed-documents-capabilities.md),
+  [architecture](docs/typed-documents-architecture.md),
+  [verification record](docs/typed-documents-qa.md) and
+  [Chinese acceptance card](docs/typed-documents-acceptance-zh.md).
 - Pure Rust, UI-independent palette core.
 - Strict Ptyxis `.palette` parsing with unknown-property preservation.
 - WCAG relative luminance and contrast ratios.
@@ -50,17 +60,13 @@ that looks balanced elsewhere can therefore become almost unreadable.
   tab bar and preview-window spacing remain preview-only. The **⋮** menu offers
   **Restore Previous Layout**. Remembered window sizing is disabled only after
   explicit Apply confirmation, so the chosen grid can take effect.
-- Complete setups: the bottom bar's **Save** and `Ctrl+S`, in every module,
-  stores colors, typography, layout, greetings, Designer modules and imported Starship
-  text, retained image/GIF originals and Greeting display intent in one
-  `.termimochi.json` file. Use **Open Workspace…** (or launch
-  `termimochi my-setup.termimochi.json`) to restore it. Opening never applies
-  terminal settings. Workspace prompts reopen detached; export them with
-  **Save As** instead of overwriting this machine's Starship configuration.
-  Module shortcuts still save their own files; workspace files are explicit,
-  not automatically reopened on startup.
-- **Apply Scheme…** reviews the complete workspace in one place, separately from
-  Save. Select individual changes after reviewing the exact Ptyxis profile,
+- Complete setups require an explicit **Project** with selected components.
+  Projects retain selected colors, fonts, layout, Prompt and Greeting, including
+  editable image/GIF originals. Old `.termimochi.json` workspaces open as inert
+  Legacy documents; convert an explicit copy to use them. Opening never applies
+  terminal settings. Saved native sources reopen detached from local write permission.
+- **Apply Scheme…** uses the current document and selected target, separately from
+  Save. The Ptyxis path reviews the exact profile,
   global versus profile scope, palette installation versus activation, and file
   destinations. Starship/Fastfetch replacements include before/after views.
   Unsupported layout settings and export-only prompts are explicitly identified.
@@ -68,6 +74,12 @@ that looks balanced elsewhere can therefore become almost unreadable.
   after restart and restores this application's changes with conflict checks.
   **Open Profile Tab** opens the reviewed Ptyxis profile for verification; no
   shell startup files are edited. See [Applying a scheme](docs/apply-scheme.md).
+- **Kitty** documents/projects use one controlled Bash session for owned appearance,
+  current Prompt and Greeting. The same GUI guides real temporary trial, visual
+  confirmation, review, versioned publication, **Open in Kitty**, and conflict-checked
+  recovery. **⋮ → Open Independent Kitty Scheme…** reopens published entries after
+  restart. This does not change the default terminal or daily shell configuration;
+  unsupported native directives are retained but reported as inert in this session.
 - Greeting starts with **Preset → TermiMochi** selected for new users; turn on
   the header switch to preview it. This complete native preset combines the
   brand mark, user/host title, separator, system/desktop/hardware fields and a
@@ -278,7 +290,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Optional **Fade in / Line by line / Shimmer** openings can be replayed with
   the play button. Motion is **preview only**, respects system reduced motion,
   and never changes terminal text; Fastfetch exports remain static.
-- **⋮ → Save Greeting Preset** restores the greeting next launch; main Save / `Ctrl+S` saves the complete scheme.
+- **⋮ → Save Greeting Preset** restores owned Greeting content next launch; main Save / `Ctrl+S` saves only the current design document.
   Import/export `.termimochi-greeting.json` presets, or **Export Fastfetch…** to
   `config.jsonc` or a separate `.fastfetch.jsonc` file. Basic, unstyled custom preview
   needs no Fastfetch installation; field overrides, official presets and imports
@@ -358,17 +370,18 @@ that looks balanced elsewhere can therefore become almost unreadable.
 ## Editor organization
 
 The activity rail selects what to edit. The independent **Preview Scene** selector
-on the right selects **Terminal**, **Prompt**, or **Greeting** to observe. Switching
+on the right selects **Full**, **Terminal**, **Prompt**, or **Greeting** to observe. Switching
 editor modules retains that scene, including an image/GIF while editing Palette.
 Scene selection is session-only and does not modify the saved scheme.
 The fixed bottom bar keeps **Save**, **Try Greeting**, **Apply Scheme…**, and **⋮** accessible while
-properties scroll. **Save** always stores the complete scheme; external
+properties scroll. **Save** stores only the current document's owned contents; external
 changes require review and confirmation. The former module-specific Apply,
 Install and Export actions remain under **⋮**, alongside imports, reloads,
 restores, and **Last Application & Recovery…**.
-Every module's Save menu and `Ctrl+S` save a workspace; `Ctrl+Shift+S` saves a
-workspace under a new name. `Ctrl+O` opens a workspace, not a palette. Only the
-explicit **Apply…** / **Export…** actions write Starship files.
+Every module's Save menu and `Ctrl+S` save the current design; `Ctrl+Shift+S` saves
+it under a new name. `Ctrl+O` detects the selected native file or design and opens
+a separate document window. Only explicit **Apply…** / **Export…** actions write
+native configuration files. Scope checks also cover shortcuts and Inspect.
 
 Palette's target selector can locate **Prompt Designer** segment colors and
 **Greeting** accent/text and individual field name/content colors in the shared
@@ -410,7 +423,8 @@ bash scripts/run-isolated.sh
 This creates isolated application state, not a filesystem sandbox; use test copies.
 See the [implementation and verification report](docs/implementation-2026-09-10.md)
 and [acceptance walkthrough (Chinese)](docs/acceptance-card-zh.md). Main Save / Ctrl+S
-always saves the whole scheme. **Try Greeting** tests only the greeting, not the
+now saves the current typed design (the older report describes the previous workspace model).
+**Try Greeting** tests only the greeting, not the
 whole font/color/prompt scheme. Greeting's **Try Greeting** and **Apply Scheme…** honor
 its Display setting; independent image installation does not enable shell startup.
 
@@ -433,7 +447,7 @@ Your Starship reads `STARSHIP_CONFIG`, or `starship.toml` in the user's XDG
 configuration directory (normally `~/.config`). **Reload from Disk** rereads it,
 with confirmation before discarding unsaved edits. **⋮ → Prompt — Apply…** opens
 the backed-up save confirmation; **⋮ → Save Starship As…** exports separately.
-`Ctrl+S` saves a local workspace instead. Backups are kept beside the
+`Ctrl+S` saves a local typed design instead. Backups are kept beside the
 resolved configuration as `.NAME.termimochi-backup-TIMESTAMP-RANDOM.bak`, with
 owner-only permissions; Restore Previous Version also works after restarting.
 The installed Starship renderer runs asynchronously with a read-only filesystem,

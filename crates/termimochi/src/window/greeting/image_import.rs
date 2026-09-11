@@ -99,6 +99,9 @@ impl Workbench {
     }
 
     pub(in crate::window) fn edit_image_artwork(self: &Rc<Self>) {
+        if !self.require_document_action("edit-image-artwork") {
+            return;
+        }
         let before = self.greeting.settings();
         if let Some(source) = before.editable_artwork.clone() {
             self.open_image_source(before, None, Some(source));
@@ -1138,7 +1141,9 @@ impl ImageImport {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{controller, descendants, feed, respond, settle, wait_official};
+    use super::super::tests::{
+        descendants, feed, project_controller as controller, respond, settle, wait_official,
+    };
     use super::*;
 
     #[test]
@@ -2148,6 +2153,28 @@ mod tests {
         );
         settle();
         crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow_mut().clear());
+        let review_applied_greeting = || {
+            // The applied native file has no implicit terminal. Select the
+            // explicit Ptyxis destination, then review execution separately.
+            let report = gtk::Window::list_toplevels()
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
+                .find(|window| window.title().as_deref() == Some("Scheme Application Results"))
+                .unwrap();
+            let target = descendants(report.upcast_ref())
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::DropDown>().ok())
+                .find(|dropdown| {
+                    dropdown
+                        .model()
+                        .and_then(|model| model.item(0))
+                        .and_then(|item| item.downcast::<gtk::StringObject>().ok())
+                        .is_some_and(|item| item.string() == "Choose terminal…")
+                })
+                .unwrap();
+            target.set_selected(2);
+            respond("Review & Run Applied Greeting…");
+        };
         respond("Review & Apply…");
         assert!(!external.exists(), "Opening review must not apply");
         respond("Cancel");
@@ -2158,11 +2185,11 @@ mod tests {
         super::super::tests::select_scheme_greeting();
         respond("Back Up & Apply Selected");
         assert!(crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().is_empty()));
-        respond("Run applied character greeting in Ptyxis");
+        review_applied_greeting();
         respond("Cancel");
         assert!(crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().is_empty()));
-        respond("Run applied character greeting in Ptyxis");
-        respond("Run Once");
+        review_applied_greeting();
+        respond("Run This Configuration Once");
         assert_eq!(
             crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().clone()),
             vec![external.clone()]
@@ -2179,8 +2206,8 @@ mod tests {
         this.request_fastfetch_apply();
         super::super::tests::select_scheme_greeting();
         respond("Back Up & Apply Selected");
-        respond("Run applied character greeting in Ptyxis");
-        respond("Run Once");
+        review_applied_greeting();
+        respond("Run This Configuration Once");
         assert_eq!(
             crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().len()),
             2

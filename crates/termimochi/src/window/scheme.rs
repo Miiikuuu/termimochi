@@ -2,7 +2,7 @@
 use super::*;
 use crate::scheme_apply::{self, Action, Item, Plan, Report, Status};
 
-fn label(text: &str) -> gtk::Label {
+pub(super) fn label(text: &str) -> gtk::Label {
     gtk::Label::builder()
         .label(text)
         .wrap(true)
@@ -13,7 +13,7 @@ fn label(text: &str) -> gtk::Label {
         .build()
 }
 
-fn versions(before: &str, after: &str) -> gtk::Expander {
+pub(super) fn versions(before: &str, after: &str) -> gtk::Expander {
     let panes = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     for (title, text) in [("Before", before), ("After", after)] {
         let pane = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -40,7 +40,7 @@ fn versions(before: &str, after: &str) -> gtk::Expander {
         .build()
 }
 
-fn dialog(
+pub(super) fn dialog(
     parent: &adw::ApplicationWindow,
     title: &str,
     target: &str,
@@ -81,27 +81,38 @@ fn dialog(
 }
 
 impl Workbench {
-    fn scheme_plan(&self, workspace: &Workspace) -> Plan {
+    fn scheme_palette_name(&self) -> String {
+        format!("termimochi-{}.palette", self.typed.document_id.borrow())
+    }
+    pub(super) fn scheme_plan(&self, workspace: &Workspace) -> Plan {
+        let scope = self.typed.scope.get();
         let profile = scheme_apply::activation::profile();
-        let target = match &profile {
-            Ok((uuid, name)) => format!(
-                "Appearance target: Ptyxis\nProfile: {name} ({uuid})\nLaunching profile when available, otherwise the configured default. This is not another window's active tab. Typography can affect ALL Ptyxis windows. Greeting has a separate explicit destination below; shared files can affect other terminals."
-            ),
-            Err(error) => format!(
-                "Target: Ptyxis unavailable\n{error}\nStarship and Fastfetch file operations remain available independently."
-            ),
+        let target = if !(scope.palette || scope.typography || scope.layout) {
+            "Target: explicitly reviewed native configuration\nOnly owned Prompt / Greeting content; terminal appearance and shell startup are unchanged.".into()
+        } else {
+            match &profile {
+                Ok((uuid, name)) => format!(
+                    "Appearance target: Ptyxis\nProfile: {name} ({uuid})\nLaunching profile when available, otherwise the configured default. This is not another window's active tab. Typography can affect ALL Ptyxis windows. Greeting has a separate explicit destination below; shared files can affect other terminals."
+                ),
+                Err(error) => format!(
+                    "Target: Ptyxis unavailable\n{error}\nStarship and Fastfetch file operations remain available independently."
+                ),
+            }
         };
         let mut plan = Plan::new(
             &typography_preset::state_directory(),
             target,
-            profile.as_ref().ok().map(|p| p.0.clone()),
+            (scope.palette || scope.typography || scope.layout)
+                .then(|| profile.as_ref().ok().map(|p| p.0.clone()))
+                .flatten(),
         );
         let palette = (|| {
+            scope.require(crate::design_document::Action::Palette)?;
             let installer = self
                 .ptyxis_installer
                 .clone()
                 .ok_or("Ptyxis palette directory unavailable.")?;
-            let name = self.palette_file_name();
+            let name = self.scheme_palette_name();
             let path = installer.palette_dir().join(&name);
             let before = typography_preset::read_private_with_limit(&path, 256 * 1024)?;
             let errors = lint_palette(&workspace.palette()?, Target::Codex)
@@ -133,10 +144,11 @@ impl Workbench {
         })();
         add(&mut plan, "palette", "Palette · install", palette);
         let activation = (|| {
+            scope.require(crate::design_document::Action::Palette)?;
             let (uuid, _) = profile.as_ref().map_err(Clone::clone)?;
             let request = scheme_apply::activation::Activation::prepare(
                 uuid,
-                self.palette_file_name().trim_end_matches(".palette"),
+                self.scheme_palette_name().trim_end_matches(".palette"),
                 workspace.light,
             )?;
             Ok((request.detail(), None, Action::Activate(request)))
@@ -148,6 +160,7 @@ impl Workbench {
             activation,
         );
         let typography = (|| {
+            scope.require(crate::design_document::Action::Typography)?;
             let (uuid, _) = profile.as_ref().map_err(Clone::clone)?;
             let settings = &workspace.typography;
             let font = self
@@ -170,11 +183,14 @@ impl Workbench {
             &mut plan,
             "layout",
             "Layout · supported settings",
-            layout_apply::ApplyRequest::discover(&workspace.layout)
+            scope
+                .require(crate::design_document::Action::Layout)
+                .and_then(|()| layout_apply::ApplyRequest::discover(&workspace.layout))
                 .map(|request| (request.detail(), None, Action::Layout(request))),
         );
         plan.items.push(Item { id: "preview-only", title: "Layout · preview only".into(), detail: "Exact content padding, tab bar and window spacing are saved in the workspace, but cannot be applied to Ptyxis. Preview animation is not a terminal setting.".into(), versions: None, action: None });
         let prompt = (|| {
+            scope.require(crate::design_document::Action::Prompt)?;
             let designer = self.prompt_source_selector.selected() == 1;
             let contents = if designer {
                 workspace.designer.to_starship_toml()
@@ -184,7 +200,17 @@ impl Workbench {
                     .clone()
                     .ok_or("No editable Starship configuration is loaded.")?
             };
-            if designer || self.starship_editor.detached.get() {
+            if let Some(file) = self.document_use.starship.borrow().clone() {
+                file.verify()?;
+                Ok((
+                    format!(
+                        "Update reviewed Starship file: {}\nPrivate backup; only existing shells using this file are affected. No startup integration is added.",
+                        file.path.display()
+                    ),
+                    Some((file.contents.clone(), contents.clone())),
+                    Action::Starship { file, contents },
+                ))
+            } else if designer || self.starship_editor.detached.get() {
                 let path = plan.directory.join("starship.toml");
                 Ok((
                     format!(
@@ -212,12 +238,83 @@ impl Workbench {
             &mut plan,
             "fastfetch",
             "Greeting · selected display effect",
-            self.prepare_greeting_action(),
+            scope
+                .require(crate::design_document::Action::Greeting)
+                .and_then(|()| self.prepare_greeting_action()),
         );
+        plan.items.retain(|item| match item.id {
+            "palette" | "activate" => scope.palette,
+            "typography" => scope.typography,
+            "layout" | "preview-only" => scope.layout,
+            "starship" => scope.prompt,
+            "fastfetch" => scope.greeting,
+            _ => false,
+        });
+        if self.typed.target.get() == Some(crate::design_document::TargetHint::Kitty) {
+            // The legacy Ptyxis executor is never a Kitty adapter.
+            plan.items.clear();
+        }
         plan
     }
 
     pub(super) fn request_scheme_apply(self: &Rc<Self>) {
+        if self.typed.target.get().is_none()
+            && !self.document_use.shared_review.get()
+            && self.typed.kind.get() != crate::design_document::Kind::Legacy
+        {
+            self.choose_document_use_target();
+            return;
+        }
+        if self.typed.target.get() == Some(crate::design_document::TargetHint::Kitty) {
+            self.use_kitty_design();
+            return;
+        }
+        if self.typed.kind.get() == crate::design_document::Kind::Legacy {
+            self.choose_document_copy();
+            return;
+        }
+        let design = match self.committed_design() {
+            Ok(d) => d,
+            Err(e) => {
+                self.toast(&e);
+                return;
+            }
+        };
+        let document_identity = self.typed.identity.get();
+        if design.scope().greeting {
+            let settings = self.greeting.settings();
+            let protocol = settings.presentation.resolve(
+                &settings,
+                self.greeting.presentation.binding.borrow().terminal,
+            );
+            if let Ok(spec) = protocol
+                && let Err(error) = design.require_greeting_target(spec.protocol)
+            {
+                let prompt = gtk::AlertDialog::builder()
+                    .message("This Greeting needs a different project target")
+                    .detail(error)
+                    .buttons(["Back to Design", "Create Project Copy…"])
+                    .cancel_button(0)
+                    .default_button(0)
+                    .modal(true)
+                    .build();
+                let weak = Rc::downgrade(self);
+                prompt.choose(
+                    Some(&self.window()),
+                    gio::Cancellable::NONE,
+                    move |answer| {
+                        if answer == Ok(1)
+                            && let Some(this) = weak
+                                .upgrade()
+                                .filter(|w| w.typed.identity.get() == document_identity)
+                        {
+                            this.choose_document_copy();
+                        }
+                    },
+                );
+                return;
+            }
+        }
         let workspace = match self.committed_workspace() {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -248,14 +345,19 @@ impl Workbench {
                 check
             })
             .collect();
-        let activate_available = plan.items[1].action.is_some();
-        let activate = checks[1].clone();
-        checks[0].connect_toggled(move |palette| {
-            activate.set_sensitive(palette.is_active() && activate_available);
-            if !palette.is_active() {
-                activate.set_active(false);
-            }
-        });
+        if let (Some(palette_index), Some(activate_index)) = (
+            plan.items.iter().position(|i| i.id == "palette"),
+            plan.items.iter().position(|i| i.id == "activate"),
+        ) {
+            let activate_available = plan.items[activate_index].action.is_some();
+            let activate = checks[activate_index].clone();
+            checks[palette_index].connect_toggled(move |palette| {
+                activate.set_sensitive(palette.is_active() && activate_available);
+                if !palette.is_active() {
+                    activate.set_active(false);
+                }
+            });
+        }
         let cancel = gtk::Button::with_label("Cancel");
         let confirm = gtk::Button::with_label("Back Up & Apply Selected");
         confirm.set_sensitive(false);
@@ -274,6 +376,15 @@ impl Workbench {
                 }
             });
         }
+        if self.typed.kind.get() == crate::design_document::Kind::Palette {
+            // The ordinary palette path includes installation and activation;
+            // either can still be explicitly unchecked for advanced install-only.
+            for check in &checks {
+                if check.is_sensitive() {
+                    check.set_active(true);
+                }
+            }
+        }
         buttons.append(&cancel);
         buttons.append(&confirm);
         let weak = window.downgrade();
@@ -285,13 +396,27 @@ impl Workbench {
         let weak_window = window.downgrade();
         let reviewed_target = self.greeting.presentation.binding.borrow().clone();
         let reviewed_key = self.greeting_verification_key();
+        let reviewed_starship = self
+            .document_use
+            .starship
+            .borrow()
+            .as_ref()
+            .map(|f| (f.path.clone(), f.contents.clone()));
+        let reviewed_fastfetch = self
+            .greeting
+            .fastfetch_target
+            .borrow()
+            .as_ref()
+            .map(|f| (f.path.clone(), f.expected.clone()));
         let weak = Rc::downgrade(self);
         let plan = RefCell::new(Some(plan));
         confirm.connect_clicked(move |_| {
             let Some(this) = weak.upgrade() else { return; };
             let Some(plan) = plan.borrow_mut().take() else { return; };
             if let Some(window) = weak_window.upgrade() { window.destroy(); }
-            if this.committed_workspace().is_err() || this.workspace_snapshot() != workspace || *this.greeting.presentation.binding.borrow() != reviewed_target || this.greeting_verification_key().ok() != reviewed_key.clone().ok() {
+            if this.typed.identity.get() != document_identity || this.committed_design().ok().as_ref() != Some(&design)
+                || (design.scope().prompt && this.document_use.starship.borrow().as_ref().map(|f| (f.path.clone(), f.contents.clone())) != reviewed_starship)
+                || (design.scope().greeting && (this.greeting.fastfetch_target.borrow().as_ref().map(|f| (f.path.clone(), f.expected.clone())) != reviewed_fastfetch || *this.greeting.presentation.binding.borrow() != reviewed_target || this.greeting_verification_key().ok() != reviewed_key.clone().ok())) {
                 this.toast("Workspace changed during review. Review the scheme again; nothing was applied.");
                 return;
             }
@@ -307,6 +432,7 @@ impl Workbench {
                 Ok((directory, report)) => {
                     let succeeded = |id| report.items.iter().any(|row| row.id == id && matches!(row.status, Status::Applied | Status::Unchanged));
                     if succeeded("starship") && let Some((path, contents)) = binding && let Ok(file) = crate::starship_file::FileSnapshot::bind(&path, &contents) {
+                        if this.document_use.starship.borrow().is_some() { *this.document_use.starship.borrow_mut() = Some(file.clone()); }
                         this.starship_editor.accept_saved(document, file);
                     }
                     if succeeded("fastfetch") && let Some(target) = fastfetch { this.accept_scheme_fastfetch(target); }
@@ -359,47 +485,62 @@ impl Workbench {
             ));
             body.append(&details);
         }
-        body.append(&label(&format!("Application record: {}\n\nVerify in a new Ptyxis window using the profile above. Font is Ptyxis-wide; grid size affects new windows. Starship requires an existing shell integration, and Fastfetch requires an existing startup hook or a manual run with the reviewed config. Export-only and preview-only items do not take effect automatically.", directory.display())));
+        body.append(&label(&format!("Application record: {}\nOnly the reviewed items were changed. A native update does not add a shell startup hook. Independent Kitty sessions are opened from their own entry library.", directory.display())));
+        if report.profile_uuid.is_some() {
+            body.append(&label("Ptyxis appearance: use Open Profile Tab for the exact reviewed profile. Font settings are global; grid size affects new windows."));
+        }
         for row in &report.items {
-            if row.id == "fastfetch"
-                && matches!(
+            if row.id != "fastfetch"
+                || !matches!(
                     row.status,
                     Status::Applied | Status::Unchanged | Status::NotEnabled
                 )
-                && let Some(path) = &row.path
             {
-                body.append(&label(&format!("To verify this Greeting, run in that terminal:\nfastfetch --config {}\nThis runs the configuration, including any imported command/network modules.", shell_argument(&path.to_string_lossy()))));
-                if let Ok(target) = crate::fastfetch_apply::Target::open(path.clone())
-                    && target
-                        .source()
-                        .ok()
-                        .and_then(|s| crate::fastfetch_document::value(&s).ok())
-                        .is_some_and(|v| {
-                            v["logo"]["type"] == "data-raw"
-                                || v["logo"]["type"] == "data"
-                                || v["logo"]["type"] == "builtin"
-                        })
-                {
-                    let run = gtk::Button::with_label("Run applied character greeting in Ptyxis");
-                    let weak = Rc::downgrade(self);
-                    run.connect_clicked(move |_| {
-                        if let Some(this) = weak.upgrade() {
-                            let target = target.clone();
-                            let weak = Rc::downgrade(&this);
-                            gtk::AlertDialog::builder()
-                                .message("Run the complete applied configuration?")
-                                .detail("Unlike the safe trial, this executes imported command/network modules. Shell startup will not be loaded.")
-                                .buttons(["Cancel", "Run Once"])
-                                .cancel_button(0).default_button(0).modal(true).build()
-                                .choose(Some(&this.window()), gio::Cancellable::NONE, move |result| {
-                                    if result == Ok(1) && let Some(this) = weak.upgrade()
-                                        && let Err(error) = crate::fastfetch_run::launch(&target) { this.toast(&error); }
-                                });
-                        }
-                    });
-                    body.append(&run);
-                }
+                continue;
             }
+            let Some(path) = &row.path else {
+                continue;
+            };
+            let Ok(target) = crate::fastfetch_apply::Target::open(path.clone()) else {
+                continue;
+            };
+            let selection =
+                gtk::DropDown::from_strings(&["Choose terminal…", "Kitty", "Ptyxis", "Xterm"]);
+            selection
+                .update_property(&[gtk::accessible::Property::Label("Open applied Greeting in")]);
+            body.append(&selection);
+            let run = gtk::Button::with_label("Review & Run Applied Greeting…");
+            body.append(&run);
+            let weak = Rc::downgrade(self);
+            run.connect_clicked(move |_| {
+                let Some(this) = weak.upgrade() else { return; };
+                let terminal = match selection.selected() {
+                    1 => crate::pixel_trial::Terminal::Kitty,
+                    2 => crate::pixel_trial::Terminal::Ptyxis,
+                    3 => crate::pixel_trial::Terminal::Xterm,
+                    _ => { this.toast("Choose the real target terminal first. A configuration path does not select a terminal."); return; }
+                };
+                let source = match target.check().and_then(|()| target.source()) { Ok(s) => s, Err(e) => { this.toast(&e); return; } };
+                let (review, body, buttons) = dialog(&this.window(), "Run Applied Native Configuration", &format!("Target: {}\n{}", terminal.label(), target.path.display()));
+                body.append(&label("This executes the exact full configuration below, including its command/network modules and preRun. It is NOT the safe trial projection. Original shell startup is not loaded; it runs once in a new terminal."));
+                body.append(&versions("Not executed yet", &source));
+                let cancel = gtk::Button::with_label("Cancel");
+                let dismissed = review.downgrade();
+                cancel.connect_clicked(move |_| { if let Some(window) = dismissed.upgrade() { window.destroy(); } });
+                buttons.append(&cancel);
+                let confirm = gtk::Button::with_label("Run This Configuration Once");
+                buttons.append(&confirm);
+                let target = target.clone(); let weak = Rc::downgrade(&this); let win = review.downgrade();
+                confirm.connect_clicked(move |_| {
+                    if let Some(this) = weak.upgrade() {
+                        match crate::fastfetch_run::launch_in(&target, terminal) {
+                            Ok(()) => { if let Some(win) = win.upgrade() { win.close(); } this.toast("Target process started. Check that terminal for rendering or runtime errors."); }
+                            Err(e) => this.toast(&e),
+                        }
+                    }
+                });
+                review.present();
+            });
         }
         let close = gtk::Button::with_label("Close");
         let restore = gtk::Button::with_label("Restore This Application…");
@@ -495,6 +636,7 @@ fn profile_command(uuid: &str) -> Result<std::process::Command, String> {
     Ok(command)
 }
 
+#[cfg(test)]
 fn shell_argument(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -543,7 +685,7 @@ fn add(plan: &mut Plan, id: &'static str, title: &str, prepared: Prepared) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::window::greeting::tests::{controller, descendants, settle};
+    use crate::window::greeting::tests::{descendants, project_controller as controller, settle};
 
     fn memory_profile() -> (gio::Settings, gio::Settings) {
         assert_eq!(
@@ -806,9 +948,18 @@ mod tests {
                 .iter()
                 .any(|r| r.id == "starship" && r.status == Status::Exported)
         );
+        let applied_name = this
+            .scheme_plan(&this.workspace_snapshot())
+            .items
+            .into_iter()
+            .find_map(|item| match item.action {
+                Some(Action::Palette { name, .. }) => Some(name),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(
             profile.string("palette"),
-            this.palette_file_name().trim_end_matches(".palette")
+            applied_name.trim_end_matches(".palette")
         );
         assert!(directory.join("starship.toml").is_file());
         button(&result, "Close").emit_clicked();

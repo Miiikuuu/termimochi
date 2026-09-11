@@ -9,7 +9,7 @@ if [[ ! -x "$task_binary" ]]; then
   exit 1
 fi
 if [[ "${1:-}" == "--help" ]]; then
-  echo 'Usage: bash scripts/run-isolated.sh [--session EXISTING_DIRECTORY] [COPY.termimochi.json]'
+  echo 'Usage: bash scripts/run-isolated.sh [--session EXISTING_DIRECTORY] [DESIGN_OR_NATIVE_COPY]'
   echo 'Creates or reuses state under target/qa. Never install from this test session.'
   exit 0
 fi

@@ -19,6 +19,9 @@ fn plain_report_line(line: &str) -> String {
 }
 
 impl Workbench {
+    pub(in crate::window) fn detach_greeting_target(&self) {
+        self.greeting.fastfetch_target.borrow_mut().take();
+    }
     pub(in crate::window) fn prepare_scheme_fastfetch(
         &self,
     ) -> Result<(fastfetch_apply::Target, String), String> {
@@ -31,13 +34,9 @@ impl Workbench {
             .borrow()
             .clone()
             .map(Ok)
-            .unwrap_or_else(|| {
-                fastfetch_apply::last_path(&self.greeting.fastfetch_state).and_then(|path| {
-                    fastfetch_apply::Target::open(
-                        path.unwrap_or_else(fastfetch_apply::default_path),
-                    )
-                })
-            })?;
+            // A previous document's recovery receipt is not a target binding.
+            // The default shared path is snapshotted and explicitly reviewed.
+            .unwrap_or_else(|| fastfetch_apply::Target::open(fastfetch_apply::default_path()))?;
         target.check()?;
         Ok((target, source))
     }
@@ -51,6 +50,9 @@ impl Workbench {
     }
 
     pub(in crate::window) fn load_fastfetch_path(self: &Rc<Self>, path: PathBuf) {
+        if !self.require_document_action("import-fastfetch") {
+            return;
+        }
         self.load_fastfetch(path, false);
     }
 
@@ -173,9 +175,15 @@ impl Workbench {
         );
     }
     pub(in crate::window) fn request_fastfetch_apply(self: &Rc<Self>) {
+        if !self.require_document_action("apply-fastfetch") {
+            return;
+        }
         self.request_scheme_apply();
     }
     pub(in crate::window) fn request_fastfetch_restore(self: &Rc<Self>) {
+        if !self.require_document_action("restore-fastfetch") {
+            return;
+        }
         let plan = match fastfetch_apply::prepare_restore(&self.greeting.fastfetch_state) {
             Ok(plan) => plan,
             Err(error) => {

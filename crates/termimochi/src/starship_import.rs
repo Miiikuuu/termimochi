@@ -168,7 +168,7 @@ fn read_config(path: &Path) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "Starship configuration is not UTF-8.".to_owned())
 }
 
-fn prepare_config(source: &str) -> Result<(String, Vec<String>), String> {
+pub(crate) fn prepare_config(source: &str) -> Result<(String, Vec<String>), String> {
     let original: Table =
         toml::from_str(source).map_err(|error| format!("Invalid Starship TOML: {error}"))?;
     let mut safe = Table::new();

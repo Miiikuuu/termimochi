@@ -1,4 +1,5 @@
 mod color_picker;
+mod design_document;
 mod document_store;
 mod fastfetch_apply;
 mod fastfetch_document;
@@ -10,6 +11,8 @@ mod greeting_image;
 mod greeting_official;
 mod greeting_output;
 mod greeting_startup;
+mod kitty_document;
+mod kitty_session;
 mod layout;
 mod layout_apply;
 mod pixel_trial;

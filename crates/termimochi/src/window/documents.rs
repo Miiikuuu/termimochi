@@ -29,7 +29,7 @@ impl Workbench {
         self.refresh_preview();
     }
 
-    fn committed_layout(&self) -> Result<LayoutSettings, String> {
+    pub(super) fn committed_layout(&self) -> Result<LayoutSettings, String> {
         for input in [
             &self.content_padding_input,
             &self.column_count_input,
@@ -44,6 +44,9 @@ impl Workbench {
     }
 
     pub(super) fn save_layout_preset(&self) {
+        if !self.require_document_action("save-layout") {
+            return;
+        }
         let result = self.committed_layout().and_then(|settings| {
             self.layout_store
                 .borrow_mut()
@@ -103,6 +106,9 @@ impl Workbench {
     }
 
     pub(super) fn choose_layout_export(self: &Rc<Self>) {
+        if !self.require_document_action("export-layout") {
+            return;
+        }
         let settings = match self.committed_layout() {
             Ok(settings) => settings,
             Err(error) => {
@@ -139,31 +145,6 @@ impl Workbench {
                 }
             },
         );
-    }
-
-    pub(super) fn choose_layout_open(self: &Rc<Self>) {
-        let dialog = Self::document_dialog::<LayoutPreset>("Open Layout Preset");
-        let weak = Rc::downgrade(self);
-        dialog.open(Some(&self.window()), gio::Cancellable::NONE, move |result| {
-            let Some(this) = weak.upgrade() else { return; };
-            match result {
-                Ok(file) => {
-                    let result = file.path().ok_or("Only local files can be opened.".into())
-                        .and_then(DocumentStore::<LayoutPreset>::open)
-                        .and_then(|store| store.document())
-                        .and_then(|preset| preset.ok_or("The layout file no longer exists.".into()));
-                    match result {
-                        Ok(preset) => this.confirm_layout_discard(move |this| {
-                            this.set_layout_settings(preset.layout, true);
-                            this.toast("Layout opened. Save Preset to remember it for the next launch.");
-                        }),
-                        Err(error) => this.toast(&format!("Could not open layout: {error}")),
-                    }
-                }
-                Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
-                Err(error) => this.toast(&error.to_string()),
-            }
-        });
     }
 
     fn confirm_replace(
@@ -207,6 +188,9 @@ impl Workbench {
     }
 
     pub(super) fn request_layout_apply(self: &Rc<Self>) {
+        if !self.require_document_action("apply-layout") {
+            return;
+        }
         let request = match self
             .committed_layout()
             .and_then(|settings| layout_apply::ApplyRequest::discover(&settings))
@@ -217,6 +201,10 @@ impl Workbench {
                 return;
             }
         };
+        let reviewed_identity = self.typed.identity.get();
+        let reviewed_target = self.typed.target.get();
+        let reviewed_scope = self.typed.scope.get();
+        let reviewed_settings = self.layout_settings();
         let dialog = gtk::AlertDialog::builder()
             .message("Apply layout to Ptyxis?")
             .detail(request.detail())
@@ -236,6 +224,15 @@ impl Workbench {
                 let Some(this) = weak.upgrade() else {
                     return;
                 };
+                if this.typed.identity.get() != reviewed_identity
+                    || this.typed.target.get() != reviewed_target
+                    || this.typed.scope.get() != reviewed_scope
+                    || !this.allows_document_action("apply-layout")
+                    || this.committed_layout().ok() != Some(reviewed_settings)
+                {
+                    this.toast("Document, target or layout changed during review. Review again; nothing was applied.");
+                    return;
+                }
                 match request.apply(&typography_preset::state_directory()) {
                     Ok(Some(backup)) => this.toast(&format!(
                         "Layout applied. Window size affects new Ptyxis windows. Backup: {}",
@@ -251,6 +248,9 @@ impl Workbench {
     }
 
     pub(super) fn request_layout_restore(self: &Rc<Self>) {
+        if !self.require_document_action("restore-layout") {
+            return;
+        }
         let request = match layout_apply::RestoreRequest::load(&typography_preset::state_directory())
         {
             Ok(request) => request,
@@ -324,104 +324,27 @@ impl Workbench {
     }
 
     pub(super) fn workspace_is_clean(&self) -> bool {
-        !self.has_draft()
-            && !self.greeting.presentation_pending()
-            && !self.greeting.invalid.get()
-            && !self.starship_editor.invalid()
-            && self
-                .workspace_baseline
-                .borrow()
-                .as_ref()
-                .is_some_and(|saved| *saved == self.workspace_snapshot())
+        self.design_clean()
     }
 
     pub(super) fn refresh_workspace_title(&self) {
-        let path = self
-            .workspace_store
-            .borrow()
-            .as_ref()
-            .map(|store| store.path.clone());
-        if let Some(path) = path {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            let dirty = if self.workspace_is_clean() {
-                ""
-            } else {
-                " • Modified"
-            };
-            self.window()
-                .set_title(Some(&format!("{name} — TermiMochi{dirty}")));
-            self.brand_title
-                .set_tooltip_text(Some(&format!("{}{}", path.display(), dirty)));
-        }
+        self.refresh_design_title();
     }
 
     pub(super) fn has_unsaved_setup(&self) -> bool {
-        if self.workspace_is_clean() {
-            return false;
-        }
-        self.workspace_baseline.borrow().is_some()
-            || self.model.borrow().dirty
-            || self.has_draft()
-            || self.prompt_has_unexported_changes()
-            || self.typography_dirty()
-            || self.layout_dirty()
-            || self.greeting.dirty()
+        !self.design_clean()
     }
 
     pub(super) fn committed_workspace(&self) -> Result<Workspace, String> {
-        self.greeting.require_presentation_ready()?;
-        self.greeting.finish();
-        self.settle_active_edit();
-        self.committed_typography()?;
-        self.committed_layout()?;
-        if self.has_draft() || self.starship_editor.invalid() || self.greeting.invalid.get() {
-            return Err("Fix the highlighted fields before saving the workspace.".into());
-        }
-        // Capture the imported source once, then keep the portable document
-        // independent of asynchronous discovery and host configuration changes.
-        if !self.workspace_prompt_loaded.get() {
-            if self.preview_loading.get() && self.starship_editor.draft.borrow().is_none() {
-                return Err(
-                    "The current prompt is still loading. Try saving again in a moment.".into(),
-                );
-            }
-            let navigating = self.navigating_preview.replace(true);
-            self.ensure_starship_copy();
-            self.navigating_preview.set(navigating);
-        }
-        let snapshot = self.workspace_snapshot();
-        snapshot.validate()?;
-        Ok(snapshot)
+        self.committed_design()?;
+        Ok(self.workspace_snapshot())
     }
 
     pub(super) fn save_workspace(self: &Rc<Self>) {
-        if self.workspace_store.borrow().is_none() {
-            self.choose_workspace_save_as();
-            return;
-        }
-        let result = self.committed_workspace().and_then(|snapshot| {
-            self.workspace_store
-                .borrow_mut()
-                .as_mut()
-                .ok_or("No workspace is open.")?
-                .save(&snapshot)?;
-            *self.workspace_baseline.borrow_mut() = Some(snapshot);
-            self.workspace_prompt_loaded.set(true);
-            Ok(())
-        });
-        self.finish_workspace_save(result);
+        self.save_design(false);
     }
 
-    fn finish_workspace_save(&self, result: Result<(), String>) {
-        match result {
-            Ok(()) => {
-                self.refresh_all();
-                self.toast("Workspace saved: colors, typography, layout, prompt and greeting. Terminal settings are unchanged.");
-            }
-            Err(error) => self.toast(&format!("Could not save workspace: {error}")),
-        }
-    }
-
+    #[cfg(test)]
     pub(super) fn save_workspace_path(
         &self,
         path: PathBuf,
@@ -432,61 +355,21 @@ impl Workbench {
         *self.workspace_store.borrow_mut() = Some(store);
         *self.workspace_baseline.borrow_mut() = Some(snapshot);
         self.workspace_prompt_loaded.set(true);
+        // Test-only v1 storage fixture tracks the corresponding owned design
+        // baseline; production Save routes through save_design instead.
+        *self.typed.baseline.borrow_mut() = self.design_snapshot().ok();
         Ok(())
     }
 
     pub(super) fn choose_workspace_save_as(self: &Rc<Self>) {
-        let snapshot = match self.committed_workspace() {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                self.toast(&error);
-                return;
-            }
-        };
-        let dialog = Self::document_dialog::<Workspace>("Save Complete Workspace");
-        dialog.set_initial_name(Some("my-setup.termimochi.json"));
-        let weak = Rc::downgrade(self);
-        dialog.save(
-            Some(&self.window()),
-            gio::Cancellable::NONE,
-            move |result| {
-                let Some(this) = weak.upgrade() else {
-                    return;
-                };
-                match result {
-                    Ok(file) => {
-                        let result = file
-                            .path()
-                            .ok_or("Only local workspaces can be saved.".into())
-                            .and_then(|path| this.save_workspace_path(path, snapshot));
-                        this.finish_workspace_save(result);
-                    }
-                    Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
-                    Err(error) => this.toast(&error.to_string()),
-                }
-            },
-        );
+        self.save_design(true);
     }
 
     pub(super) fn choose_workspace_open(self: &Rc<Self>) {
-        let dialog = Self::document_dialog::<Workspace>("Open Complete Workspace");
-        let weak = Rc::downgrade(self);
-        dialog.open(Some(&self.window()), gio::Cancellable::NONE, move |result| {
-            let Some(this) = weak.upgrade() else { return; };
-            match result {
-                Ok(file) => {
-                    let Some(path) = file.path() else { this.toast("Only local workspaces can be opened."); return; };
-                    this.settle_active_edit();
-                    if this.has_unsaved_setup() {
-                        this.confirm_replace("Replace the current setup?", "Unsaved colors, typography, layout, prompt and greeting edits will be lost. Save Workspace first to keep the complete setup.", move |this| this.open_workspace_path(&path));
-                    } else { this.open_workspace_path(&path); }
-                }
-                Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
-                Err(error) => this.toast(&error.to_string()),
-            }
-        });
+        self.choose_design_open();
     }
 
+    #[cfg(test)]
     pub(super) fn open_workspace_path(self: &Rc<Self>, path: &Path) {
         let result = DocumentStore::<Workspace>::open(path.to_owned()).and_then(|store| {
             let snapshot = store
@@ -542,6 +425,7 @@ impl Workbench {
         if snapshot.greeting.enabled {
             self.show_greeting_preview();
         }
+        *self.typed.baseline.borrow_mut() = self.design_snapshot().ok();
         self.toast("Workspace opened. Terminal settings and shell files were not changed.");
     }
 }
@@ -588,13 +472,7 @@ mod tests {
 
     fn workbench(app: &adw::Application) -> Rc<Workbench> {
         let window = app.active_window().unwrap();
-        let this = unsafe {
-            window
-                .data::<Rc<Workbench>>("termimochi-workbench")
-                .unwrap()
-                .as_ref()
-                .clone()
-        };
+        let this = crate::window::greeting::tests::project_controller(&window);
         settle();
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while this.preview_loading.get() {
@@ -634,7 +512,7 @@ mod tests {
                 .menu_model()
                 .unwrap()
                 .item_attribute_value(0, "label", None),
-            Some("Save Workspace".to_variant())
+            Some("Save Design".to_variant())
         );
         this.content_padding_input.set_value(17.0);
         this.column_count_input.set_value(93.0);
@@ -790,7 +668,16 @@ mod tests {
             .save(&external_workspace)
             .unwrap();
         this.font_size_input.set_value(17.0);
-        this.save_workspace();
+        // This subsection exercises the retained v1 storage conflict contract,
+        // not current Save (which correctly saves a typed design instead).
+        assert!(
+            this.workspace_store
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .save(&this.workspace_snapshot())
+                .is_err()
+        );
         assert!(
             !this.workspace_is_clean(),
             "conflicted save cannot mark clean"

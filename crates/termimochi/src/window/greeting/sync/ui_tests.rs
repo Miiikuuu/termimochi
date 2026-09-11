@@ -1,5 +1,7 @@
 use super::*;
-use crate::window::greeting::tests::{controller, feed, respond, settle, wait_official};
+use crate::window::greeting::tests::{
+    feed, project_controller as controller, respond, settle, wait_official,
+};
 use std::os::unix::fs::PermissionsExt;
 
 fn wait_sync(this: &Workbench) {
@@ -132,6 +134,11 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     assert_eq!(this.greeting.settings(), loaded);
     assert!(!this.greeting.sync.root.is_visible());
     assert!(this.greeting.fastfetch_target.borrow().is_none());
+
+    // A fresh document cannot inherit another document's target receipt.
+    // Explicitly select the isolated native file before testing its conflict.
+    *this.greeting.fastfetch_target.borrow_mut() =
+        Some(crate::fastfetch_apply::Target::open(external.clone()).unwrap());
 
     // Apply without Save Preset; cancellation and destination conflicts must
     // not persist the draft or request a terminal launch.

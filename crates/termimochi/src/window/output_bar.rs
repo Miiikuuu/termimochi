@@ -5,6 +5,7 @@ pub(super) struct OutputBar {
     pub root: gtk::Box,
     title: gtk::Label,
     primary: gtk::Button,
+    trial: gtk::Button,
     more: gtk::MenuButton,
     module: Cell<Option<EditorModule>>,
     designer: Cell<bool>,
@@ -54,6 +55,7 @@ impl OutputBar {
             root,
             title,
             primary,
+            trial,
             more,
             module: Cell::new(None),
             designer: Cell::new(false),
@@ -62,7 +64,7 @@ impl OutputBar {
 }
 
 impl Workbench {
-    fn output_module(&self) -> EditorModule {
+    pub(super) fn output_module(&self) -> EditorModule {
         if self.greeting_module_button.is_active() {
             EditorModule::Greeting
         } else if self.prompt_module_button.is_active() {
@@ -78,6 +80,12 @@ impl Workbench {
 
     pub(super) fn refresh_output_bar(&self) {
         let presentation = &self.greeting.presentation;
+        self.output_bar
+            .trial
+            .set_visible(self.typed.scope.get().greeting || self.typed.scope.get().artwork);
+        presentation
+            .target_bar
+            .set_visible(self.typed.scope.get().greeting || self.typed.scope.get().artwork);
         if presentation.target_bar.parent().is_none() {
             self.output_bar.root.prepend(&presentation.target_bar);
         }
@@ -195,6 +203,7 @@ impl Workbench {
         let designer =
             self.prompt_source_selector.selected() == 1 || self.starship_editor.detached.get();
         let bar = &self.output_bar;
+        bar.title.set_text(self.typed.kind.get().label());
         if bar.module.get() == Some(module) && bar.designer.get() == designer {
             return;
         }
@@ -256,7 +265,7 @@ impl Workbench {
             more.append_item(&item);
         }
         save.append(
-            Some("Save Workspace"),
+            Some("Save Design"),
             Some(if module == EditorModule::Prompt {
                 "win.save"
             } else {
@@ -264,14 +273,29 @@ impl Workbench {
             }),
         );
         save.append(
-            Some("Save Workspace As…"),
+            Some("Save Design As…"),
             Some(if module == EditorModule::Prompt {
                 "win.save-as"
             } else {
                 "win.save-workspace-as"
             }),
         );
-        more.append(Some("Open Workspace…"), Some("win.open-workspace"));
+        more.append(Some("Open Document…"), Some("win.open-workspace"));
+        more.append(Some("New Document…"), Some("win.new-document"));
+        more.append(Some("Export Native Copy…"), Some("win.export-native"));
+        more.append(
+            Some("Document Capabilities…"),
+            Some("win.document-capabilities"),
+        );
+        more.append(Some("Choose Use Target…"), Some("win.document-target"));
+        more.append(
+            Some("Create Project / Convert Copy…"),
+            Some("win.document-copy"),
+        );
+        more.append(
+            Some("Open Independent Kitty Scheme…"),
+            Some("win.kitty-library"),
+        );
         more.append(
             Some("Last Application & Recovery…"),
             Some("win.last-scheme-application"),
@@ -352,10 +376,12 @@ impl Workbench {
                 more.append(Some("Terminal Startup…"), Some("win.greeting-startup"));
             }
         }
-        bar.title.set_text("");
-        bar.primary.set_label("Apply Scheme…");
+        bar.title.set_text(self.typed.kind.get().label());
+        bar.primary.set_label("Use Design…");
         bar.primary.set_action_name(Some("win.apply-scheme"));
-        bar.primary.set_tooltip_text(Some("Review destinations and choose which workspace modules to apply. Saving never applies external settings."));
+        bar.primary.set_tooltip_text(Some(
+            "Use only this document's content in its explicit target. Review before any writes.",
+        ));
         bar.more.set_tooltip_text(Some(detail));
         bar.primary
             .update_property(&[gtk::accessible::Property::Label(&format!(
@@ -364,7 +390,7 @@ impl Workbench {
             ))]);
         self.save_button.set_menu_model(Some(&save));
         self.save_button
-            .set_tooltip_text(Some("Save the complete scheme · Ctrl+S"));
+            .set_tooltip_text(Some("Save the current design document · Ctrl+S"));
         bar.more.set_menu_model(Some(&more));
     }
 }
@@ -372,7 +398,7 @@ impl Workbench {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::window::greeting::tests::{controller, descendants, settle};
+    use crate::window::greeting::tests::{descendants, project_controller as controller, settle};
 
     #[test]
     #[ignore = "isolated GTK/VTE: resolved output status agrees with the reviewed action"]
@@ -389,7 +415,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
         let window = app.active_window().unwrap();
-        let this = controller(&window);
+        let this = crate::window::greeting::tests::greeting_controller(&window);
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         while this.preview_loading.get() {
             assert!(std::time::Instant::now() < deadline);
@@ -530,7 +556,7 @@ mod tests {
         settle();
         assert_eq!(
             this.output_bar.primary.label().as_deref(),
-            Some("Apply Scheme…")
+            Some("Use Design…")
         );
         assert_eq!(
             this.output_bar.primary.action_name().as_deref(),
@@ -545,7 +571,7 @@ mod tests {
         this.save_button.popup();
         settle();
         this.save_button.popdown();
-        // Ctrl+S saves a local workspace, not the active Starship file.
+        // Ctrl+S saves the explicitly owned project, not the active Starship file.
         let starship = root.path().join("starship.toml");
         let source = "[rust]\nsymbol = 'rs '\nstyle = 'bold red'\n";
         std::fs::write(&starship, source).unwrap();
@@ -555,9 +581,9 @@ mod tests {
         this.prompt_source_selector.set_selected(0);
         this.starship_editor.select_module("rust");
         this.starship_editor.symbol.set_text("rust ");
-        let workspace = root.path().join("saved.termimochi.json");
-        this.save_workspace_path(workspace.clone(), this.workspace_snapshot())
-            .unwrap();
+        let workspace = root.path().join("saved.termimochi-design.json");
+        *this.typed.store.borrow_mut() = Some(DocumentStore::open(workspace.clone()).unwrap());
+        this.save_design(false);
         this.starship_editor.symbol.set_text("crab ");
         this.save_action.activate(None);
         settle();
@@ -566,12 +592,12 @@ mod tests {
             this.starship_editor.dirty(),
             "workspace save must not mark external Starship applied"
         );
-        let stored = DocumentStore::<Workspace>::open(workspace)
+        let stored = DocumentStore::<crate::design_document::DesignDocument>::open(workspace)
             .unwrap()
             .document()
             .unwrap()
             .unwrap();
-        assert_eq!(stored, this.workspace_snapshot());
+        assert_eq!(stored, this.design_snapshot().unwrap());
         assert_eq!(
             this.open_button.tooltip_text().as_deref(),
             Some("Open a complete workspace  Ctrl+O")

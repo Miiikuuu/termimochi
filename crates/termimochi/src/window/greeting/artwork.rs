@@ -52,7 +52,24 @@ impl Workbench {
         }
     }
     pub(in crate::window) fn choose_greeting_art_import(self: &Rc<Self>) {
+        if !self.require_document_action("import-greeting-art") {
+            return;
+        }
         self.choose_artwork_file(false);
+    }
+    pub(in crate::window) fn open_artwork_document_source(self: &Rc<Self>, path: PathBuf) {
+        if !self.require_document_action("import-greeting-art") {
+            return;
+        }
+        let before = self.greeting.settings();
+        if crate::greeting_image::is_image(&path) {
+            self.open_image_artwork(before, path);
+        } else {
+            match greeting_art::file_art(&path) {
+                Ok(art) => self.confirm_greeting_art(before, art),
+                Err(error) => self.toast(&error),
+            }
+        }
     }
     pub(super) fn choose_original_image(self: &Rc<Self>) {
         self.choose_artwork_file(true);
@@ -191,6 +208,9 @@ impl Workbench {
         );
     }
     pub(in crate::window) fn edit_greeting_art_text(self: &Rc<Self>) {
+        if !self.require_document_action("edit-greeting-art-text") {
+            return;
+        }
         if self.greeting.invalid.get() {
             self.toast("Fix the invalid field first.");
             return;
@@ -211,6 +231,9 @@ impl Workbench {
         self.toast("Plain-text editing enabled. Undo restores the original colors.");
     }
     pub(in crate::window) fn choose_greeting_art_export(self: &Rc<Self>, ansi: bool) {
+        if !self.require_document_action("export-greeting-ans") {
+            return;
+        }
         if let Err(error) = self.greeting.require_presentation_ready() {
             self.toast(&error);
             return;
@@ -338,7 +361,9 @@ impl Workbench {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{controller, feed, respond, settle, wait_official};
+    use super::super::tests::{
+        feed, project_controller as controller, respond, settle, wait_official,
+    };
     use super::*;
     use serde_json::json;
 

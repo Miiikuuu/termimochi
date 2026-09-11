@@ -159,6 +159,17 @@ impl PixelExport {
         let Some(image) = self.image.borrow().clone() else {
             return;
         };
+        let settings = match workbench.design_snapshot().and_then(|document| {
+            document
+                .greeting_output()
+                .ok_or_else(|| "This document does not own artwork or Greeting output.".into())
+        }) {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.status.set_label(&error);
+                return;
+            }
+        };
         self.invalidate_trial();
         // A new trial supersedes old positive evidence, including if launch or
         // the user's new visual assessment fails. Never fall back to old approval.
@@ -172,7 +183,6 @@ impl PixelExport {
         self.refresh_trial_controls();
         self.status
             .set_label("Preparing a temporary terminal trial; daily configuration is untouched…");
-        let settings = self.before.clone();
         let protocol = self.protocol();
         let terminal = self.terminal();
         let columns = self.columns.value_as_int() as u32;

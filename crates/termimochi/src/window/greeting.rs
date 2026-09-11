@@ -55,6 +55,8 @@ type Changed = Box<dyn Fn()>;
 pub(super) struct GreetingEditor {
     pub presentation: presentation::PresentationEditor,
     pub root: gtk::ScrolledWindow,
+    artwork_only: Cell<bool>,
+    system_heading: gtk::Label,
     fields: fields::FieldInspector,
     appearance_group: gtk::Box,
     imported_list: gtk::Box,
@@ -62,7 +64,7 @@ pub(super) struct GreetingEditor {
     compatibility: gtk::Expander,
     report_body: gtk::Box,
     last_report: RefCell<Vec<String>>,
-    fastfetch_target: RefCell<Option<crate::fastfetch_apply::Target>>,
+    pub(in crate::window) fastfetch_target: RefCell<Option<crate::fastfetch_apply::Target>>,
     fastfetch_state: PathBuf,
     sync: sync::SyncNotice,
     enabled: gtk::Switch,
@@ -89,7 +91,7 @@ pub(super) struct GreetingEditor {
     artwork_card: gtk::Box,
     pub artwork_preview: Rc<art_preview::ArtPreview>,
     image_import_window: glib::WeakRef<gtk::Window>,
-    pixel_export_window: glib::WeakRef<gtk::Window>,
+    pub(in crate::window) pixel_export_window: glib::WeakRef<gtk::Window>,
     list: gtk::Box,
     rows: Vec<(Info, gtk::Box, gtk::Switch, gtk::Button, gtk::Button)>,
     pub status: gtk::Label,
@@ -469,6 +471,8 @@ impl GreetingEditor {
             report_body,
             last_report: RefCell::new(Vec::new()),
             fastfetch_target: RefCell::new(None),
+            artwork_only: Cell::new(false),
+            system_heading: title,
             fastfetch_state,
             sync,
             enabled,
@@ -522,6 +526,42 @@ impl GreetingEditor {
     }
     pub fn settings(&self) -> GreetingSettings {
         self.settings.borrow().clone()
+    }
+    pub(in crate::window) fn restrict_to_artwork(&self, only: bool) {
+        let was_only = self.artwork_only.replace(only);
+        if !only && !was_only {
+            return;
+        }
+        for widget in [
+            self.message.clone().upcast::<gtk::Widget>(),
+            self.enabled.clone().upcast(),
+            self.preset_note.clone().upcast(),
+            self.system_heading.clone().upcast(),
+            self.list.clone().upcast(),
+            self.official_list.clone().upcast(),
+            self.imported_list.clone().upcast(),
+            self.sync.root.clone().upcast(),
+        ] {
+            widget.set_visible(!only);
+            widget.set_sensitive(!only);
+        }
+        if let Some(row) = self.preset.parent() {
+            row.set_visible(!only);
+            row.set_sensitive(!only);
+        }
+        for widget in [
+            self.position.clone().upcast::<gtk::Widget>(),
+            self.accent.clone().upcast(),
+            self.gap.clone().upcast(),
+        ] {
+            if let Some(row) = widget.parent() {
+                row.set_visible(!only);
+                row.set_sensitive(!only);
+            }
+        }
+        if !only {
+            self.refresh();
+        }
     }
     pub fn dirty(&self) -> bool {
         self.presentation_pending()
@@ -1752,6 +1792,9 @@ impl Workbench {
         }
     }
     pub(super) fn save_greeting_preset(&self) {
+        if !self.require_document_action("save-greeting") {
+            return;
+        }
         let result = self.greeting.persist();
         match result {
             Ok(()) => {
@@ -1796,6 +1839,9 @@ impl Workbench {
         );
     }
     pub(super) fn reload_greeting_preset(self: &Rc<Self>) {
+        if !self.require_document_action("reload-greeting") {
+            return;
+        }
         let path = self
             .greeting
             .store
@@ -1831,39 +1877,10 @@ impl Workbench {
             .modal(true)
             .build()
     }
-    pub(super) fn choose_greeting_open(self: &Rc<Self>) {
-        let dialog = Self::greeting_dialog("Open Greeting Preset", "*.termimochi-greeting.json");
-        let weak = Rc::downgrade(self);
-        dialog.open(
-            Some(&self.window()),
-            gio::Cancellable::NONE,
-            move |result| {
-                let Some(this) = weak.upgrade() else {
-                    return;
-                };
-                match result {
-                    Ok(file) => match file
-                        .path()
-                        .ok_or("Choose a local preset.".into())
-                        .and_then(DocumentStore::<GreetingPreset>::open)
-                        .and_then(|store| store.document())
-                        .and_then(|p| p.ok_or("Preset no longer exists.".into()))
-                    {
-                        Ok(preset) => this.confirm_greeting_replace(move |this| {
-                            this.greeting.replace(preset.greeting, true);
-                            this.toast(
-                                "Greeting opened. Save Preset to remember it for next launch.",
-                            );
-                        }),
-                        Err(error) => this.toast(&error),
-                    },
-                    Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
-                    Err(error) => this.toast(&error.to_string()),
-                }
-            },
-        );
-    }
     pub(super) fn choose_greeting_export(self: &Rc<Self>, fastfetch: bool) {
+        if !self.require_document_action("export-greeting") {
+            return;
+        }
         if let Err(error) = self.greeting.require_presentation_ready() {
             self.toast(&error);
             return;
@@ -2032,7 +2049,7 @@ pub(super) mod tests {
         let root = tempfile::tempdir().unwrap();
         present_with_preset(&app, None, root.path().join(typography_preset::PRESET_NAME));
         let window = app.active_window().unwrap();
-        let this = controller(&window);
+        let this = project_controller(&window);
         settle();
         while this.preview_loading.get() {
             settle();
@@ -2245,6 +2262,36 @@ pub(super) mod tests {
                 .clone()
         }
     }
+    /// Legacy cross-module regressions explicitly own the original component
+    /// set. Keep `controller` raw for typed-document default/scope regressions.
+    pub(in crate::window) fn project_controller(window: &gtk::Window) -> Rc<Workbench> {
+        let this = controller(window);
+        explicit_project(&this);
+        this
+    }
+    pub(in crate::window) fn explicit_project(this: &Workbench) {
+        use crate::design_document::{Kind, Scope, TargetHint};
+        if this.typed.kind.get() == Kind::Palette {
+            this.typed.kind.set(Kind::Project);
+            this.typed.scope.set(Scope::for_kind(Kind::Legacy));
+            this.typed.target.set(Some(TargetHint::Ptyxis));
+            *this.typed.baseline.borrow_mut() = this.design_snapshot().ok();
+            this.refresh_document_scope();
+        }
+    }
+    /// Native Greeting transaction fixtures start after explicit target
+    /// selection; no unrelated appearance component belongs to these cases.
+    pub(in crate::window) fn greeting_controller(window: &gtk::Window) -> Rc<Workbench> {
+        use crate::design_document::{Kind, Scope};
+        let this = controller(window);
+        this.typed.kind.set(Kind::Greeting);
+        this.typed.scope.set(Scope::for_kind(Kind::Greeting));
+        this.typed.target.set(None);
+        this.document_use.shared_review.set(true);
+        *this.typed.baseline.borrow_mut() = this.design_snapshot().ok();
+        this.refresh_document_scope();
+        this
+    }
     pub(in crate::window) fn feed(this: &Workbench) -> String {
         this.preview_feed
             .borrow()
@@ -2254,6 +2301,8 @@ pub(super) mod tests {
     }
 
     pub(super) fn pointer(window: &gtk::Window, widget: &gtk::Widget, mode: &str) {
+        window.set_title(Some("TermiMochi point-to-edit test"));
+        gtk::prelude::WidgetExt::display(window).flush();
         let rect = widget.compute_bounds(window).unwrap();
         let (dx, dy) = window.surface_transform();
         let scale = f64::from(window.scale_factor());
@@ -2321,7 +2370,7 @@ pub(super) mod tests {
         present_with_preset(&app, None, path.clone());
         let window = app.active_window().unwrap();
         window.set_default_size(1320, 850);
-        let this = controller(&window);
+        let this = project_controller(&window);
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while this.preview_loading.get() {
             assert!(std::time::Instant::now() < deadline);
@@ -2383,7 +2432,7 @@ pub(super) mod tests {
         window.destroy();
         present_with_preset(&app, None, path.clone());
         let window = app.active_window().unwrap();
-        let this = controller(&window);
+        let this = project_controller(&window);
         assert_eq!(this.greeting.settings(), brand);
         this.greeting.preset.set_selected(0);
         this.greeting
@@ -2394,7 +2443,7 @@ pub(super) mod tests {
         window.destroy();
         present_with_preset(&app, None, path);
         let window = app.active_window().unwrap();
-        assert_eq!(controller(&window).greeting.settings(), custom);
+        assert_eq!(project_controller(&window).greeting.settings(), custom);
         assert!(custom.official_preset.is_none());
         window.destroy();
     }
@@ -2432,7 +2481,7 @@ pub(super) mod tests {
         present_with_preset(&app, None, path);
         let window = app.active_window().unwrap();
         window.set_default_size(1320, 850);
-        let this = controller(&window);
+        let this = project_controller(&window);
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
         this.preview_scene_selector.set_selected(3);
         wait_official(&this);
@@ -2510,7 +2559,7 @@ pub(super) mod tests {
         present_with_preset(&app, None, path.clone());
         let window = app.active_window().unwrap();
         window.set_default_size(1320, 850);
-        let this = controller(&window);
+        let this = project_controller(&window);
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while this.preview_loading.get() {
             assert!(std::time::Instant::now() < deadline);
@@ -2691,7 +2740,7 @@ pub(super) mod tests {
         window.destroy();
         present_with_preset(&app, None, path);
         let restored_window = app.active_window().unwrap();
-        let restored = controller(&restored_window);
+        let restored = project_controller(&restored_window);
         assert_eq!(restored.greeting.settings(), saved);
         assert!(!restored.greeting.dirty());
         restored_window.destroy();
@@ -2713,7 +2762,7 @@ pub(super) mod tests {
         let preset = root.path().join(typography_preset::PRESET_NAME);
         present_with_preset(&app, None, preset.clone());
         let window = app.active_window().unwrap();
-        let this = controller(&window);
+        let this = project_controller(&window);
         // Exercise the retained basic editor, independent of the new starter.
         this.greeting.replace(GreetingSettings::default(), false);
         *this.greeting.baseline.borrow_mut() = this.greeting.settings();
@@ -2738,7 +2787,7 @@ pub(super) mod tests {
                 .menu_model()
                 .unwrap()
                 .item_attribute_value(0, "label", None),
-            Some("Save Workspace".to_variant())
+            Some("Save Design".to_variant())
         );
         this.greeting.enabled.set_active(true);
         this.greeting.message.set_text("Hello 你好 🦀");
@@ -3009,7 +3058,7 @@ pub(super) mod tests {
         window.destroy();
         present_with_preset(&app, None, preset);
         let restored_window = app.active_window().unwrap();
-        let restored = controller(&restored_window);
+        let restored = project_controller(&restored_window);
         settle();
         assert_eq!(restored.greeting.settings(), external);
         assert!(restored.greeting_preview.get());

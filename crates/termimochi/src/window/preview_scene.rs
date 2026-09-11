@@ -73,7 +73,7 @@ impl Workbench {
                 }
             });
     }
-    fn select_preview_scene(self: &Rc<Self>, scene: PreviewScene) {
+    pub(super) fn select_preview_scene(self: &Rc<Self>, scene: PreviewScene) {
         if self.preview_scene() == scene {
             return;
         }
@@ -114,7 +114,7 @@ impl Workbench {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::window::greeting::tests::{controller, descendants, settle};
+    use crate::window::greeting::tests::{descendants, project_controller as controller, settle};
 
     #[test]
     #[ignore = "isolated GTK: editor navigation preserves independent terminal, prompt and GIF scenes"]

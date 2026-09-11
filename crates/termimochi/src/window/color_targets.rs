@@ -98,6 +98,16 @@ impl Workbench {
                     .borrow()
                     .get(this.color_targets.role.selected() as usize)
                     .map(|r| r.source.clone());
+                let module = match source {
+                    Some(Source::Designer(_)) | Some(Source::Starship { .. }) => {
+                        EditorModule::Prompt
+                    }
+                    _ => EditorModule::Greeting,
+                };
+                if !this.owns_module(module) {
+                    this.toast("Preview reference — open its document to edit this source.");
+                    return;
+                }
                 match source {
                     Some(Source::Designer(kind)) => {
                         this.inspect_preview_target(PreviewTarget::PromptSegment(kind))
@@ -205,7 +215,7 @@ mod tests {
     #[test]
     #[ignore = "requires GTK/VTE; shared color ownership and undo, imported-style fallback"]
     fn shared_color_targets_edit_palette_without_overwriting_sources() {
-        use crate::window::greeting::tests::{controller, settle};
+        use crate::window::greeting::tests::{project_controller as controller, settle};
         adw::init().unwrap();
         gio::resources_register_include!("termimochi.gresource").unwrap();
         let app = adw::Application::builder()

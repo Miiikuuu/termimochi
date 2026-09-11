@@ -222,6 +222,8 @@ mod tests {
         }
     }
     fn pointer(window: &gtk::Window, widget: &gtk::Widget, mode: &str) {
+        window.set_title(Some("TermiMochi point-to-edit test"));
+        gtk::prelude::WidgetExt::display(window).flush();
         let rect = widget.compute_bounds(window).unwrap();
         let scale = window.scale_factor() as f32;
         let x = (rect.x() + rect.width() * 0.5) * scale;
@@ -274,13 +276,7 @@ mod tests {
         let window = app.active_window().unwrap();
         window.set_title(Some("TermiMochi point-to-edit test"));
         window.set_default_size(1120, 700);
-        let this = unsafe {
-            window
-                .data::<Rc<Workbench>>("termimochi-workbench")
-                .unwrap()
-                .as_ref()
-                .clone()
-        };
+        let this = crate::window::greeting::tests::project_controller(&window);
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while this.preview_loading.get() || this.copy_loading.get() {
             assert!(std::time::Instant::now() < deadline);

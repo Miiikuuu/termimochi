@@ -3,6 +3,9 @@ use crate::{fastfetch_apply, greeting_startup};
 
 impl Workbench {
     pub(in crate::window) fn show_greeting_startup(self: &Rc<Self>) {
+        if !self.require_document_action("greeting-startup") {
+            return;
+        }
         self.show_greeting_startup_at(glib::home_dir().join(".bashrc"));
     }
 
@@ -100,7 +103,9 @@ impl Workbench {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::window::greeting::tests::{controller, descendants, respond, settle};
+    use crate::window::greeting::tests::{
+        descendants, project_controller as controller, respond, settle,
+    };
     #[test]
     #[ignore = "requires GTK; temporary .bashrc only, never opens a user terminal"]
     fn startup_switch_review_cancel_enable_restart_disable_and_conflict() {

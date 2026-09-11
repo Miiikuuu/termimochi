@@ -1,5 +1,5 @@
 //! Deterministic cross-module abuse cases, not just one-control happy paths.
-use super::greeting::tests::{controller, settle};
+use super::greeting::tests::{project_controller as controller, settle};
 use super::*;
 
 #[test]

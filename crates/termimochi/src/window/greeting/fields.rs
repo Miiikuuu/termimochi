@@ -444,7 +444,7 @@ impl GreetingEditor {
 mod tests {
     use super::*;
     use crate::window::greeting::tests::{
-        controller, descendants, feed, respond, settle, wait_official,
+        descendants, feed, project_controller, respond, settle, wait_official,
     };
 
     fn open_custom(this: &Workbench, kind: Info) {
@@ -505,7 +505,7 @@ mod tests {
         present_with_preset(&app, None, preset.clone());
         let window = app.active_window().unwrap();
         window.set_default_size(1320, 850);
-        let this = controller(&window);
+        let this = project_controller(&window);
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while this.preview_loading.get() {
             assert!(std::time::Instant::now() < deadline);
@@ -663,7 +663,7 @@ mod tests {
         window.destroy();
         present_with_preset(&app, None, preset);
         let window = app.active_window().unwrap();
-        let this = controller(&window);
+        let this = project_controller(&window);
         assert_eq!(this.greeting.settings(), saved);
         assert!(
             this.greeting.fastfetch_target.borrow().is_none(),
