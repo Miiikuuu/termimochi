@@ -6,27 +6,32 @@ pub(super) enum PreviewScene {
     Terminal,
     Prompt,
     Greeting,
+    Full,
 }
 
 impl PreviewScene {
     fn index(self) -> u32 {
         match self {
-            Self::Terminal => 0,
-            Self::Prompt => 1,
-            Self::Greeting => 2,
+            Self::Full => 0,
+            Self::Terminal => 1,
+            Self::Prompt => 2,
+            Self::Greeting => 3,
         }
     }
     fn from_index(index: u32) -> Self {
         match index {
-            1 => Self::Prompt,
-            2 => Self::Greeting,
+            0 => Self::Full,
+            2 => Self::Prompt,
+            3 => Self::Greeting,
             _ => Self::Terminal,
         }
     }
 }
 impl Workbench {
     fn preview_scene(&self) -> PreviewScene {
-        if self.greeting_preview.get() {
+        if self.full_session.active.get() {
+            PreviewScene::Full
+        } else if self.greeting_preview.get() {
             PreviewScene::Greeting
         } else if self.preview_uses_prompt.get() {
             PreviewScene::Prompt
@@ -41,6 +46,20 @@ impl Workbench {
         let navigating = self.navigating_preview.replace(true);
         self.preview_scene_selector
             .set_selected(self.preview_scene().index());
+        self.preview_scene_selector
+            .set_tooltip_text(Some(if self.full_session.active.get() {
+                "Full Session · design preview, not real terminal verification"
+            } else {
+                "Preview scene · independent of the editor tabs on the left"
+            }));
+        self.preview_scene_selector
+            .update_property(&[gtk::accessible::Property::Label(
+                if self.full_session.active.get() {
+                    "Full Session"
+                } else {
+                    "Preview Scene"
+                },
+            )]);
         self.navigating_preview.set(navigating);
     }
     pub(super) fn connect_preview_scene(this: &Rc<Self>) {
@@ -59,7 +78,14 @@ impl Workbench {
             return;
         }
         match scene {
-            PreviewScene::Greeting => self.show_greeting_preview(),
+            PreviewScene::Full => {
+                self.full_session.active.set(true);
+                self.show_greeting_preview();
+            }
+            PreviewScene::Greeting => {
+                self.full_session.active.set(false);
+                self.show_greeting_preview();
+            }
             PreviewScene::Terminal => {
                 self.reset_prompt_preview();
                 self.refresh_preview();
@@ -110,7 +136,7 @@ mod tests {
             assert!(std::time::Instant::now() < deadline);
             settle();
         }
-        this.preview_scene_selector.set_selected(0);
+        this.preview_scene_selector.set_selected(1);
         this.prompt_module_button.set_active(true);
         this.prompt_source_selector.set_selected(1);
         assert_eq!(this.preview_scene(), PreviewScene::Terminal);
@@ -176,7 +202,7 @@ mod tests {
                 assert!(this.workspace_is_clean());
             }
         }
-        this.preview_scene_selector.set_selected(2);
+        this.preview_scene_selector.set_selected(3);
         this.inspect_preview_target(PreviewTarget::Typography);
         assert_eq!(this.preview_scene(), PreviewScene::Greeting);
         this.palette_module_button.set_active(true);
@@ -184,14 +210,14 @@ mod tests {
         settle();
         assert_eq!(stack.visible_child_name().as_deref(), Some("pixels"));
         this.inspect_preview_target(PreviewTarget::PromptCopy);
-        this.preview_scene_selector.set_selected(0);
         this.preview_scene_selector.set_selected(1);
+        this.preview_scene_selector.set_selected(2);
         assert_eq!(
             this.workspace_snapshot(),
             saved,
             "Inspect followed by a scene change must not modify the saved prompt source"
         );
-        this.preview_scene_selector.set_selected(2);
+        this.preview_scene_selector.set_selected(3);
         for (width, height) in [(1024, 700), (1280, 900)] {
             window.set_default_size(width, height);
             settle();

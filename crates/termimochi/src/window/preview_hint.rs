@@ -232,7 +232,7 @@ mod tests {
 
     fn widen(this: &Workbench) {
         this.greeting_module_button.set_active(true);
-        this.preview_scene_selector.set_selected(2);
+        this.preview_scene_selector.set_selected(3);
         this.greeting.replace(
             GreetingSettings {
                 enabled: true,

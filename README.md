@@ -25,6 +25,14 @@ that looks balanced elsewhere can therefore become almost unreadable.
 - VS Code-style Activity Rail for switching the left-side Palette (`Ctrl+1`),
   Typography (`Ctrl+2`), Layout (`Ctrl+3`), Prompt (`Ctrl+4`) and Greeting (`Ctrl+5`) modules while
   the right-side Design Preview and diagnostics remain mounted.
+- Independent **Full / Terminal / Prompt / Greeting** observation scenes. Full
+  Session combines current Greeting art/GIF, information fields, Prompt and safe
+  simulated commands in one continuous design preview. It shares the workspace's
+  colors, font and cell geometry; whole-scene Fit/Zoom never changes Columns or
+  dirties Save. GIF playback is shared and respects reduced motion. This GTK/VTE
+  composition does **not** verify Kitty/Sixel: **Try Greeting** remains a temporary
+  real Greeting-only trial. See [Full Session](docs/full-session.md) and the
+  [manual acceptance card (Chinese)](docs/full-session-acceptance-zh.md).
 - Live VTE typography controls for installed monospace families, point size,
   weight, line height and cell width, with fallback-safe Nerd icon checks.
 - Typography presets: **⋮ → Save Typography Preset** remembers

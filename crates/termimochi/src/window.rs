@@ -17,6 +17,7 @@ use vte::prelude::*;
 
 mod color_targets;
 mod documents;
+mod full_session;
 mod greeting;
 mod output_bar;
 mod preview_hint;
@@ -365,6 +366,7 @@ struct Workbench {
     preview_scroll: Rc<preview_scroll::PreviewScroll>,
     preview_selector: gtk::DropDown,
     preview_scene_selector: gtk::DropDown,
+    full_session: full_session::FullSession,
     prompt_preview_selector: gtk::DropDown,
     prompt_compare_selector: gtk::DropDown,
     appearance_source: gtk::Label,
@@ -855,6 +857,7 @@ fn present_with_preset(
         preview_scroll: preview.scroll,
         preview_selector: preview.selector,
         preview_scene_selector: preview.scene_selector,
+        full_session: preview.full_session,
         prompt_preview_selector: preview.prompt_selector,
         prompt_compare_selector: preview.compare_selector,
         appearance_source: preview.appearance_source,
@@ -1031,6 +1034,7 @@ struct PreviewWidgets {
     scroll: Rc<preview_scroll::PreviewScroll>,
     selector: gtk::DropDown,
     scene_selector: gtk::DropDown,
+    full_session: full_session::FullSession,
     prompt_selector: gtk::DropDown,
     compare_selector: gtk::DropDown,
     appearance_source: gtk::Label,
@@ -2560,7 +2564,10 @@ fn build_preview(
     preview_header.set_valign(gtk::Align::Center);
     preview_header.add_css_class("preview-title-row");
     preview_header.append(&heading);
-    let scene_selector = gtk::DropDown::from_strings(&["Terminal", "Prompt", "Greeting"]);
+    let scene_selector = gtk::DropDown::from_strings(&["Full", "Terminal", "Prompt", "Greeting"]);
+    // Keep the existing fresh/reset Terminal default. Open chooses Greeting or
+    // Prompt from the document's enabled content; scene itself is never saved.
+    scene_selector.set_selected(1);
     scene_selector.add_css_class("preview-scenario");
     scene_selector.set_tooltip_text(Some(
         "Preview scene · independent of the editor tabs on the left",
@@ -2583,6 +2590,8 @@ fn build_preview(
     preview_header.append(&source_button);
     preview_header.append(variant_switch);
     content.append(&preview_header);
+    let full_session = full_session::FullSession::new();
+    content.append(&full_session.toolbar);
 
     let terminal = gtk::Box::new(gtk::Orientation::Vertical, 8);
     terminal.set_widget_name("termimochi-terminal");
@@ -2825,6 +2834,7 @@ fn build_preview(
         scroll,
         selector,
         scene_selector,
+        full_session,
         prompt_selector,
         compare_selector,
         appearance_source,
@@ -3837,6 +3847,7 @@ impl Workbench {
     fn connect_signals(this: &Rc<Self>) {
         Self::connect_color_targets(this);
         Self::connect_preview_scene(this);
+        Self::connect_full_session(this);
         let weak = Rc::downgrade(this);
         this.window().connect_close_request(move |_| {
             let Some(this) = weak.upgrade() else {
@@ -4635,6 +4646,7 @@ impl Workbench {
     }
 
     fn reset_prompt_preview(&self) {
+        self.full_session.active.set(false);
         self.greeting_preview.set(false);
         self.greeting_motion.stop();
         self.refresh_terminal_geometry(&self.layout_settings());
@@ -4650,7 +4662,7 @@ impl Workbench {
     }
 
     fn preview_prompt_settings(&self) -> PromptSettings {
-        if self.prompt_compare_selector.selected() == 1
+        if self.previewing_original_prompt()
             && let Some(original) = self.designer_original.borrow().as_ref()
         {
             return original.clone();
@@ -4658,8 +4670,13 @@ impl Workbench {
         self.prompt_settings.borrow().clone()
     }
 
+    fn previewing_original_prompt(&self) -> bool {
+        !self.full_session.active.get() && self.prompt_compare_selector.selected() == 1
+    }
+
     fn redraw_preview_contents(&self) {
         self.sync_preview_scene();
+        self.sync_full_session();
         self.refresh_output_bar();
         if !self.greeting_preview.get()
             || !self.preview_input.borrow().text().is_empty()
@@ -4675,10 +4692,19 @@ impl Workbench {
         self.used_prompt_characters.borrow_mut().clear();
         *self.preview_map.borrow_mut() = PreviewMap::default();
         self.invalidate_preview_inspection();
-        self.preview_terminal.reset(true, true);
+        self.full_session
+            .collecting
+            .set(self.full_session.active.get());
+        if !self.full_session.collecting.get() {
+            self.preview_terminal.reset(true, true);
+        }
         // Queue a screen clear with the feed, so pending VTE input from the
         // loading state or a previous scene cannot survive an async redraw.
         self.feed_preview(PREVIEW_HOME_AND_CLEAR);
+        if self.full_session.active.get() {
+            self.redraw_full_session();
+            return;
+        }
         if self.greeting_preview.get() {
             self.redraw_greeting();
             return;
@@ -5009,6 +5035,14 @@ impl Workbench {
             }
             None => initial.as_str(),
         };
+        // Full observes the current design, not Prompt's frozen A/B starting
+        // prompt. Use the same cache/staleness resolution as its greeting line.
+        let full_initial = self
+            .full_session
+            .active
+            .get()
+            .then(|| self.greeting_prompt_ansi());
+        let initial = full_initial.as_deref().unwrap_or(initial);
         self.feed_simulated_prompt(initial);
         let history = self.copy_scene_history.borrow();
         let mut prompt = initial;
@@ -5019,7 +5053,7 @@ impl Workbench {
                 self.feed_preview(frame.scene.output.as_bytes());
                 self.feed_preview(b"\r\n");
             }
-            let ansi = if self.prompt_compare_selector.selected() == 1 {
+            let ansi = if self.previewing_original_prompt() {
                 &frame.original_ansi
             } else {
                 &frame.ansi
@@ -5062,7 +5096,9 @@ impl Workbench {
             text: text.into(),
             scope,
         });
-        self.preview_terminal.feed(text.as_bytes());
+        if !self.full_session.collecting.get() {
+            self.preview_terminal.feed(text.as_bytes());
+        }
     }
 
     fn redraw_prompt_preview(&self) {
@@ -5254,7 +5290,9 @@ impl Workbench {
             scope,
             self.preview_terminal.is_bold_is_bright(),
         );
-        self.preview_terminal.feed(text.as_bytes());
+        if !self.full_session.collecting.get() {
+            self.preview_terminal.feed(text.as_bytes());
+        }
     }
 
     fn feed_designed_prompt(&self, settings: &PromptSettings, context: &PromptPreviewContext<'_>) {
@@ -5539,15 +5577,31 @@ impl Workbench {
                 &self.inspect_layer,
                 &gtk::graphene::Point::new(rect.x(), rect.y()),
             )?;
+            let end = widget.compute_point(
+                &self.inspect_layer,
+                &gtk::graphene::Point::new(rect.x() + rect.width(), rect.y() + rect.height()),
+            )?;
             let left = p.x().max(1.0);
             let top = p.y().max(1.0);
-            let right = (p.x() + rect.width()).min(self.inspect_layer.width() as f32 - 1.0);
-            let bottom = (p.y() + rect.height()).min(self.inspect_layer.height() as f32 - 1.0);
+            let right = end.x().min(self.inspect_layer.width() as f32 - 1.0);
+            let bottom = end.y().min(self.inspect_layer.height() as f32 - 1.0);
             (right > left && bottom > top).then_some(PreviewHit {
                 target,
                 bounds: gtk::graphene::Rect::new(left, top, right - left, bottom - top),
             })
         };
+        if self.full_session.active.get()
+            && self.full_session.picture.is_mapped()
+            && within(self.preview_terminal_viewport.upcast_ref()).is_some()
+            && within(self.full_session.picture.upcast_ref()).is_some()
+        {
+            let picture = &self.full_session.picture;
+            return hit(
+                PreviewTarget::GreetingArtwork,
+                picture.upcast_ref(),
+                gtk::graphene::Rect::new(0.0, 0.0, picture.width() as f32, picture.height() as f32),
+            );
+        }
         if within(self.preview_terminal_tab.upcast_ref()).is_some() {
             let tab = &self.preview_terminal_tab;
             return hit(
@@ -6130,7 +6184,13 @@ impl Workbench {
         } else {
             0
         };
-        let columns = if greeting_width > 0 {
+        let columns = if self.full_session.active.get() {
+            if greeting_width > 0 {
+                usize::from(greeting_width)
+            } else {
+                layout.columns
+            }
+        } else if greeting_width > 0 {
             usize::from(greeting_width)
         } else {
             fitted_preview_columns(
@@ -6141,23 +6201,28 @@ impl Workbench {
                 self.fit_preview_switch.is_active(),
             )
         };
-        self.preview_terminal_canvas
-            .set_halign(if greeting_width > 0 {
+        self.preview_terminal_canvas.set_halign(
+            if greeting_width > 0 || self.full_session.active.get() {
                 gtk::Align::Start
             } else {
                 gtk::Align::Fill
-            });
-        self.preview_terminal.set_hexpand(greeting_width == 0);
-        self.preview_terminal_viewport
-            .set_hscrollbar_policy(if greeting_width > 0 {
+            },
+        );
+        self.preview_terminal
+            .set_hexpand(greeting_width == 0 && !self.full_session.active.get());
+        self.preview_terminal_viewport.set_hscrollbar_policy(
+            if greeting_width > 0 || self.full_session.active.get() {
                 gtk::PolicyType::Automatic
             } else {
                 gtk::PolicyType::External
-            });
+            },
+        );
         // A complete logo can be much taller than the old six-line sketch.
         // Keep the full grid in the terminal's own viewport; the header/log
         // stay mounted. This never changes the saved Layout document.
-        let rows = if self.greeting_preview.get() {
+        let rows = if self.full_session.active.get() {
+            layout.rows.max(self.full_session.rows.get())
+        } else if self.greeting_preview.get() {
             layout.rows.max(
                 (self.greeting_text_for_width(columns).lines().count()
                     + 5
@@ -6198,6 +6263,7 @@ impl Workbench {
         self.preview_terminal_canvas
             .set_height_request(preview_height);
         self.updating_geometry.set(false);
+        self.refresh_full_transform();
     }
 
     fn refresh_layout(&self) {
@@ -6225,6 +6291,9 @@ impl Workbench {
         self.preview_content.set_margin_start(layout.window_spacing);
         self.preview_content.set_margin_end(layout.window_spacing);
         self.refresh_terminal_geometry(&layout);
+        if self.full_session.active.get() {
+            self.redraw_preview_contents();
+        }
         self.layout_status.set_text(
             if self
                 .workspace_baseline
@@ -6347,7 +6416,7 @@ impl Workbench {
             && self.preview_prompt_source.get() == 0
             && let Some(sample) = self.copy_scene.borrow().as_ref()
         {
-            let (ansi, source) = if self.prompt_compare_selector.selected() == 1 {
+            let (ansi, source) = if self.previewing_original_prompt() {
                 (&sample.original_ansi, &sample.original_source)
             } else {
                 (&sample.ansi, &sample.scene.diagnostic_source)
@@ -8145,6 +8214,9 @@ mod tests {
         this.row_count_input.grab_focus();
         capture("layout");
         this.prompt_module_button.set_active(true);
+        // Editing a module no longer selects its observation scene. The A/B
+        // checks below explicitly exercise the dedicated Prompt scene.
+        this.preview_scene_selector.set_selected(2);
         settle();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while this.copy_loading.get() {

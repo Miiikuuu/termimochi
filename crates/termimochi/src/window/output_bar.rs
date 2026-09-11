@@ -102,6 +102,7 @@ impl Workbench {
         }
         if let Some(stack) = self.inspect_layer.child().and_downcast::<gtk::Stack>() {
             let pixels = self.greeting_preview.get()
+                && !self.full_session.active.get()
                 && settings.enabled
                 && resolved.as_ref().is_ok_and(|s| s.protocol.is_some());
             stack.set_visible_child_name(if pixels { "pixels" } else { "terminal" });

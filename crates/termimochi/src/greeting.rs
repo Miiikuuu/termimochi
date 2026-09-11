@@ -572,10 +572,22 @@ impl GreetingSettings {
         columns: usize,
         official: Option<&str>,
     ) -> Vec<(String, GreetingPart)> {
+        self.render_parts_with_artwork(context, columns, official, None)
+    }
+
+    /// A view-only cell reservation for GTK pixels, using the same field/layout
+    /// renderer. Never changes the retained artwork or portable settings.
+    pub(crate) fn render_parts_with_artwork(
+        &self,
+        context: &GreetingContext,
+        columns: usize,
+        official: Option<&str>,
+        reservation: Option<&str>,
+    ) -> Vec<(String, GreetingPart)> {
         if !self.enabled || self.validate().is_err() {
             return Vec::new();
         }
-        if self.imported_source.is_some() {
+        if self.imported_source.is_some() && reservation.is_none() {
             return inspect::imported_parts(
                 format!(
                     "{}\x1b[0m\r\n\r\n",
@@ -591,13 +603,26 @@ impl GreetingSettings {
             );
         }
         let width = columns.clamp(12, 240).saturating_sub(1);
-        let artwork = self.artwork();
+        let artwork = reservation
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.artwork());
         let logo: Vec<_> = artwork.lines().collect();
-        let colored_artwork = self.artwork_ansi();
+        let colored_artwork = reservation
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.artwork_ansi());
         let colored_logo: Vec<_> = colored_artwork.lines().collect();
         let logo_width = logo.iter().map(|line| line.width()).max().unwrap_or(0);
         let gap = usize::from(self.gap);
-        let position = self.position_at_width(columns);
+        let position = if reservation.is_some()
+            && matches!(self.position, Position::Left | Position::Right)
+            && width < logo_width + gap + 20
+        {
+            Position::Top
+        } else if reservation.is_some() {
+            self.position
+        } else {
+            self.position_at_width(columns)
+        };
         let side = matches!(position, Position::Left | Position::Right) && logo_width > 0;
         let info_width = if side {
             width - logo_width - gap
@@ -1182,6 +1207,36 @@ mod tests {
             settings.logo = Logo::Mochi;
             for width in [80, 100, 120] {
                 assert_eq!(settings.position_at_width(width), Position::Left);
+            }
+        }
+    }
+
+    #[test]
+    fn pixel_reservation_reuses_fields_and_never_changes_design() {
+        let mut settings = GreetingSettings {
+            enabled: true,
+            ..Default::default()
+        };
+        let context = GreetingContext::default();
+        for position in [Position::Left, Position::Right, Position::Top] {
+            settings.position = position;
+            let before = settings.clone();
+            for columns in [40, 80, 100, 120] {
+                let blank = vec![" ".repeat(24); 18].join("\n");
+                let parts =
+                    settings.render_parts_with_artwork(&context, columns, None, Some(&blank));
+                let text: String = parts.iter().map(|(s, _)| s.as_str()).collect();
+                assert!(text.contains("OS:"));
+                assert!(parts.iter().any(|(_, p)| *p == GreetingPart::Artwork));
+                assert!(text.lines().count() >= 18);
+                for line in text.lines() {
+                    assert!(clip_ansi(line, usize::MAX).1 < columns);
+                }
+                assert_eq!(settings, before);
+                assert_eq!(
+                    settings.render_parts(&context, columns, None),
+                    settings.render_parts_with_artwork(&context, columns, None, None)
+                );
             }
         }
     }

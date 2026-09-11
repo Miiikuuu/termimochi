@@ -47,6 +47,11 @@ it works for any palette and either light or dark variants.
 
 ## UI boundary
 
+The independent **Full / Terminal / Prompt / Greeting** observation scenes are
+documented in [Full Session](full-session.md). Full consumes the existing design,
+cached preview feed and processed image source; its GTK/VTE composition, zoom and
+playback are view state, not terminal-protocol approval or an application path.
+
 The application chrome uses a continuous white editing and preview workspace,
 with a near-white navigation rail and soft gray control surfaces. `chrome.css`
 scopes the editor controls and neutral focus states to the left workspace;

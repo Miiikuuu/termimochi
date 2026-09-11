@@ -8,6 +8,7 @@ pub(super) struct PreviewScroll {
     viewport: glib::WeakRef<gtk::ScrolledWindow>,
     updating: Cell<bool>,
     generation: Cell<u64>,
+    scale: Cell<f64>,
 }
 
 fn pixel_delta(delta: f64, cell: f64, unit: gdk::ScrollUnit) -> f64 {
@@ -30,6 +31,7 @@ impl PreviewScroll {
             viewport: viewport.downgrade(),
             updating: Cell::new(false),
             generation: Cell::new(0),
+            scale: Cell::new(1.0),
         });
         for source in [terminal.vadjustment().unwrap(), viewport.vadjustment()] {
             let weak = Rc::downgrade(&this);
@@ -54,11 +56,15 @@ impl PreviewScroll {
         this.sync();
         this
     }
-    fn row_pixels(terminal: &vte::Terminal) -> f64 {
+    pub fn set_scale(&self, scale: f64) {
+        self.scale.set(scale);
+        self.sync();
+    }
+    fn row_pixels(&self, terminal: &vte::Terminal) -> f64 {
         if terminal.is_scroll_unit_is_pixels() {
-            1.0
+            self.scale.get()
         } else {
-            terminal.char_height().max(1) as f64
+            terminal.char_height().max(1) as f64 * self.scale.get()
         }
     }
     fn sync(&self) {
@@ -69,7 +75,7 @@ impl PreviewScroll {
         {
             let history = terminal.vadjustment().unwrap();
             let canvas = viewport.vadjustment();
-            let factor = Self::row_pixels(&terminal);
+            let factor = self.row_pixels(&terminal);
             let history_pixels =
                 (history.upper() - history.page_size() - history.lower()).max(0.0) * factor;
             let canvas_pixels = (canvas.upper() - canvas.lower()).max(canvas.page_size());
@@ -77,7 +83,7 @@ impl PreviewScroll {
                 (history.value() - history.lower()) * factor + canvas.value() - canvas.lower(),
                 0.0,
                 history_pixels + canvas_pixels,
-                terminal.char_height().max(1) as f64 * 3.0,
+                terminal.char_height().max(1) as f64 * self.scale.get() * 3.0,
                 canvas.page_size() * 0.9,
                 canvas.page_size(),
             );
@@ -93,7 +99,7 @@ impl PreviewScroll {
         {
             let history = terminal.vadjustment().unwrap();
             let canvas = viewport.vadjustment();
-            let factor = Self::row_pixels(&terminal);
+            let factor = self.row_pixels(&terminal);
             let history_pixels =
                 (history.upper() - history.page_size() - history.lower()).max(0.0) * factor;
             let value = self.adjustment.value();
@@ -160,19 +166,21 @@ impl PreviewScroll {
                     let cursor_row = preview_visible_origin(&terminal)
                         .map(|(origin, _)| terminal.cursor_position().1 - origin);
                     let y = cursor_row.map(|row| {
-                        f64::from(terminal.margin_top())
-                            + row as f64 * terminal.char_height() as f64
+                        (f64::from(terminal.margin_top())
+                            + row as f64 * terminal.char_height() as f64)
+                            * this.scale.get()
                     });
                     if let Some(y) = y {
-                        canvas.clamp_page(y, y + terminal.char_height() as f64);
+                        canvas.clamp_page(y, y + terminal.char_height() as f64 * this.scale.get());
                     } else {
                         canvas.set_value(canvas.upper() - canvas.page_size());
                     }
-                    let x = f64::from(terminal.margin_start())
-                        + terminal.cursor_position().0 as f64 * terminal.char_width() as f64;
+                    let x = (f64::from(terminal.margin_start())
+                        + terminal.cursor_position().0 as f64 * terminal.char_width() as f64)
+                        * this.scale.get();
                     viewport
                         .hadjustment()
-                        .clamp_page(x, x + terminal.char_width() as f64);
+                        .clamp_page(x, x + terminal.char_width() as f64 * this.scale.get());
                     this.sync();
                 }
             }
@@ -279,7 +287,7 @@ mod tests {
             settle();
         }
         this.greeting_module_button.set_active(true);
-        this.preview_scene_selector.set_selected(2);
+        this.preview_scene_selector.set_selected(3);
         this.greeting.replace(
             crate::greeting::GreetingSettings {
                 enabled: true,

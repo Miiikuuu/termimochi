@@ -1328,7 +1328,12 @@ impl Workbench {
                             settings.source_logo.as_ref(),
                         )
                     })
-                    .map(|(config, _)| config)
+                    .map(|(mut config, _)| {
+                        if self.full_pixel_design() {
+                            config["logo"] = serde_json::json!({"type":"none"});
+                        }
+                        config
+                    })
             } else {
                 let mut snapshot = settings.clone();
                 snapshot.message.clear();
@@ -1656,7 +1661,41 @@ impl Workbench {
         }
         let context = self.current_preview_context.borrow();
         let designed = self.preview_prompt_source.get() == 1;
-        let prompt = if designed {
+        let prompt = self.greeting_prompt_ansi();
+        let input = self.preview_input.borrow();
+        for line in input.submitted() {
+            if designed {
+                self.feed_designed_prompt(
+                    &self.prompt_settings.borrow(),
+                    &context
+                        .as_ref()
+                        .map(CurrentPreviewContext::as_prompt_context)
+                        .unwrap_or(prompt_preview_contexts()[0]),
+                );
+            } else {
+                self.feed_scoped_preview(&prompt, Some(PreviewTarget::PromptCopy));
+            }
+            self.feed_preview(line.as_bytes());
+            self.feed_preview(b"\r\n");
+        }
+        if designed {
+            self.feed_designed_prompt(
+                &self.prompt_settings.borrow(),
+                &context
+                    .as_ref()
+                    .map(CurrentPreviewContext::as_prompt_context)
+                    .unwrap_or(prompt_preview_contexts()[0]),
+            );
+        } else {
+            self.feed_scoped_preview(&prompt, Some(PreviewTarget::PromptCopy));
+        }
+        self.feed_preview(input.text().as_bytes());
+        self.feed_preview(PREVIEW_SHOW_CURSOR);
+    }
+    pub(super) fn greeting_prompt_ansi(&self) -> String {
+        let context = self.current_preview_context.borrow();
+        let designed = self.preview_prompt_source.get() == 1;
+        if designed {
             self.prompt_settings.borrow().preview_ansi(
                 &context
                     .as_ref()
@@ -1692,24 +1731,12 @@ impl Workbench {
                     }
                 })
                 .unwrap_or_else(|| "$ ".into())
-        };
-        let input = self.preview_input.borrow();
-        for line in input.submitted() {
-            if designed {
-                self.feed_designed_prompt(
-                    &self.prompt_settings.borrow(),
-                    &context
-                        .as_ref()
-                        .map(CurrentPreviewContext::as_prompt_context)
-                        .unwrap_or(prompt_preview_contexts()[0]),
-                );
-            } else {
-                self.feed_scoped_preview(&prompt, Some(PreviewTarget::PromptCopy));
-            }
-            self.feed_preview(line.as_bytes());
-            self.feed_preview(b"\r\n");
         }
-        if designed {
+    }
+
+    pub(super) fn feed_greeting_prompt(&self) {
+        if self.preview_prompt_source.get() == 1 {
+            let context = self.current_preview_context.borrow();
             self.feed_designed_prompt(
                 &self.prompt_settings.borrow(),
                 &context
@@ -1718,10 +1745,11 @@ impl Workbench {
                     .unwrap_or(prompt_preview_contexts()[0]),
             );
         } else {
-            self.feed_scoped_preview(&prompt, Some(PreviewTarget::PromptCopy));
+            self.feed_scoped_preview(
+                &self.greeting_prompt_ansi(),
+                Some(PreviewTarget::PromptCopy),
+            );
         }
-        self.feed_preview(input.text().as_bytes());
-        self.feed_preview(PREVIEW_SHOW_CURSOR);
     }
     pub(super) fn save_greeting_preset(&self) {
         let result = self.greeting.persist();
@@ -2026,7 +2054,7 @@ pub(super) mod tests {
                 .for_each(|i| i.enabled = i.kind == Info::Os);
             this.greeting.replace(settings.clone(), true);
             this.greeting_module_button.set_active(true);
-            this.preview_scene_selector.set_selected(2);
+            this.preview_scene_selector.set_selected(3);
             settle();
             this.preview_scroll.start();
             settle();
@@ -2302,7 +2330,7 @@ pub(super) mod tests {
         assert_eq!(this.greeting.settings(), GreetingSettings::starter());
         assert!(!this.greeting.dirty());
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
-        this.preview_scene_selector.set_selected(2);
+        this.preview_scene_selector.set_selected(3);
         this.greeting.enabled.set_active(true);
         wait_official(&this);
         assert_eq!(this.greeting.preset.selected(), 1);
@@ -2406,7 +2434,7 @@ pub(super) mod tests {
         window.set_default_size(1320, 850);
         let this = controller(&window);
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
-        this.preview_scene_selector.set_selected(2);
+        this.preview_scene_selector.set_selected(3);
         wait_official(&this);
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while this.preview_loading.get() {
@@ -2489,7 +2517,7 @@ pub(super) mod tests {
             settle();
         }
         gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
-        this.preview_scene_selector.set_selected(2);
+        this.preview_scene_selector.set_selected(3);
         let original = this.greeting.settings();
         let layout = this.layout_settings();
         for preset in OfficialPreset::ALL {
@@ -2704,7 +2732,7 @@ pub(super) mod tests {
         settle();
         assert!(this.greeting_module_button.is_active());
         assert!(!this.greeting.dirty());
-        this.preview_scene_selector.set_selected(2);
+        this.preview_scene_selector.set_selected(3);
         assert_eq!(
             this.save_button
                 .menu_model()

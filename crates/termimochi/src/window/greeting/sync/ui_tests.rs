@@ -61,7 +61,7 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     let window = app.active_window().unwrap();
     let this = controller(&window);
     gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
-    this.preview_scene_selector.set_selected(2);
+    this.preview_scene_selector.set_selected(3);
     wait_sync(&this);
     assert!(
         this.greeting.sync.difference.is_visible(),
@@ -127,7 +127,7 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     let window = app.active_window().unwrap();
     let this = controller(&window);
     gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
-    this.preview_scene_selector.set_selected(2);
+    this.preview_scene_selector.set_selected(3);
     wait_sync(&this);
     assert_eq!(this.greeting.settings(), loaded);
     assert!(!this.greeting.sync.root.is_visible());
@@ -231,7 +231,7 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     let window = app.active_window().unwrap();
     let this = controller(&window);
     gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
-    this.preview_scene_selector.set_selected(2);
+    this.preview_scene_selector.set_selected(3);
     wait_sync(&this);
     assert_eq!(this.greeting.settings(), last);
     assert!(!this.greeting.sync.root.is_visible());
@@ -325,7 +325,7 @@ fn real_applied_artwork_replaces_stale_preview() {
     window.set_default_size(1320, 850);
     let this = controller(&window);
     gio::prelude::ActionGroupExt::activate_action(&this.window(), "show-greeting", None);
-    this.preview_scene_selector.set_selected(2);
+    this.preview_scene_selector.set_selected(3);
     wait_sync(&this);
     assert!(this.greeting.sync.difference.is_visible());
     if let Some(path) = std::env::var_os("TERMIMOCHI_SYNC_NOTICE_SCREENSHOT") {

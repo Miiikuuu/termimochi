@@ -50,6 +50,9 @@ pub(in crate::window) struct PresentationEditor {
     started: Cell<std::time::Instant>,
     allocation: Cell<(i32, i32)>,
     pub cells: Cell<[u32; 2]>,
+    full_observer: glib::WeakRef<gtk::Picture>,
+    prepared_callback: RefCell<Option<Box<dyn Fn()>>>,
+    preparation_error: RefCell<Option<String>>,
 }
 impl PresentationEditor {
     pub(super) fn new(binding_path: PathBuf) -> Self {
@@ -234,6 +237,9 @@ impl PresentationEditor {
             started: Cell::new(std::time::Instant::now()),
             allocation: Cell::new((0, 0)),
             cells: Cell::new([10, 20]),
+            full_observer: glib::WeakRef::new(),
+            prepared_callback: RefCell::new(None),
+            preparation_error: RefCell::new(None),
         }
     }
     pub fn refresh(&self, settings: &GreetingSettings) {
@@ -387,6 +393,9 @@ impl GreetingEditor {
         let weak = Rc::downgrade(this);
         this.presentation.play.connect_toggled(move |_| {
             if let Some(this) = weak.upgrade() {
+                if !gtk::Settings::default().is_some_and(|s| s.is_gtk_enable_animations()) {
+                    this.presentation.play.set_active(false);
+                }
                 this.presentation.started.set(std::time::Instant::now());
             }
         });
@@ -405,12 +414,16 @@ impl GreetingEditor {
             };
             this.poll_presentation_work();
             let p = &this.presentation;
+            if !gtk::Settings::default().is_some_and(|s| s.is_gtk_enable_animations()) {
+                p.play.set_active(false);
+            }
             let allocation = (p.canvas.width(), p.canvas.height());
             if p.canvas.is_mapped() && p.allocation.replace(allocation) != allocation {
                 this.refresh_pixel_design();
             }
             if p.play.is_active()
-                && p.canvas.is_mapped()
+                && (p.canvas.is_mapped()
+                    || p.full_observer.upgrade().is_some_and(|w| w.is_mapped()))
                 && let Some(image) = p.prepared.borrow().as_ref()
                 && let Some(animation) = image.animation.as_ref()
             {
@@ -502,6 +515,7 @@ impl GreetingEditor {
         if *p.source.borrow() != settings.editable_artwork {
             *p.source.borrow_mut() = settings.editable_artwork.clone();
             p.prepared.borrow_mut().take();
+            p.preparation_error.borrow_mut().take();
             p.picture.set_paintable(None::<&gdk::Paintable>);
             p.generation.set(p.generation.get().wrapping_add(1));
             if let Some(source) = settings.editable_artwork {
@@ -526,12 +540,19 @@ impl GreetingEditor {
                             this.presentation.frame.set(0);
                             this.refresh_pixel_design();
                         }
-                        Ok(Err(error)) => this.presentation.caption.set_label(&error),
+                        Ok(Err(error)) => {
+                            this.presentation.caption.set_label(&error);
+                            *this.presentation.preparation_error.borrow_mut() = Some(error);
+                        }
                         Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-                        Err(_) => this
-                            .presentation
-                            .caption
-                            .set_label("Image preparation failed; retry the edit."),
+                        Err(_) => {
+                            let error = "Image preparation failed; retry the edit.";
+                            this.presentation.caption.set_label(error);
+                            *this.presentation.preparation_error.borrow_mut() = Some(error.into());
+                        }
+                    }
+                    if let Some(callback) = this.presentation.prepared_callback.borrow().as_ref() {
+                        callback();
                     }
                     glib::ControlFlow::Break
                 });
@@ -540,6 +561,39 @@ impl GreetingEditor {
     }
 }
 impl PresentationEditor {
+    pub(in crate::window) fn observe_pixels(
+        &self,
+        picture: &gtk::Picture,
+        play: &gtk::ToggleButton,
+    ) {
+        self.full_observer.set(Some(picture));
+        self.picture
+            .bind_property("paintable", picture, "paintable")
+            .sync_create()
+            .build();
+        self.play
+            .bind_property("active", play, "active")
+            .bidirectional()
+            .sync_create()
+            .build();
+        self.play
+            .bind_property("visible", play, "visible")
+            .sync_create()
+            .build();
+    }
+    pub(in crate::window) fn pixel_dimensions(&self) -> Option<(u32, u32)> {
+        self.prepared
+            .borrow()
+            .as_ref()
+            .map(|image| image.pixels.dimensions())
+    }
+    pub(in crate::window) fn pixel_error(&self) -> Option<String> {
+        self.preparation_error.borrow().clone()
+    }
+    #[cfg(test)]
+    pub(in crate::window) fn pixel_generation(&self) -> u64 {
+        self.generation.get()
+    }
     fn show_pixels(&self, pixels: &image::RgbaImage) {
         let texture = gdk::MemoryTexture::new(
             pixels.width() as i32,
@@ -549,6 +603,11 @@ impl PresentationEditor {
             pixels.width() as usize * 4,
         );
         self.picture.set_paintable(Some(&texture));
+    }
+}
+impl GreetingEditor {
+    pub(in crate::window) fn connect_pixels_prepared(&self, callback: impl Fn() + 'static) {
+        *self.presentation.prepared_callback.borrow_mut() = Some(Box::new(callback));
     }
 }
 impl Workbench {
@@ -695,7 +754,7 @@ mod tests {
             assert_eq!(reopened.greeting.presentation.columns, 48);
         }
         this.greeting_module_button.set_active(true);
-        this.preview_scene_selector.set_selected(2);
+        this.preview_scene_selector.set_selected(3);
         settle();
         let saved = this.workspace_snapshot();
         assert!(this.workspace_is_clean());
