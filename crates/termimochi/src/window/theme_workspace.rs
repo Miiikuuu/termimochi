@@ -169,12 +169,18 @@ impl Workbench {
     pub(super) fn choose_new_theme(self: &Rc<Self>) {
         let dialog=gtk::AlertDialog::builder().message("New terminal theme")
             .detail("One theme, one target. Edit colors, fonts, layout, Prompt and Greeting in the same workspace. Unspecified settings inherit.")
-            .buttons(["Cancel","Kitty Theme","Ptyxis Theme"]).cancel_button(0).default_button(0).modal(true).build();
+            .buttons(["Cancel","Kitty Theme","Ptyxis Theme","From My Terminal…"]).cancel_button(0).default_button(0).modal(true).build();
         let weak = Rc::downgrade(self);
         dialog.choose(
             Some(&self.window()),
             gio::Cancellable::NONE,
             move |answer| {
+                if answer == Ok(3)
+                    && let Some(this) = weak.upgrade()
+                {
+                    this.choose_system_theme();
+                    return;
+                }
                 if let Ok(index @ 1..=2) = answer
                     && let Some(this) = weak.upgrade()
                 {
@@ -454,6 +460,20 @@ impl Workbench {
             .placeholder_text("Theme name")
             .build();
         body.append(&name);
+        if !theme.import_report.is_empty() {
+            let report = gtk::Expander::builder()
+                .label("Import sources and limits")
+                .child(&super::scheme::label(
+                    &theme
+                        .import_report
+                        .iter()
+                        .map(crate::system_import::FieldReport::label)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ))
+                .build();
+            body.append(&report);
+        }
         let prompt = gtk::CheckButton::with_label("Enable this theme's Prompt");
         prompt.set_active(theme.prompt_enabled);
         body.append(&prompt);

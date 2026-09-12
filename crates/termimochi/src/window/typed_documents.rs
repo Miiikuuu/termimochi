@@ -756,6 +756,7 @@ impl Workbench {
             ("advanced-document", 8),
             ("advanced-open", 9),
             ("theme-toggle-prompt", 10),
+            ("theme-from-terminal", 11),
         ] {
             let action = gio::SimpleAction::new(name, None);
             let weak = Rc::downgrade(this);
@@ -778,6 +779,7 @@ impl Workbench {
                         7 => this.show_theme_settings(),
                         8 => this.choose_advanced_document(),
                         9 => this.choose_design_open_mode(true),
+                        11 => this.choose_system_theme(),
                         _ => this.toggle_theme_prompt(),
                     }
                 }

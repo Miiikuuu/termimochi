@@ -11,6 +11,7 @@ mod imp {
         pub geometry: Cell<(bool, u32, i32, i32)>,
         pub scale: Cell<f64>,
         pub allocated: Cell<(i32, i32, i32, i32, u64)>,
+        pub origin: Cell<(f32, f32)>,
         pub changed: RefCell<Option<Box<dyn Fn()>>>,
     }
     #[glib::object_subclass]
@@ -36,14 +37,33 @@ mod imp {
         }
         fn size_allocate(&self, width: i32, height: i32, _: i32) {
             let (active, mode, target_w, target_h) = self.geometry.get();
-            let (w, h, scale) = geometry(active, mode, width, height, target_w, target_h);
+            let margin = if active {
+                canvas_margin(width, height)
+            } else {
+                0
+            };
+            let (w, h, scale) = geometry(
+                active,
+                mode,
+                width - margin * 2,
+                height - margin * 2,
+                target_w,
+                target_h,
+            );
+            let x = ((width as f64 - w as f64 * scale) / 2.0).max(0.0) as f32;
+            let y = margin as f32;
+            self.origin.set((x, y));
             self.scale.set(scale);
             if let Some(child) = self.child.borrow().as_ref() {
                 child.allocate(
                     w,
                     h,
                     -1,
-                    Some(gtk::gsk::Transform::new().scale(scale as f32, scale as f32)),
+                    Some(
+                        gtk::gsk::Transform::new()
+                            .translate(&gtk::graphene::Point::new(x, y))
+                            .scale(scale as f32, scale as f32),
+                    ),
                 );
             }
             let allocated = (width, height, w, h, scale.to_bits());
@@ -55,10 +75,43 @@ mod imp {
         }
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
             if let Some(child) = self.child.borrow().as_ref() {
+                if self.geometry.get().0 {
+                    let (_, _, w, h, _) = self.allocated.get();
+                    let scale = self.scale.get() as f32;
+                    let (x, y) = self.origin.get();
+                    let outline = gtk::gsk::RoundedRect::from_rect(
+                        gtk::graphene::Rect::new(x, y, w as f32 * scale, h as f32 * scale),
+                        10.0 * scale,
+                    );
+                    // The shadow lives outside the clipped window surface,
+                    // within the canvas gutter. It never intercepts input.
+                    snapshot.append_node(shadow(
+                        &outline,
+                        canvas_margin(self.obj().width(), self.obj().height()),
+                    ));
+                    snapshot.push_rounded_clip(&outline);
+                    self.obj().snapshot_child(child, snapshot);
+                    snapshot.pop();
+                    return;
+                }
                 self.obj().snapshot_child(child, snapshot);
             }
         }
     }
+}
+
+fn canvas_margin(width: i32, height: i32) -> i32 {
+    36.min((width / 8).max(0)).min((height / 8).max(0))
+}
+fn shadow(outline: &gtk::gsk::RoundedRect, margin: i32) -> gtk::gsk::OutsetShadowNode {
+    gtk::gsk::OutsetShadowNode::new(
+        outline,
+        &gtk::gdk::RGBA::new(0.06, 0.09, 0.12, 0.18),
+        0.0,
+        6.0,
+        0.0,
+        ((margin - 8).max(0) as f32 / 1.5).min(18.0),
+    )
 }
 glib::wrapper! {
     pub struct PreviewFrame(ObjectSubclass<imp::PreviewFrame>)
@@ -85,6 +138,20 @@ impl PreviewFrame {
     pub fn scale(&self) -> f64 {
         self.imp().scale.get().max(0.001)
     }
+    #[cfg(test)]
+    pub fn shadow_bounds(&self) -> gtk::graphene::Rect {
+        let (_, _, w, h, _) = self.imp().allocated.get();
+        let s = self.scale() as f32;
+        let (x, y) = self.imp().origin.get();
+        shadow(
+            &gtk::gsk::RoundedRect::from_rect(
+                gtk::graphene::Rect::new(x, y, w as f32 * s, h as f32 * s),
+                10.0 * s,
+            ),
+            canvas_margin(self.width(), self.height()),
+        )
+        .bounds()
+    }
     pub fn connect_geometry_changed(&self, callback: impl Fn() + 'static) {
         *self.imp().changed.borrow_mut() = Some(Box::new(callback));
     }
@@ -98,7 +165,7 @@ fn geometry(
     target_w: i32,
     target_h: i32,
 ) -> (i32, i32, f64) {
-    if !active || mode == 4 {
+    if !active {
         return (width.max(1), height.max(1), 1.0);
     }
     let scale = match mode {
@@ -122,6 +189,7 @@ mod tests {
     #[test]
     fn window_transform_is_bounded_and_independent_of_history() {
         assert_eq!(geometry(true, 4, 550, 400, 1000, 800), (550, 400, 1.0));
+        assert_eq!(geometry(true, 4, 1600, 1200, 1000, 800), (1000, 800, 1.0));
         assert_eq!(geometry(true, 0, 550, 400, 1000, 800), (1000, 800, 0.5));
         assert_eq!(geometry(true, 0, 1600, 1200, 1000, 800), (1000, 800, 1.0));
         assert_eq!(geometry(false, 0, 550, 400, 1000, 800), (550, 400, 1.0));

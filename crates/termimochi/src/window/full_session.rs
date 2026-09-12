@@ -41,6 +41,12 @@ pub(super) struct ImageCells {
     pub rows: u32,
 }
 
+pub(super) struct GreetingProjection {
+    pub parts: Vec<(String, GreetingPart)>,
+    pub image: Option<ImageCells>,
+    pub character_fallback: bool,
+}
+
 pub(super) struct FullSession {
     pub active: Cell<bool>,
     pub toolbar: gtk::Box,
@@ -58,7 +64,8 @@ pub(super) struct FullSession {
     pub rendered_geometry: Cell<(i64, i64, i64)>,
     pub extra_images: RefCell<Vec<(gtk::Picture, ImageCells)>>,
     pub input_pending: Cell<bool>,
-    notice: gtk::Label,
+    pub character_fallback: Cell<bool>,
+    pub(super) notice: gtk::Label,
 }
 
 impl FullSession {
@@ -125,6 +132,7 @@ impl FullSession {
             rendered_geometry: Cell::new((0, 0, 0)),
             extra_images: RefCell::new(Vec::new()),
             input_pending: Cell::new(false),
+            character_fallback: Cell::new(false),
             notice,
         }
     }
@@ -184,6 +192,14 @@ impl Workbench {
     pub(super) fn sync_full_session(&self) {
         let full = &self.full_session;
         let active = full.active.get();
+        self.preview_terminal_shell
+            .set_spacing(if active { 0 } else { 8 });
+        if active {
+            self.preview_terminal_shell.add_css_class("sample-window");
+        } else {
+            self.preview_terminal_shell
+                .remove_css_class("sample-window");
+        }
         #[cfg(feature = "native-preview")]
         let show_toolbar = active && !self.native_terminal.mode.is_active();
         #[cfg(not(feature = "native-preview"))]
@@ -238,21 +254,36 @@ impl Workbench {
         }
     }
 
-    pub(super) fn full_greeting_parts(
-        &self,
-        columns: usize,
-    ) -> (Vec<(String, GreetingPart)>, Option<ImageCells>) {
-        if !self.full_pixel_design() {
-            return (self.greeting_parts_for_width(columns), None);
-        }
+    pub(super) fn full_greeting_parts(&self, columns: usize) -> GreetingProjection {
         let settings = self.greeting.settings();
+        let character_projection = || {
+            let parts = self.greeting_parts_for_width(columns);
+            let character_fallback = settings.editable_artwork.is_some()
+                && settings.presentation.visual != Visual::Character
+                && parts
+                    .iter()
+                    .any(|(text, part)| *part == GreetingPart::Artwork && !text.trim().is_empty());
+            GreetingProjection {
+                parts,
+                image: None,
+                character_fallback,
+            }
+        };
+        if !self.full_pixel_design() {
+            return character_projection();
+        }
         let fallback = |message: &str| {
-            let mut parts = self.greeting_parts_for_width(columns);
-            parts.push((
-                format!("{message} · showing character fallback\r\n\r\n"),
+            let mut projection = character_projection();
+            let detail = if projection.character_fallback {
+                "showing character fallback"
+            } else {
+                "no artwork rendered"
+            };
+            projection.parts.push((
+                format!("{message} · {detail}\r\n\r\n"),
                 GreetingPart::Artwork,
             ));
-            (parts, None)
+            projection
         };
         let Some(dimensions) = self.greeting.presentation.pixel_dimensions() else {
             let message = self
@@ -320,7 +351,11 @@ impl Workbench {
                 }
             }
         }
-        (parts, image)
+        GreetingProjection {
+            parts,
+            image,
+            character_fallback: false,
+        }
     }
 
     pub(super) fn redraw_full_session(&self) {
@@ -378,7 +413,12 @@ impl Workbench {
         } else {
             0
         };
-        let target_height = layout.rows as i32 * ch
+        let observation_rows = if full.zoom.selected() == 4 {
+            layout.rows.clamp(24, 40)
+        } else {
+            layout.rows
+        };
+        let target_height = observation_rows as i32 * ch
             + 2 * padding
             + title_height
             + tabs_height
@@ -402,17 +442,15 @@ impl Workbench {
             image.column + image.columns as usize > self.preview_terminal.column_count() as usize
         }) {
             "Interactive samples · artwork exceeds grid"
-        } else if self.typed.target.get() == Some(crate::design_document::TargetHint::Ptyxis)
-            && self.greeting.settings().presentation.visual != Visual::Character
-        {
+        } else if full.character_fallback.get() {
             "Interactive samples · character reference; design unchanged"
         } else {
             "Interactive samples · no local commands"
         };
         full.notice
             .set_text(&format!("{scope} · {:.0}%", scale * 100.0));
-        full.notice.set_tooltip_text(Some(if self.typed.target.get() == Some(crate::design_document::TargetHint::Ptyxis) {
-            "Ptyxis design approximation. Image/GIF protocol output is not supported here; Full uses character fallback. Artwork view remains available."
+        full.notice.set_tooltip_text(Some(if full.character_fallback.get() {
+            "The visible artwork uses a character fallback, not native image/GIF output. The saved design is unchanged. Artwork view remains available."
         } else { "Interactive samples, not native verification. Actual size follows the viewport at the theme font size. Fixed grid uses theme initial columns; Fit scales the complete finite window. Try Greeting remains a real temporary trial." }));
     }
 

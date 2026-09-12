@@ -456,6 +456,14 @@ scale.picker-hue-scale slider {
               0 0 18px alpha(#505b63, 0.16);
 }
 
+/* Full's canvas owns the shadow and rounded clipping. No focus glow is
+ * allowed to masquerade as a change in the target terminal's appearance. */
+.terminal-shell.sample-window, .terminal-shell.sample-window.preview-active {
+  padding: 0;
+  border-radius: 10px;
+  box-shadow: none;
+}
+
 .vte-preview {
   padding: 0;
 }

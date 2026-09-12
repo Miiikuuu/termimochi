@@ -305,6 +305,7 @@ impl Workbench {
         );
         more.append(Some("Open Theme…"), Some("win.open-workspace"));
         more.append(Some("New Theme…"), Some("win.new-document"));
+        more.append(Some("From My Terminal…"), Some("win.theme-from-terminal"));
         if self.is_theme() {
             more.append(Some("Import into Current Theme…"), Some("win.import-theme"));
             more.append(

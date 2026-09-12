@@ -114,6 +114,11 @@ pub(crate) fn import_current_appearance() -> CurrentTerminalAppearance {
             "The launching terminal does not provide a supported appearance profile. Using the desktop font and preview defaults.",
         );
     }
+    read_ptyxis_appearance(inherited.as_deref())
+}
+
+fn read_ptyxis_appearance(inherited: Option<&str>) -> CurrentTerminalAppearance {
+    let desktop = find_settings("org.gnome.desktop.interface", None);
     let Some(global) = find_settings("org.gnome.Ptyxis", None) else {
         return fallback_appearance(
             desktop.as_ref(),
@@ -121,10 +126,10 @@ pub(crate) fn import_current_appearance() -> CurrentTerminalAppearance {
         );
     };
     let mut notices = Vec::new();
-    let profile_uuid = current_profile_uuid_from(&global, inherited.as_deref());
+    let profile_uuid = current_profile_uuid_from(&global, inherited);
     let launching_profile = profile_uuid
         .as_deref()
-        .is_some_and(|uuid| inherited.as_deref() == Some(uuid));
+        .is_some_and(|uuid| inherited == Some(uuid));
     if inherited.is_some() && !launching_profile {
         notices.push(
             "The launching Ptyxis profile is no longer available; using a configured profile."
@@ -202,6 +207,46 @@ pub(crate) fn import_current_appearance() -> CurrentTerminalAppearance {
         source_label: source_label.to_owned(),
         notices,
     }
+}
+
+/// Explicit target selection does not depend on the terminal that launched the
+/// App. Reads the current backend only (memory/keyfile isolation is respected).
+pub(crate) fn appearance_profiles() -> Result<Vec<(String, String)>, String> {
+    let global = find_settings("org.gnome.Ptyxis", None)
+        .ok_or("Ptyxis settings are unavailable in this session")?;
+    let ids = setting_value(&global, "profile-uuids")
+        .and_then(|v| v.get::<Vec<String>>())
+        .unwrap_or_default();
+    let default = current_profile_uuid_from(&global, env::var("PTYXIS_PROFILE").ok().as_deref());
+    let mut profiles: Vec<_> = ids
+        .into_iter()
+        .filter(|id| valid_profile_uuid(id))
+        .take(64)
+        .map(|id| {
+            let label = find_settings(
+                "org.gnome.Ptyxis.Profile",
+                Some(&format!("/org/gnome/Ptyxis/Profiles/{id}/")),
+            )
+            .and_then(|p| setting_string(&p, "label"))
+            .unwrap_or_else(|| id.clone());
+            (id, label)
+        })
+        .collect();
+    profiles.sort_by_key(|(id, _)| Some(id) != default.as_ref());
+    if profiles.is_empty() {
+        return Err("No Ptyxis profiles are readable in this session. In an isolated App this does not read your daily settings. You can still create a blank theme or open a file.".into());
+    }
+    Ok(profiles)
+}
+
+pub(crate) fn import_profile_appearance(id: &str) -> Result<CurrentTerminalAppearance, String> {
+    if !appearance_profiles()?.iter().any(|(uuid, _)| uuid == id) {
+        return Err("The selected Ptyxis profile is no longer available".into());
+    }
+    let mut appearance = read_ptyxis_appearance(Some(id));
+    appearance.source_label = format!("Ptyxis · selected saved profile {id}");
+    appearance.notices.push("Saved settings snapshot, not another window's active tab or temporary zoom. Global font and profile spacing have separate sources.".into());
+    Ok(appearance)
 }
 
 fn fallback_appearance(desktop: Option<&gio::Settings>, notice: &str) -> CurrentTerminalAppearance {

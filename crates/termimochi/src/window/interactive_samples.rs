@@ -28,6 +28,7 @@ impl Samples {
         selector.set_hexpand(true);
         selector.update_property(&[gtk::accessible::Property::Label("Sample tabs")]);
         let new_tab = gtk::Button::from_icon_name("list-add-symbolic");
+        new_tab.add_css_class("flat");
         new_tab.set_tooltip_text(Some("New sample tab · Ctrl+Shift+T · at most 8"));
         let close_tab = gtk::Button::from_icon_name("window-close-symbolic");
         close_tab.set_tooltip_text(Some("Close this sample tab"));
@@ -36,6 +37,7 @@ impl Samples {
             .icon_name("view-more-symbolic")
             .build();
         more.set_tooltip_text(Some("Sample session controls"));
+        more.add_css_class("flat");
         let menu = gtk::Box::new(gtk::Orientation::Vertical, 6);
         menu.append(&selector);
         menu.append(&close_tab);
@@ -504,7 +506,12 @@ impl Workbench {
         // Resolve this immutable Greeting projection once per render, not once
         // per historical fastfetch. Bound the visible canvas as well as records.
         let greeting = self.full_greeting_parts(columns);
-        let greeting_text: String = greeting.0.iter().map(|(text, _)| text.as_str()).collect();
+        full.character_fallback.set(false);
+        let greeting_text: String = greeting
+            .parts
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect();
         let prompt_rows =
             super::full_session::transcript_rows(&self.greeting_prompt_ansi(), columns).max(8);
         let mut budget = 900usize.saturating_sub(prompt_rows);
@@ -564,6 +571,11 @@ impl Workbench {
                     self.feed_preview(b"\x1b[0m\r\n");
                 }
                 Output::Greeting => {
+                    if block.command.is_empty() && greeting.parts.is_empty() {
+                        self.feed_preview(
+                            b"TermiMochi sample\r\nTry help, git diff or clear.\r\n\r\n",
+                        );
+                    }
                     let preceding: String = self
                         .preview_feed
                         .borrow()
@@ -572,20 +584,20 @@ impl Workbench {
                         .collect();
                     let row =
                         super::full_session::transcript_rows(&preceding, columns).saturating_sub(1);
-                    let (parts, image) = greeting.clone();
-                    if let Some(mut image) = image {
+                    full.character_fallback.set(greeting.character_fallback);
+                    if let Some(mut image) = greeting.image {
                         image.row += row;
                         images.push(image);
                     }
-                    for (text, part) in parts {
+                    for (text, part) in &greeting.parts {
                         use crate::greeting::GreetingPart;
-                        let scope = match part {
+                        let scope = match *part {
                             GreetingPart::Artwork => PreviewTarget::GreetingArtwork,
                             GreetingPart::Message => PreviewTarget::GreetingMessage,
                             GreetingPart::Fields => PreviewTarget::GreetingFields,
                             GreetingPart::Field(kind) => PreviewTarget::GreetingField(kind),
                         };
-                        self.feed_scoped_preview(&text, Some(scope));
+                        self.feed_scoped_preview(text, Some(scope));
                     }
                 }
             }

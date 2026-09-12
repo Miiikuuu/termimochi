@@ -141,6 +141,20 @@ impl KittyDocument {
                 };
                 properties.insert(map_key, value.into());
             } else {
+                // An unreadable later override is not permission to claim the
+                // earlier value is still effective (notably expanded includes).
+                // Retain source, but leave this field inherited/unverified.
+                if category(key).is_some() {
+                    let map_key = if key == "modify_font" {
+                        format!(
+                            "modify_font {}",
+                            value.split_whitespace().next().unwrap_or("")
+                        )
+                    } else {
+                        key.into()
+                    };
+                    properties.remove(&map_key);
+                }
                 notices.push(format!("Kitty line {} · {key}: retained in source, not executed by this controlled appearance adapter.", index + 1));
             }
         }

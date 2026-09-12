@@ -19,6 +19,8 @@ pub(crate) struct ThemeIntent {
     pub inherit: BTreeSet<String>,
     pub prompt_enabled: bool,
     pub sources: Vec<NativeSource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub import_report: Vec<crate::system_import::FieldReport>,
 }
 
 pub(crate) fn fields<T: Serialize>(value: &T) -> Fields {
@@ -75,9 +77,18 @@ impl ThemeIntent {
             inherit: BTreeSet::new(),
             prompt_enabled: false,
             sources: Vec::new(),
+            import_report: Vec::new(),
         }
     }
     pub fn validate(&self) -> Result<(), String> {
+        if self.import_report.len() > 256
+            || self
+                .import_report
+                .iter()
+                .any(|r| r.field.len() + r.source.len() > 4096)
+        {
+            return Err("Oversized import report".into());
+        }
         if self.name.trim().is_empty()
             || self.name.len() > 160
             || self.name.chars().count() > 128

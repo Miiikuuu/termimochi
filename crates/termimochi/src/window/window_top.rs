@@ -265,36 +265,37 @@ impl WindowTop {
 }
 
 pub(super) struct TopPreview {
-    pub title: gtk::DrawingArea,
+    pub title: gtk::Overlay,
+    title_canvas: gtk::DrawingArea,
+    title_label: gtk::Label,
+    header_css: gtk::CssProvider,
     pub tabs: gtk::Overlay,
     canvas: gtk::DrawingArea,
     pub buttons: gtk::Box,
 }
 impl TopPreview {
+    #[allow(deprecated)]
+    fn header_colors(&self, background: Rgb, foreground: Rgb) {
+        self.header_css.load_from_data(&format!(
+            "box {{ background-color: {background}; color: {foreground}; }}"
+        ));
+        if let Some(parent) = self.title.parent() {
+            parent
+                .style_context()
+                .add_provider(&self.header_css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+    }
     fn render_ptyxis(&self, background: Rgb, foreground: Rgb, family: String, size: f64) {
-        self.title.set_draw_func(move |_, cr, w, h| {
+        self.header_colors(background, foreground);
+        self.title_canvas.set_height_request(46);
+        self.title_label.set_text("Terminal");
+        self.title_label
+            .set_attributes(Some(&title_attributes(foreground)));
+        self.title_canvas.set_draw_func(move |_, cr, _, _| {
             rgb(cr, background);
             let _ = cr.paint();
-            rgb(cr, foreground);
-            cr.select_font_face(
-                "Sans",
-                gtk::cairo::FontSlant::Normal,
-                gtk::cairo::FontWeight::Normal,
-            );
-            cr.set_font_size(12.0);
-            cr.move_to(14.0, f64::from(h) / 2.0 + 4.0);
-            let _ = cr.show_text("Ptyxis — bash");
-            for offset in [-4.0, 0.0, 4.0] {
-                cr.arc(
-                    f64::from(w) - 24.0,
-                    f64::from(h) / 2.0 + offset,
-                    1.0,
-                    0.0,
-                    std::f64::consts::TAU,
-                );
-                let _ = cr.fill();
-            }
         });
+        self.canvas.set_height_request(38);
         self.canvas.set_draw_func(move |_, cr, w, h| {
             rgb(cr, background);
             let _ = cr.paint();
@@ -321,12 +322,21 @@ impl TopPreview {
         });
     }
     pub fn new() -> Self {
-        let title = gtk::DrawingArea::builder()
+        let title_canvas = gtk::DrawingArea::builder()
             .height_request(28)
             .tooltip_text(
                 "Window title bar · design approximation, not system decoration verification",
             )
             .build();
+        let title = gtk::Overlay::new();
+        title.set_child(Some(&title_canvas));
+        let title_label = gtk::Label::builder()
+            .label("Terminal")
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        title_label.add_css_class("heading");
+        title_label.set_can_target(false);
+        title.add_overlay(&title_label);
         let canvas = gtk::DrawingArea::builder()
             .height_request(32)
             .tooltip_text(
@@ -336,10 +346,14 @@ impl TopPreview {
         let tabs = gtk::Overlay::new();
         tabs.set_child(Some(&canvas));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        buttons.set_homogeneous(true);
         tabs.add_overlay(&buttons);
         tabs.set_clip_overlay(&buttons, true);
         Self {
             title,
+            title_canvas,
+            title_label,
+            header_css: gtk::CssProvider::new(),
             tabs,
             canvas,
             buttons,
@@ -359,26 +373,28 @@ impl TopPreview {
             TitlebarColor::Background if supported => background,
             _ => Rgb::new(241, 241, 241),
         };
-        self.title.set_draw_func(move |_, cr, w, h| {
+        self.title_canvas.set_height_request(28);
+        self.header_colors(
+            title_bg,
+            if title_bg.relative_luminance() > 0.4 {
+                Rgb::new(35, 35, 35)
+            } else {
+                Rgb::new(240, 240, 240)
+            },
+        );
+        self.title_label.set_text("bash — Kitty");
+        self.title_label.set_attributes(Some(&title_attributes(
+            if title_bg.relative_luminance() > 0.4 {
+                Rgb::new(35, 35, 35)
+            } else {
+                Rgb::new(240, 240, 240)
+            },
+        )));
+        self.canvas
+            .set_height_request((size * 4.0 / 3.0).ceil() as i32 + 6);
+        self.title_canvas.set_draw_func(move |_, cr, _, _| {
             rgb(cr, title_bg);
             let _ = cr.paint();
-            rgb(
-                cr,
-                if title_bg.relative_luminance() > 0.4 {
-                    Rgb::new(35, 35, 35)
-                } else {
-                    Rgb::new(240, 240, 240)
-                },
-            );
-            cr.select_font_face(
-                "Sans",
-                gtk::cairo::FontSlant::Normal,
-                gtk::cairo::FontWeight::Normal,
-            );
-            cr.set_font_size(11.0);
-            cr.move_to(12.0, f64::from(h) / 2.0 + 4.0);
-            let _ = cr.show_text("Kitty — window title");
-            let _ = w;
         });
         self.canvas.set_draw_func(move |_, cr, _, h| {
             rgb(cr, background);
@@ -451,6 +467,15 @@ impl TopPreview {
             }
         });
     }
+}
+fn title_attributes(foreground: Rgb) -> gtk::pango::AttrList {
+    let attrs = gtk::pango::AttrList::new();
+    attrs.insert(gtk::pango::AttrColor::new_foreground(
+        u16::from(foreground.red()) * 257,
+        u16::from(foreground.green()) * 257,
+        u16::from(foreground.blue()) * 257,
+    ));
+    attrs
 }
 fn rgb(cr: &gtk::cairo::Context, c: Rgb) {
     cr.set_source_rgb(
@@ -561,6 +586,8 @@ impl Workbench {
         self.top_preview.tabs.set_visible(
             l.tab_bar
                 && (ptyxis
+                    && (!self.full_session.active.get()
+                        || self.full_session.samples.state.borrow().tabs.len() > 1)
                     || kitty
                         && usize::from(l.tab_min_tabs)
                             <= if self.full_session.active.get() {
@@ -729,7 +756,16 @@ impl Workbench {
                     u16::from(fg[1]) * 257,
                     u16::from(fg[2]) * 257,
                 ));
-                attrs.insert(gtk::pango::AttrFontDesc::new(&font.font_description()));
+                if !ptyxis {
+                    attrs.insert(gtk::pango::AttrFontDesc::new(&font.font_description()));
+                    attrs.insert(gtk::pango::AttrInt::new_weight(if index == active {
+                        gtk::pango::Weight::Bold
+                    } else {
+                        gtk::pango::Weight::Normal
+                    }));
+                }
+                label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                label.set_width_chars(1);
                 label.set_attributes(Some(&attrs));
             }
             child = button.next_sibling();

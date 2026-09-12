@@ -35,6 +35,12 @@ that looks balanced elsewhere can therefore become almost unreadable.
 - Read-only Ptyxis appearance snapshots: palette, font, cell spacing, cursor,
   configured grid, scrollbar policy and character-width behavior, with an
   explicit launching/default-profile source and fallback details.
+- **New Theme… → From My Terminal…** (also in the footer **⋮**) reads a saved
+  Kitty configuration or selected Ptyxis profile into a separate theme window.
+  It preserves the original editor, reports sources and unread settings, and
+  never applies the snapshot. Kitty include/globinclude expansion is bounded;
+  execution-based includes are not run. Optional Starship/Fastfetch candidates
+  are unchecked until explicitly selected. [Import and preview QA](docs/preview-presentation-system-import-qa.md).
 - Light/dark variant editor with an embedded HSV picker and exact HEX/RGB input.
 - Document-wide undo/redo with coalesced drag and text-edit transactions.
 - VS Code-style Activity Rail for switching the left-side Palette (`Ctrl+1`),
@@ -51,6 +57,9 @@ that looks balanced elsewhere can therefore become almost unreadable.
   composition does **not** verify Kitty/Sixel: **Try Greeting** remains a temporary
   real Greeting-only trial. See [interactive samples](docs/interactive-samples.md) and the
   [manual acceptance card (Chinese)](docs/interactive-samples-acceptance-zh.md).
+  Full's Actual-size window is finite and horizontally centered with shadow
+  gutters; it no longer fills the entire wide canvas. Window rounding clips the
+  content separately from its outer shadow. [Presentation/import acceptance card (Chinese)](docs/preview-presentation-acceptance-zh.md).
 - Live VTE typography controls for installed monospace families, point size,
   weight, line height and cell width, with fallback-safe Nerd icon checks.
 - Typography presets: **⋮ → Save Typography Preset** remembers

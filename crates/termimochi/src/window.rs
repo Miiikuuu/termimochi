@@ -34,6 +34,7 @@ mod preview_scroll;
 mod scheme;
 #[cfg(test)]
 mod stress_tests;
+mod system_import;
 mod theme_workspace;
 mod typed_documents;
 mod typed_kitty;
@@ -2668,7 +2669,7 @@ fn build_preview(
     terminal.set_widget_name("termimochi-terminal");
     terminal.add_css_class("terminal-shell");
     terminal.set_vexpand(true);
-    terminal.set_margin_bottom(4);
+    terminal.set_margin_bottom(0);
 
     let terminal_header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     terminal_header.add_css_class("terminal-header");
@@ -4895,6 +4896,10 @@ impl Workbench {
         // loading state or a previous scene cannot survive an async redraw.
         self.feed_preview(PREVIEW_HOME_AND_CLEAR);
         if self.full_session.active.get() {
+            // VTE may move the erased display into scrollback on ED2. Clear
+            // history AFTER that erase, in the same queued feed as the sample,
+            // so an earlier folder/Prompt feed cannot survive above Full.
+            self.feed_preview(b"\x1b[3J");
             self.redraw_full_session();
             return;
         }
@@ -6089,9 +6094,10 @@ impl Workbench {
         let foreground = variant.get("Foreground").unwrap_or(Rgb::new(255, 255, 255));
         let background = variant.get("Background").unwrap_or(Rgb::new(0, 0, 0));
         let color0 = variant.get("Color0").unwrap_or(background);
+        let cursor = variant.get("Cursor").unwrap_or(foreground);
 
         let css = format!(
-            "#termimochi-terminal.{0} {{ background-color: {background}; color: {foreground}; }} #termimochi-terminal.{0} .sample-command {{ color: {foreground}; caret-color: {foreground}; }}",
+            "#termimochi-terminal.{0} {{ background-color: {background}; color: {foreground}; }} #termimochi-terminal.{0} .sample-command {{ color: {foreground}; caret-color: {cursor}; }}",
             self.terminal_css_scope
         );
         let terminal_palette: Vec<_> = (0..16)
@@ -6102,7 +6108,7 @@ impl Workbench {
         let terminal_palette_refs: Vec<_> = terminal_palette.iter().collect();
         let foreground_rgba = rgba_from_rgb(foreground);
         let background_rgba = rgba_from_rgb(background);
-        let cursor_rgba = rgba_from_rgb(variant.get("Cursor").unwrap_or(foreground));
+        let cursor_rgba = rgba_from_rgb(cursor);
         let cursor_foreground_rgba =
             rgba_from_rgb(variant.get("CursorForeground").unwrap_or(background));
         self.preview_terminal.set_colors(
@@ -7683,6 +7689,16 @@ impl Workbench {
         std::thread::spawn(move || {
             let _ = sender.send(CurrentPreviewContext::load_for_width(directory, columns));
         });
+        self.receive_current_context(generation, receiver);
+    }
+
+    // One result delivery path for the bounded worker. It updates reference
+    // data only; the current scene remains the sole owner of VTE rendering.
+    fn receive_current_context(
+        self: &Rc<Self>,
+        generation: u64,
+        receiver: mpsc::Receiver<CurrentPreviewContext>,
+    ) {
         let weak = Rc::downgrade(self);
         glib::timeout_add_local(Duration::from_millis(40), move || {
             let Some(this) = weak.upgrade() else {

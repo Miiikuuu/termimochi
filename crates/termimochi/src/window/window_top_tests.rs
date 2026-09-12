@@ -257,6 +257,9 @@ fn window_top_ptyxis_shared_palette_preview_and_save() {
     this.window_top.discard_palette();
     assert_eq!(this.preview_scene_selector.selected(), scene);
     this.tab_bar_switch.set_active(true);
+    // Full no longer paints two decorative tabs for a one-tab session.
+    assert!(this.full_session.samples.state.borrow_mut().add());
+    this.sync_sample_controls();
     for scene in 0..4 {
         this.preview_scene_selector.set_selected(scene);
         ready(&this);

@@ -49,6 +49,164 @@ fn capture(window: &gtk::Window, name: &str) {
     texture.save_to_png(&path).unwrap();
     println!("Screenshot: {}", path.display());
 }
+
+#[test]
+#[ignore = "isolated GTK: new Ptyxis samples must not depend on folder/Starship rendering"]
+fn interactive_samples_ptyxis_without_context() {
+    assert_eq!(std::env::var("GSETTINGS_BACKEND").as_deref(), Ok("memory"));
+    adw::init().unwrap();
+    gio::resources_register_include!("termimochi.gresource").unwrap();
+    let app = adw::Application::builder()
+        .application_id("io.github.miiikuuu.termimochi.NoContextTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    present_with_preset(&app, None, root.path().join("unused-font.json"));
+    let window = app.active_window().unwrap();
+    let this = controller(&window);
+    assert!(this.theme_prompt_disabled());
+    assert!(!this.greeting.settings().enabled);
+    assert!(!glib::user_config_dir().join("starship.toml").exists());
+    // Do not wait for the context worker. A new theme is usable immediately.
+    settle();
+    let actual = this
+        .preview_terminal
+        .text_format(vte::Format::Text)
+        .unwrap();
+    println!("INITIAL VTE: {actual:?}; projection: {:?}", feed(&this));
+    capture(&window, "ptyxis-no-context-initial");
+    assert!(!actual.contains("Reading current folder"));
+    assert!(actual.contains("/demo $"));
+    command(&this, "help");
+    assert!(
+        this.preview_terminal
+            .text_format(vte::Format::Text)
+            .unwrap()
+            .contains("no local commands")
+    );
+    command(&this, "clear");
+    assert_eq!(
+        this.preview_terminal
+            .text_format(vte::Format::Text)
+            .unwrap()
+            .trim(),
+        "/demo $"
+    );
+    ready(&this); // Only drain startup workers AFTER proving immediate input.
+    this.current_preview_context.borrow_mut().take();
+    *this.copy_preview.borrow_mut() = Some(Err("Starship renderer unavailable".into()));
+    let missing = root.path().join("does-not-exist");
+    *this.preview_directory.borrow_mut() = missing.clone();
+    let delayed = || {
+        this.preview_loading.set(true);
+        let (tx, rx) = mpsc::channel();
+        this.receive_current_context(this.preview_generation.get(), rx);
+        tx
+    };
+    let tx = delayed();
+    let design = this.design_snapshot().unwrap();
+    command(&this, "help");
+    this.full_session.samples.entry.set_text("未提交");
+    let before = this.full_session.samples.state.borrow().current().clone();
+    let transcript = feed(&this);
+    assert!(
+        this.preview_loading.get(),
+        "samples must work while the worker is held"
+    );
+    let mut context = CurrentPreviewContext::load(missing.clone());
+    assert!(context.imported_prompt.ansi.is_none());
+    // A late real-folder result must not become the disabled theme's prompt.
+    context.imported_prompt.ansi = Some("LATE REAL PROMPT $ ".into());
+    tx.send(context).unwrap();
+    settle();
+    assert!(!this.preview_loading.get());
+    assert_eq!(feed(&this), transcript);
+    assert_eq!(*this.full_session.samples.state.borrow().current(), before);
+    assert_eq!(this.design_snapshot().unwrap(), design);
+    for module in [
+        &this.palette_module_button,
+        &this.typography_module_button,
+        &this.layout_module_button,
+        &this.prompt_module_button,
+        &this.greeting_module_button,
+    ] {
+        module.set_active(true);
+        settle();
+        assert!(this.full_session.active.get());
+        assert_eq!(feed(&this), transcript);
+    }
+    for zoom in [0, 1, 2, 3, 4] {
+        this.full_session.zoom.set_selected(zoom);
+        settle();
+        assert_eq!(this.full_session.samples.entry.text(), "未提交");
+        super::super::preview_geometry_tests::aligned(&this);
+        let actual = this
+            .preview_terminal
+            .text_format(vte::Format::Text)
+            .unwrap();
+        assert!(!actual.contains("Reading current folder"));
+        assert!(!actual.contains("LATE REAL PROMPT"));
+        assert!(actual.contains("no local commands"));
+    }
+    this.full_session.samples.new_tab.emit_clicked();
+    settle();
+    let actual = this
+        .preview_terminal
+        .text_format(vte::Format::Text)
+        .unwrap();
+    assert!(actual.contains("TermiMochi sample") && actual.trim().ends_with("/demo $"));
+    this.full_session.samples.selector.set_selected(0);
+    settle();
+    assert_eq!(this.full_session.samples.entry.text(), "未提交");
+    command(&this, "clear");
+    // Deliberately queue the old directory scene before returning to Full,
+    // without letting VTE parse it first. Test the real terminal, not its cache.
+    this.current_preview_context.borrow_mut().take();
+    this.select_preview_scene(preview_scene::PreviewScene::Terminal);
+    this.preview_selector.set_selected(8);
+    assert!(feed(&this).contains("Reading current folder"));
+    this.select_preview_scene(preview_scene::PreviewScene::Full);
+    settle();
+    assert_eq!(
+        this.preview_terminal
+            .text_format(vte::Format::Text)
+            .unwrap()
+            .trim(),
+        "/demo $"
+    );
+    let stale = delayed();
+    this.load_design(crate::design_document::DesignDocument::new_theme(
+        crate::design_document::TargetHint::Ptyxis,
+        "Another theme",
+        true,
+    ));
+    let next = this.design_snapshot().unwrap();
+    let mut context = CurrentPreviewContext::load(missing);
+    context.imported_prompt.ansi = Some("STALE OTHER THEME $ ".into());
+    stale.send(context).unwrap();
+    command(&this, "help");
+    ready(&this);
+    assert_eq!(this.design_snapshot().unwrap(), next);
+    assert!(this.theme_prompt_disabled());
+    assert!(!this.greeting.settings().enabled);
+    assert!(
+        !this
+            .full_session
+            .notice
+            .text()
+            .contains("character reference")
+    );
+    let actual = this
+        .preview_terminal
+        .text_format(vte::Format::Text)
+        .unwrap();
+    assert!(actual.contains("no local commands"));
+    assert!(!actual.contains("STALE OTHER THEME"));
+    assert!(!actual.contains("Reading current folder"));
+    capture(&window, "ptyxis-no-context-complete");
+    window.destroy();
+}
 #[test]
 #[ignore = "isolated GTK: default Full independent tabs, input, palette, font, save and finite-action safety"]
 fn interactive_samples_vertical_workbench() {
@@ -259,7 +417,61 @@ fn interactive_samples_gif_anchors() {
     assert!(!this.full_session.picture.is_visible());
     assert!(this.full_session.image.get().is_none());
     assert!(feed(&this).contains("OS:"));
+    assert!(
+        this.full_session
+            .notice
+            .text()
+            .contains("character reference")
+    );
     capture(&window, "samples-ptyxis-characters");
+    command(&this, "clear");
+    assert!(
+        !this
+            .full_session
+            .notice
+            .text()
+            .contains("character reference")
+    );
+    command(&this, "fastfetch");
+    assert!(
+        this.full_session
+            .notice
+            .text()
+            .contains("character reference")
+    );
+    let mut settings = this.greeting.settings();
+    settings.enabled = false;
+    this.greeting.replace(settings.clone(), true);
+    settle();
+    assert!(
+        !this
+            .full_session
+            .notice
+            .text()
+            .contains("character reference")
+    );
+    settings.enabled = true;
+    settings.presentation.visual = crate::greeting_output::Visual::Character;
+    this.greeting.replace(settings.clone(), true);
+    settle();
+    assert!(
+        !this
+            .full_session
+            .notice
+            .text()
+            .contains("character reference")
+    );
+    settings.presentation.visual = crate::greeting_output::Visual::Auto;
+    settings.editable_artwork = None;
+    this.greeting.replace(settings, true);
+    settle();
+    assert!(
+        !this
+            .full_session
+            .notice
+            .text()
+            .contains("character reference")
+    );
     window.destroy();
 }
 
@@ -415,5 +627,45 @@ fn keyboard(fit: bool) {
     assert!(this.preview_terminal.pty().is_none());
     assert_eq!(this.design_snapshot().unwrap(), before);
     capture(&window, "sample-keys-finished");
+    assert_sample_caret_colors(&this);
     window.destroy();
+}
+
+// Render GTK's own insertion cursor with the real input delegate's computed
+// style. This checks inherited CSS, not just the provider's source string.
+#[allow(deprecated)]
+fn assert_sample_caret_colors(this: &Workbench) {
+    let text = this.focused_sample_text().expect("GTK input retains focus");
+    for (name, rgb, pixel) in [
+        ("green", Rgb::new(0, 255, 0), [0, 255, 0, 255]),
+        ("magenta", Rgb::new(255, 0, 255), [255, 0, 255, 255]),
+    ] {
+        this.apply_color("Cursor", rgb);
+        settle();
+        let snapshot = gtk::Snapshot::new();
+        snapshot.render_insertion_cursor(
+            &text.style_context(),
+            4.0,
+            4.0,
+            &text.create_pango_layout(Some("x")),
+            0,
+            gtk::pango::Direction::Ltr,
+        );
+        let texture = this
+            .window()
+            .renderer()
+            .unwrap()
+            .render_texture(snapshot.to_node().expect("GTK insertion cursor node"), None);
+        let stride = texture.width() as usize * 4;
+        let mut pixels = vec![0; stride * texture.height() as usize];
+        texture.download(&mut pixels, stride);
+        assert!(
+            pixels.chunks_exact(4).any(|p| p == pixel),
+            "GTK caret must use {name} Cursor, not Foreground"
+        );
+        texture
+            .save_to_png(glib::user_cache_dir().join(format!("sample-caret-{name}.png")))
+            .unwrap();
+        super::super::preview_geometry_tests::aligned(this);
+    }
 }
