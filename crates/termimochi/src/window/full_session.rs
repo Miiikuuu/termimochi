@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthStr;
 /// Our transcript contains sanitized text, SGR, erase-line, home/clear and
 /// cursor visibility CSI only (never arbitrary terminal programs). Measure the
 /// complete feed, including Unicode wrapping, not the source artwork's pixels.
-fn transcript_rows(text: &str, columns: usize) -> usize {
+pub(super) fn transcript_rows(text: &str, columns: usize) -> usize {
     let mut plain = String::with_capacity(text.len());
     let mut escape = false;
     let mut csi = false;
@@ -53,6 +53,9 @@ pub(super) struct FullSession {
     pub image: Cell<Option<ImageCells>>,
     pub rows: Cell<usize>,
     pub collecting: Cell<bool>,
+    pub samples: interactive_samples::Samples,
+    pub rendered: RefCell<String>,
+    pub extra_images: RefCell<Vec<(gtk::Picture, ImageCells)>>,
     notice: gtk::Label,
 }
 
@@ -61,7 +64,7 @@ impl FullSession {
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         toolbar.set_visible(false);
         let notice = gtk::Label::builder()
-            .label("Design simulation · not terminal verification")
+            .label("Interactive samples · no local commands")
             .xalign(0.0)
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -69,6 +72,7 @@ impl FullSession {
         notice.set_tooltip_text(Some("Greeting, system information, prompt and simulated commands share this design canvas. GTK images do not prove Kitty/Sixel compatibility. Use Try Greeting for a real greeting trial."));
         let zoom = gtk::DropDown::from_strings(&["Fit", "100%", "75%", "50%"]);
         zoom.add_css_class("preview-scenario");
+        zoom.set_selected(0);
         zoom.update_property(&[gtk::accessible::Property::Label("Full Session zoom")]);
         zoom.set_tooltip_text(Some("Scale the entire scene for observation. Never changes Columns, font settings or saved state."));
         let play = gtk::ToggleButton::with_label("Play GIF");
@@ -108,6 +112,9 @@ impl FullSession {
             image: Cell::new(None),
             rows: Cell::new(24),
             collecting: Cell::new(false),
+            samples: interactive_samples::Samples::new(),
+            rendered: RefCell::new(String::new()),
+            extra_images: RefCell::new(Vec::new()),
             notice,
         }
     }
@@ -117,6 +124,7 @@ impl Workbench {
     pub(super) fn full_pixel_design(&self) -> bool {
         let settings = self.greeting.settings();
         self.full_session.active.get()
+            && self.typed.target.get() != Some(crate::design_document::TargetHint::Ptyxis)
             && settings.enabled
             && settings.position != Position::Card
             && settings.editable_artwork.is_some()
@@ -138,7 +146,10 @@ impl Workbench {
             .vadjustment()
             .connect_page_size_notify(move |_| {
                 if let Some(this) = weak.upgrade() {
-                    this.refresh_full_transform();
+                    // Adjustment notifications run inside GTK allocation.
+                    // Defer size requests, or GTK may drop their resize and
+                    // leave a smaller scroll range than the scaled transcript.
+                    this.schedule_preview_reflow();
                 }
             });
         // Preparation and playback reuse the existing worker and textures.
@@ -156,8 +167,19 @@ impl Workbench {
     pub(super) fn sync_full_session(&self) {
         let full = &self.full_session;
         let active = full.active.get();
-        full.toolbar.set_visible(active);
+        #[cfg(feature = "native-preview")]
+        let show_toolbar = active && !self.native_terminal.mode.is_active();
+        #[cfg(not(feature = "native-preview"))]
+        let show_toolbar = active;
+        full.toolbar.set_visible(show_toolbar);
+        full.samples.tabs.set_visible(active);
+        full.samples.input_row.set_visible(active);
         if active && full.overlay.child().is_none() {
+            let navigating = self.navigating_preview.replace(true);
+            if self.preview_selector.selected() == 8 {
+                self.preview_selector.set_selected(0);
+            }
+            self.navigating_preview.set(navigating);
             self.preview_terminal_viewport
                 .set_child(None::<&gtk::Widget>);
             full.overlay.set_child(Some(&self.preview_terminal_canvas));
@@ -172,6 +194,10 @@ impl Workbench {
         }
         if !active {
             full.picture.set_visible(false);
+            for (picture, _) in full.extra_images.borrow().iter() {
+                picture.set_visible(false);
+            }
+            full.rendered.borrow_mut().clear();
         }
     }
 
@@ -261,42 +287,7 @@ impl Workbench {
     }
 
     pub(super) fn redraw_full_session(&self) {
-        let columns = self.preview_terminal.column_count().max(12) as usize;
-        let (parts, image) = self.full_greeting_parts(columns);
-        self.full_session.image.set(image);
-        for (text, part) in parts {
-            let target = match part {
-                GreetingPart::Artwork => PreviewTarget::GreetingArtwork,
-                GreetingPart::Message => PreviewTarget::GreetingMessage,
-                GreetingPart::Fields => PreviewTarget::GreetingFields,
-                GreetingPart::Field(kind) => PreviewTarget::GreetingField(kind),
-            };
-            self.feed_scoped_preview(&text, Some(target));
-        }
-        self.feed_greeting_prompt();
-        self.feed_preview("printf 'Ready · 你好 · 🌸\\n'\r\n".as_bytes());
-        self.feed_preview("\x1b[32mReady\x1b[0m · 你好 · 🌸\r\n\r\n".as_bytes());
-        self.redraw_prompt_preview();
-        self.terminal_title
-            .set_text(&format!("full session · {columns} cols"));
-        self.preview_selector.set_visible(false);
-        self.prompt_preview_selector
-            .set_visible(self.preview_prompt_source.get() == 1);
-        self.prompt_compare_selector.set_visible(false);
-        self.feed_preview(PREVIEW_SHOW_CURSOR);
-        // Feeds are queued by VTE. Size the same canvas before GTK processes
-        // them, so a tall composition does not move its logo into scrollback.
-        let text: String = self
-            .preview_feed
-            .borrow()
-            .iter()
-            .map(|chunk| chunk.text.as_str())
-            .collect();
-        self.full_session.rows.set(transcript_rows(&text, columns));
-        self.refresh_terminal_geometry(&self.layout_settings());
-        self.full_session.collecting.set(false);
-        self.preview_terminal.reset(true, true);
-        self.preview_terminal.feed(text.as_bytes());
+        self.redraw_interactive_samples();
     }
 
     pub(super) fn refresh_full_transform(&self) {
@@ -317,6 +308,12 @@ impl Workbench {
         } else {
             full.picture.set_visible(false);
         }
+        for (picture, image) in full.extra_images.borrow().iter() {
+            picture.set_margin_start(padding + image.column as i32 * cw);
+            picture.set_margin_top(padding + image.row as i32 * ch);
+            picture.set_size_request(image.columns as i32 * cw, image.rows as i32 * ch);
+            picture.set_visible(true);
+        }
         let logical_width = self.preview_terminal_canvas.width_request().max(1);
         let logical_height = self.preview_terminal_canvas.height_request().max(1);
         let available = self
@@ -328,16 +325,14 @@ impl Workbench {
             1 => 1.0,
             2 => 0.75,
             3 => 0.5,
-            _ => (available / f64::from(logical_width))
-                .min(
-                    self.preview_terminal_viewport
-                        .vadjustment()
-                        .page_size()
-                        .max(1.0)
-                        / f64::from(logical_height),
-                )
-                .clamp(0.001, 1.0),
+            _ => (available / f64::from(logical_width)).clamp(0.001, 1.0),
         };
+        // The transformed canvas needs an explicit scroll extent; GtkFixed's
+        // natural allocation can otherwise crop the lower rows after zoom.
+        full.scaled.set_size_request(
+            (f64::from(logical_width) * scale).ceil() as i32,
+            (f64::from(logical_height) * scale).ceil() as i32,
+        );
         if full.scale.replace(scale) != scale {
             full.scaled.set_child_transform(
                 &full.overlay,
@@ -350,11 +345,14 @@ impl Workbench {
                 image.column + image.columns as usize
                     > self.preview_terminal.column_count() as usize
             }) {
-                "Design simulation · artwork exceeds grid; reduce Columns or widen the grid"
+                "Interactive samples · artwork exceeds grid"
             } else {
-                "Design simulation · not terminal verification"
+                "Interactive samples · no local commands"
             },
         );
+        full.notice.set_tooltip_text(Some(if self.typed.target.get() == Some(crate::design_document::TargetHint::Ptyxis) {
+            "Ptyxis design approximation. Image/GIF protocol output is not supported here; Full uses character fallback. Artwork view remains available."
+        } else { "Interactive samples, not native verification. Fit scales width only; scroll to see more output. Try Greeting remains a real temporary trial." }));
     }
 }
 
@@ -375,6 +373,9 @@ mod tests {
     }
 
     fn ready(this: &Workbench) {
+        // Let the existing 220 ms coalescer start before asserting no worker
+        // is active; otherwise a cached old prompt can masquerade as settled.
+        settle();
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         while this.preview_loading.get()
             || this.greeting.presentation.pixel_dimensions().is_none()
@@ -410,6 +411,8 @@ mod tests {
     }
 
     fn transparent_artwork_background(this: &Workbench) -> [u8; 3] {
+        this.preview_scroll.start();
+        settle();
         let widget = &this.preview_terminal_shell;
         let snapshot = gtk::Snapshot::new();
         gtk::WidgetPaintable::new(Some(widget)).snapshot(
@@ -462,6 +465,11 @@ mod tests {
         let window = app.active_window().unwrap();
         window.set_default_size(1280, 900);
         let this = controller(&window);
+        // Pixel composition is a Kitty design approximation. Ptyxis now has
+        // an explicit character fallback, tested separately.
+        this.typed
+            .target
+            .set(Some(crate::design_document::TargetHint::Kitty));
         let (mut settings, _) = crate::pixel_trial::tests::fixture(true);
         settings.presentation.visual = Visual::Animation;
         settings.presentation.columns = 32;
@@ -472,13 +480,15 @@ mod tests {
         this.preview_scene_selector.set_selected(0);
         ready(&this);
         let full = &this.full_session;
+        this.sample_action(crate::interactive_samples::Action::Help);
+        settle();
         let generation = this.greeting.presentation.pixel_generation();
         assert!(full.active.get());
         assert!(full.picture.is_mapped());
         assert!(feed(&this).contains("Full Session"));
         assert!(feed(&this).contains("OS:"));
-        assert!(feed(&this).contains("printf 'Ready"));
-        assert!(feed(&this).contains("\x1b[32mReady"));
+        assert!(feed(&this).contains("Interactive samples"));
+        assert!(feed(&this).contains("no local commands are executed"));
         assert_eq!(this.preview_terminal.column_count(), 100);
         let image = full.image.get().unwrap();
         assert_eq!(image.columns, 32);
@@ -612,9 +622,18 @@ mod tests {
                 bounds.width() <= this.preview_terminal_viewport.width() as f32 + 2.0,
                 "Fit scales the complete scene: {bounds:?}"
             );
+            // Interactive Fit preserves width, not poster height. The bounded
+            // transcript and every image share this single vertical viewport.
             assert!(
-                bounds.height() <= this.preview_terminal_viewport.height() as f32 + 2.0,
-                "Fit includes the entire transcript: {bounds:?}"
+                this.preview_terminal_viewport.vadjustment().upper()
+                    >= bounds.height() as f64 - 2.0,
+                "bounds={bounds:?} upper={} scale={} canvas={} overlay={} scaled={} requested={}",
+                this.preview_terminal_viewport.vadjustment().upper(),
+                full.scale.get(),
+                this.preview_terminal_canvas.height_request(),
+                full.overlay.height(),
+                full.scaled.height(),
+                full.scaled.height_request()
             );
             let history = this.preview_terminal.vadjustment().unwrap();
             assert!(
@@ -669,7 +688,7 @@ mod tests {
         settle();
         assert!(full.active.get() && !full.picture.is_visible());
         assert!(feed(&this).contains("Character greeting") && feed(&this).contains("OS:"));
-        assert!(feed(&this).contains("printf 'Ready"));
+        assert!(feed(&this).contains("Interactive samples"));
         capture(&window, "full-character");
         let (mut still, _) = crate::pixel_trial::tests::fixture(false);
         still.presentation.visual = Visual::Image;
@@ -688,6 +707,8 @@ mod tests {
             prepared_generation
         );
         this.apply_color("Background", Rgb::new(22, 28, 36));
+        settle();
+        this.preview_scroll.start();
         settle();
         let native = full.picture.native().unwrap();
         let (dx, dy) = native.surface_transform();
@@ -712,7 +733,7 @@ mod tests {
         );
         capture(&window, "full-static");
         assert_eq!(full.image.get().unwrap().columns, 24);
-        assert!(feed(&this).contains("OS:") && feed(&this).contains("printf 'Ready"));
+        assert!(feed(&this).contains("OS:") && feed(&this).contains("Interactive samples"));
         still.presentation.columns = 40;
         this.greeting.replace(still, true);
         ready(&this);
@@ -756,13 +777,13 @@ mod tests {
         ready(&this);
         assert!(full.image.get().is_none());
         assert!(feed(&this).contains("occupancy unavailable"));
-        assert!(feed(&this).contains("OS:") && feed(&this).contains("printf 'Ready"));
+        assert!(feed(&this).contains("OS:") && feed(&this).contains("Interactive samples"));
         let mut disabled = this.greeting.settings();
         disabled.enabled = false;
         this.greeting.replace(disabled, true);
         settle();
         assert!(full.active.get() && full.image.get().is_none());
-        assert!(feed(&this).contains("printf 'Ready"));
+        assert!(feed(&this).contains("Interactive samples"));
         assert!(!feed(&this).contains("OS:"));
         this.starship_editor
             .begin_detached(Some("format = '[CURRENT](bold green) '\n".into()))

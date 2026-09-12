@@ -9,6 +9,7 @@ pub(super) struct PreviewScroll {
     updating: Cell<bool>,
     generation: Cell<u64>,
     scale: Cell<f64>,
+    pub user_scrolled: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 fn pixel_delta(delta: f64, cell: f64, unit: gdk::ScrollUnit) -> f64 {
@@ -32,6 +33,7 @@ impl PreviewScroll {
             updating: Cell::new(false),
             generation: Cell::new(0),
             scale: Cell::new(1.0),
+            user_scrolled: RefCell::new(None),
         });
         for source in [terminal.vadjustment().unwrap(), viewport.vadjustment()] {
             let weak = Rc::downgrade(&this);
@@ -123,6 +125,9 @@ impl PreviewScroll {
                     this.pan(if shift && dx == 0.0 { dy } else { dx }, event.unit());
                 } else {
                     this.scroll(dy, event.unit());
+                }
+                if let Some(callback) = this.user_scrolled.borrow().as_ref() {
+                    callback();
                 }
             }
             // Contain even empty/edge gestures; never chain into another pane.

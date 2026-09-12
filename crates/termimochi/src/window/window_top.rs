@@ -266,7 +266,9 @@ impl WindowTop {
 
 pub(super) struct TopPreview {
     pub title: gtk::DrawingArea,
-    pub tabs: gtk::DrawingArea,
+    pub tabs: gtk::Overlay,
+    canvas: gtk::DrawingArea,
+    pub buttons: gtk::Box,
 }
 impl TopPreview {
     fn render_ptyxis(&self, background: Rgb, foreground: Rgb, family: String, size: f64) {
@@ -293,7 +295,7 @@ impl TopPreview {
                 let _ = cr.fill();
             }
         });
-        self.tabs.set_draw_func(move |_, cr, w, h| {
+        self.canvas.set_draw_func(move |_, cr, w, h| {
             rgb(cr, background);
             let _ = cr.paint();
             // Adwaita-like sample, not four independently configurable colors.
@@ -325,13 +327,23 @@ impl TopPreview {
                 "Window title bar · design approximation, not system decoration verification",
             )
             .build();
-        let tabs = gtk::DrawingArea::builder()
+        let canvas = gtk::DrawingArea::builder()
             .height_request(32)
             .tooltip_text(
                 "Two sample tabs · inspect to edit Window Top; verify exact rendering in Kitty",
             )
             .build();
-        Self { title, tabs }
+        let tabs = gtk::Overlay::new();
+        tabs.set_child(Some(&canvas));
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        tabs.add_overlay(&buttons);
+        tabs.set_clip_overlay(&buttons, true);
+        Self {
+            title,
+            tabs,
+            canvas,
+            buttons,
+        }
     }
     pub fn render(
         &self,
@@ -368,7 +380,7 @@ impl TopPreview {
             let _ = cr.show_text("Kitty — window title");
             let _ = w;
         });
-        self.tabs.set_draw_func(move |_, cr, _, h| {
+        self.canvas.set_draw_func(move |_, cr, _, h| {
             rgb(cr, background);
             let _ = cr.paint();
             for (index, (fg, bg, label)) in [
@@ -546,9 +558,20 @@ impl Workbench {
             .set_sensitive(ptyxis && self.owns_module(EditorModule::Palette));
         let l = self.layout_settings();
         self.top_preview.title.set_visible(kitty || ptyxis);
+        self.top_preview.tabs.set_visible(
+            l.tab_bar
+                && (ptyxis
+                    || kitty
+                        && usize::from(l.tab_min_tabs)
+                            <= if self.full_session.active.get() {
+                                self.full_session.samples.state.borrow().tabs.len()
+                            } else {
+                                2
+                            }),
+        );
         self.top_preview
-            .tabs
-            .set_visible(l.tab_bar && (ptyxis || kitty && l.tab_min_tabs <= 2));
+            .buttons
+            .set_visible(self.full_session.active.get());
         let shell = &self.preview_terminal_shell;
         let tab_widget = self.top_preview.tabs.clone().upcast::<gtk::Widget>();
         let sibling = if kitty && l.tab_edge == TabEdge::Bottom {
@@ -579,6 +602,9 @@ impl Workbench {
                 self.window_top.sync_palette([bg, fg]);
                 self.top_preview
                     .render_ptyxis(bg, fg, font.family, font.size);
+                if self.full_session.active.get() {
+                    self.render_sample_top(l, bg, fg, true);
+                }
                 return;
             }
             self.top_preview.render(
@@ -589,6 +615,125 @@ impl Workbench {
                 font.size,
                 model::titlebar_supported(),
             );
+            if self.full_session.active.get() {
+                self.render_sample_top(
+                    l,
+                    p.get("Background").unwrap_or(Rgb::new(0, 0, 0)),
+                    p.get("Foreground").unwrap_or(Rgb::new(255, 255, 255)),
+                    false,
+                );
+            }
+        }
+    }
+
+    fn render_sample_top(&self, l: LayoutSettings, background: Rgb, foreground: Rgb, ptyxis: bool) {
+        // Transparent, accessible GTK buttons use their allocated Pango text
+        // widths. Paint only the target's supported tab styling underneath.
+        let state = self.full_session.samples.state.borrow();
+        let active = state.active;
+        let buttons = self.top_preview.buttons.downgrade();
+        self.top_preview.canvas.set_draw_func(move |_, cr, _, h| {
+            rgb(cr, background);
+            let _ = cr.paint();
+            let Some(buttons) = buttons.upgrade() else {
+                return;
+            };
+            let mut child = buttons.first_child();
+            let mut index = 0;
+            while let Some(button) = child {
+                let Some(bounds) = button.compute_bounds(&buttons) else {
+                    break;
+                };
+                let x = f64::from(bounds.x());
+                let width = f64::from(bounds.width());
+                let height = f64::from(h);
+                if ptyxis {
+                    cr.set_source_rgba(
+                        f64::from(foreground.red()) / 255.0,
+                        f64::from(foreground.green()) / 255.0,
+                        f64::from(foreground.blue()) / 255.0,
+                        0.08,
+                    );
+                    if index == active {
+                        cr.rectangle(x + 2.0, 2.0, width - 4.0, height - 4.0);
+                        let _ = cr.fill();
+                    }
+                } else {
+                    let bg = if index == active {
+                        l.tab_active_bg
+                    } else {
+                        l.tab_inactive_bg
+                    };
+                    rgb(cr, Rgb::new(bg[0], bg[1], bg[2]));
+                    cr.move_to(x, 0.0);
+                    match l.tab_style {
+                        TabStyle::Slant => {
+                            cr.line_to(x + width - 10.0, 0.0);
+                            cr.line_to(x + width, height);
+                            cr.line_to(x, height);
+                        }
+                        TabStyle::Powerline => {
+                            cr.line_to(x + width - 8.0, 0.0);
+                            cr.line_to(x + width, height / 2.0);
+                            cr.line_to(x + width - 8.0, height);
+                            cr.line_to(x, height);
+                        }
+                        _ => {
+                            cr.line_to(x + width, 0.0);
+                            cr.line_to(x + width, height);
+                            cr.line_to(x, height);
+                        }
+                    }
+                    cr.close_path();
+                    let _ = cr.fill();
+                    if l.tab_style == TabStyle::Separator {
+                        rgb(cr, foreground);
+                        cr.rectangle(x + width - 1.0, 3.0, 1.0, height - 6.0);
+                        let _ = cr.fill();
+                    }
+                    if l.tab_style == TabStyle::Fade {
+                        let gradient = gtk::cairo::LinearGradient::new(x, 0.0, x + width, 0.0);
+                        for (offset, alpha) in [(0.0, 1.0), (0.15, 0.0), (0.85, 0.0), (1.0, 1.0)] {
+                            gradient.add_color_stop_rgba(
+                                offset,
+                                f64::from(background.red()) / 255.0,
+                                f64::from(background.green()) / 255.0,
+                                f64::from(background.blue()) / 255.0,
+                                alpha,
+                            );
+                        }
+                        let _ = cr.set_source(&gradient);
+                        cr.rectangle(x, 0.0, width, height);
+                        let _ = cr.fill();
+                    }
+                }
+                child = button.next_sibling();
+                index += 1;
+            }
+        });
+        let font = self.typography_settings();
+        let mut child = self.top_preview.buttons.first_child();
+        let mut index = 0;
+        while let Some(button) = child {
+            if let Some(label) = button.first_child().and_downcast::<gtk::Label>() {
+                let fg = if ptyxis {
+                    [foreground.red(), foreground.green(), foreground.blue()]
+                } else if index == active {
+                    l.tab_active_fg
+                } else {
+                    l.tab_inactive_fg
+                };
+                let attrs = gtk::pango::AttrList::new();
+                attrs.insert(gtk::pango::AttrColor::new_foreground(
+                    u16::from(fg[0]) * 257,
+                    u16::from(fg[1]) * 257,
+                    u16::from(fg[2]) * 257,
+                ));
+                attrs.insert(gtk::pango::AttrFontDesc::new(&font.font_description()));
+                label.set_attributes(Some(&attrs));
+            }
+            child = button.next_sibling();
+            index += 1;
         }
     }
 }

@@ -129,6 +129,8 @@ impl Workbench {
             }
             this.native_terminal.title.set_text(if native {
                 "Native Preview · Experimental"
+            } else if this.native_is_running() {
+                "Design Preview · native session running"
             } else {
                 "Design Preview"
             });
@@ -322,6 +324,13 @@ impl Workbench {
     fn native_tick(self: &Rc<Self>) {
         let pane = &self.native_terminal;
         let running = pane.running.borrow();
+        if !pane.mode.is_active() {
+            pane.title.set_text(if running.is_some() {
+                "Design Preview · native session running"
+            } else {
+                "Design Preview"
+            });
+        }
         pane.start
             .set_sensitive(!pane.busy.get() && running.is_none());
         pane.stop.set_sensitive(running.is_some());

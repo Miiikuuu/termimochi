@@ -246,6 +246,30 @@ impl Context {
 }
 
 impl CommandScene {
+    /// Full's virtual directory is declarative data, never a host path probe.
+    /// Unlike the module editor, do not insert modules absent from the format.
+    pub(crate) fn session(source: &str, path: &'static str) -> Result<Self, String> {
+        let draft = StarshipDraft::new("sample.toml".into(), source.into())?;
+        let context = Context {
+            module: "__session",
+            symbol: "",
+            style: "style",
+            path,
+            command: "",
+            output: "",
+            status: "0",
+            root: false,
+        };
+        Ok(Self {
+            key: (0, 0, 0),
+            document: 0,
+            command: "",
+            output: "",
+            title: "Interactive sample prompt".into(),
+            diagnostic_source: source.into(),
+            config: make_config(&draft, &context),
+        })
+    }
     pub(crate) fn new(draft: &StarshipDraft, focus: Focus) -> Self {
         let spec = draft.spec();
         let field = match focus {
@@ -285,13 +309,18 @@ fn module_expression(
     if !draft.enabled() {
         return Ok(String::new());
     }
-    if spec.version && spec.id != context.module {
+    let session = context.module == "__session";
+    if session && context.path == "/" && (spec.version || spec.id.starts_with("git_")) {
+        return Ok(String::new());
+    }
+    if spec.version && spec.id != context.module && !(session && spec.id == "rust") {
         return Ok(String::new());
     }
     if matches!(
         spec.id,
         "git_status" | "conda" | "cmd_duration" | "jobs" | "time"
     ) && spec.id != context.module
+        && !(session && spec.id == "git_status")
     {
         return Ok(String::new());
     }
@@ -530,7 +559,7 @@ fn make_config(draft: &StarshipDraft, context: &Context) -> Result<String, Strin
         Ok(String::new())
     })?;
     // Omitted modules are inserted only in the simulated prompt, never the draft.
-    if !contains_selected {
+    if !contains_selected && context.module != "__session" {
         let mut inserted = false;
         root = substitute(&root, |key| {
             if key == "character" && !inserted {
@@ -746,6 +775,24 @@ mod tests {
     };
 
     const SOURCE: &str = "format='$directory'\npalette='cute'\n[palettes.cute]\npink='#eb6f92'\n[custom.private]\ncommand='must never run'\n";
+    #[test]
+    fn session_prompt_uses_virtual_paths_without_inserting_modules_or_commands() {
+        for path in ["/", "/demo", "/demo/src"] {
+            let config = CommandScene::session(SOURCE, path).unwrap().config.unwrap();
+            let parsed: Table = toml::from_str(&config).unwrap();
+            assert!(!config.contains("must never run"));
+            assert!(!config.contains("__session"));
+            assert!(config.contains(path));
+            assert!(parsed.get("custom").is_none());
+            assert!(parsed.get("rust").is_none());
+        }
+        let config = CommandScene::session("format='[ONLY](green)'", "/demo")
+            .unwrap()
+            .config
+            .unwrap();
+        let parsed: Table = toml::from_str(&config).unwrap();
+        assert_eq!(parsed["format"].as_str(), Some("[ONLY](green)"));
+    }
     fn draft(id: &str) -> StarshipDraft {
         let mut draft = StarshipDraft::new("/tmp/source.toml".into(), SOURCE.into()).unwrap();
         draft.select_module(module_index(id).unwrap()).unwrap();

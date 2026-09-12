@@ -135,6 +135,28 @@ fn exercise(target: TargetHint) {
         Some("{\"modules\":[{\"type\":\"os\",\"key\":\"NATIVE_GREETING\"}]}".into());
     design.components.greeting = Some(greeting);
     this.load_design(design);
+    until(&this, || {
+        !this.copy_loading.get()
+            && !this.preview_loading.get()
+            && (target != TargetHint::Kitty
+                || this.greeting.presentation.pixel_dimensions().is_some())
+    });
+    until(&this, || {
+        crate::window::greeting::tests::feed(&this).contains("NATIVE_PROMPT")
+    });
+    this.full_session.zoom.set_selected(1);
+    this.preview_scroll.start();
+    settle();
+    crate::window::typed_tests::capture(
+        this.window().upcast_ref(),
+        "sample-same-theme-before-native",
+    );
+    fs::write(glib::user_cache_dir().join("sample-comparison.json"), serde_json::to_vec_pretty(&serde_json::json!({
+        "target":format!("{target:?}"),"font_size":this.typography_settings().size,
+        "cell_width":this.preview_terminal.char_width(),"cell_height":this.preview_terminal.char_height(),
+        "columns":this.preview_terminal.column_count(),"scale":this.window().scale_factor(),
+        "scope":"Same theme background/foreground/font/Prompt/Greeting; native viewport may have a different grid. No pixel-similarity score or universal geometry claim."
+    })).unwrap()).unwrap();
     this.native_terminal.mode.set_active(true);
     this.native_terminal.accepted.set(true);
     this.start_native_terminal();

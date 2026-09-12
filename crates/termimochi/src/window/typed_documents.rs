@@ -636,6 +636,11 @@ impl Workbench {
     }
 
     pub(super) fn load_design(self: &Rc<Self>, design: DesignDocument) {
+        if *self.typed.document_id.borrow() != design.id {
+            *self.full_session.samples.state.borrow_mut() = Default::default();
+            self.full_session.rendered.borrow_mut().clear();
+            self.sync_sample_controls();
+        }
         let references = if design.theme.is_some() {
             self.typed
                 .theme_reference

@@ -21,6 +21,7 @@ mod document_use;
 mod documents;
 mod full_session;
 mod greeting;
+mod interactive_samples;
 #[cfg(feature = "native-preview")]
 mod native_terminal;
 mod output_bar;
@@ -2709,6 +2710,7 @@ fn build_preview(
     let top_preview = window_top::TopPreview::new();
     terminal.append(&top_preview.title);
     terminal.append(&top_preview.tabs);
+    full_session.toolbar.append(&full_session.samples.tabs);
 
     let vte_terminal = vte::Terminal::builder()
         .audible_bell(false)
@@ -2805,6 +2807,7 @@ fn build_preview(
     terminal_stage.append(&terminal_viewport);
     terminal_stage.append(&terminal_scrollbar_revealer);
     terminal.append(&terminal_stage);
+    terminal.append(&full_session.samples.input_row);
 
     let inspect_layer = gtk::Overlay::new();
     inspect_layer.set_vexpand(true);
@@ -2835,7 +2838,14 @@ fn build_preview(
     let native_terminal = native_terminal::NativePane::new(&inspect_layer, &heading);
     #[cfg(feature = "native-preview")]
     {
-        preview_header.append(&native_terminal.mode);
+        let advanced = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .tooltip_text("Advanced · experimental native terminal verification")
+            .build();
+        advanced.set_popover(Some(
+            &gtk::Popover::builder().child(&native_terminal.mode).build(),
+        ));
+        preview_header.append(&advanced);
         content.append(&native_terminal.stack);
     }
     #[cfg(not(feature = "native-preview"))]
@@ -3356,6 +3366,10 @@ impl Workbench {
     }
 
     fn undo_edit(self: &Rc<Self>) {
+        if let Some(text) = self.focused_sample_text() {
+            let _ = text.activate_action("text.undo", None);
+            return;
+        }
         if self.is_theme() && self.document_inputs_valid() {
             self.theme_undo(false);
             return;
@@ -3422,6 +3436,10 @@ impl Workbench {
     }
 
     fn redo_edit(self: &Rc<Self>) {
+        if let Some(text) = self.focused_sample_text() {
+            let _ = text.activate_action("text.redo", None);
+            return;
+        }
         if self.is_theme() {
             self.theme_undo(true);
             return;
@@ -3977,6 +3995,7 @@ impl Workbench {
         Self::connect_color_targets(this);
         Self::connect_preview_scene(this);
         Self::connect_full_session(this);
+        Self::connect_interactive_samples(this);
         let weak = Rc::downgrade(this);
         this.window().connect_close_request(move |_| {
             let Some(this) = weak.upgrade() else {
@@ -4349,6 +4368,12 @@ impl Workbench {
                 if this.navigating_preview.get() {
                     return;
                 }
+                if this.full_session.active.get() {
+                    this.sample_action(crate::interactive_samples::Action::Sample(
+                        PreviewScenario::from_index(this.preview_selector.selected()),
+                    ));
+                    return;
+                }
                 if !this.greeting_preview.get() {
                     let prompt = this.preview_uses_prompt.get();
                     this.reset_prompt_preview();
@@ -4374,6 +4399,16 @@ impl Workbench {
         let weak = Rc::downgrade(this);
         this.preview_terminal.connect_commit(move |_, text, _| {
             if let Some(this) = weak.upgrade() {
+                if this.full_session.active.get() {
+                    this.full_session.samples.entry.grab_focus();
+                    if !text.chars().any(char::is_control) {
+                        let entry = &this.full_session.samples.entry;
+                        let mut position = entry.position();
+                        entry.insert_text(text, &mut position);
+                        entry.set_position(position);
+                    }
+                    return;
+                }
                 this.commit_preview_input(text);
             }
         });
@@ -5058,6 +5093,14 @@ impl Workbench {
             .map(|(_, ansi)| ansi.clone());
         let key = (contents.clone(), directory.clone(), columns, sample);
         let cached_notices = self.copy_notices.borrow().clone();
+        let cached_sample_prompts = self
+            .full_session
+            .samples
+            .prompt_projection
+            .borrow()
+            .as_ref()
+            .filter(|(source, width, _)| source == &contents && *width == columns)
+            .map(|(_, _, prompts)| prompts.clone());
         let cached = (self.copy_prompt_key.borrow().as_ref() == Some(&key))
             .then(|| self.copy_preview.borrow().clone())
             .flatten()
@@ -5097,28 +5140,49 @@ impl Workbench {
                     original_source: original.diagnostic_source,
                 }
             });
-            let _ = sender.send((contents, result, scene, initial));
+            let sample_prompts = cached_sample_prompts.unwrap_or_else(|| {
+                // `/` excludes every executable under the existing safe-PATH
+                // policy. Render declarative data from an empty private cwd;
+                // the virtual path is a literal in CommandScene, not host cwd.
+                let scratch = tempfile::Builder::new()
+                    .prefix("termimochi-sample-prompt-")
+                    .tempdir()
+                    .map_err(|error| error.to_string());
+                ["/", "/demo", "/demo/src"].map(|path| {
+                    crate::starship_scene::CommandScene::session(&contents, path).and_then(
+                        |scene| {
+                            let directory = scratch.as_ref().map_err(Clone::clone)?;
+                            crate::starship_import::render_scene(&scene, directory.path(), columns)
+                        },
+                    )
+                })
+            });
+            let _ = sender.send((contents, result, scene, initial, sample_prompts));
         });
         let weak = Rc::downgrade(self);
         glib::timeout_add_local(Duration::from_millis(40), move || {
             let Some(this) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            let (rendered_source, result, scene, initial) = match receiver.try_recv() {
-                Ok(result) => result,
-                Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-                Err(mpsc::TryRecvError::Disconnected) => (
-                    String::new(),
-                    Err("Prompt preview worker stopped. Edit a field to retry.".into()),
-                    None,
-                    None,
-                ),
-            };
+            let (rendered_source, result, scene, initial, sample_prompts) =
+                match receiver.try_recv() {
+                    Ok(result) => result,
+                    Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                    Err(mpsc::TryRecvError::Disconnected) => (
+                        String::new(),
+                        Err("Prompt preview worker stopped. Edit a field to retry.".into()),
+                        None,
+                        None,
+                        std::array::from_fn(|_| Err("Prompt preview worker stopped".into())),
+                    ),
+                };
             this.copy_loading.set(false);
             if generation != this.copy_generation.get() {
                 this.start_copy_preview();
                 return glib::ControlFlow::Break;
             }
+            *this.full_session.samples.prompt_projection.borrow_mut() =
+                Some((rendered_source.clone(), columns, sample_prompts));
             let result = result.map(|(ansi, notices)| {
                 *this.copy_notices.borrow_mut() = notices.clone();
                 let status = if this.starship_editor.detached.get() {
@@ -5726,6 +5790,12 @@ impl Workbench {
                 && p.y() < widget.height() as f32)
                 .then_some(p)
         };
+        if self.full_session.active.get()
+            && (within(self.full_session.samples.input_row.upcast_ref()).is_some()
+                || within(self.full_session.samples.tabs.upcast_ref()).is_some())
+        {
+            return None;
+        }
         let hit = |target, widget: &gtk::Widget, rect: gtk::graphene::Rect| {
             let p = widget.compute_point(
                 &self.inspect_layer,
@@ -5747,6 +5817,7 @@ impl Workbench {
         if self.full_session.active.get()
             && self.full_session.picture.is_mapped()
             && within(self.preview_terminal_viewport.upcast_ref()).is_some()
+            && within(self.preview_terminal_viewport.upcast_ref()).is_some()
             && within(self.full_session.picture.upcast_ref()).is_some()
         {
             let picture = &self.full_session.picture;
@@ -5757,8 +5828,14 @@ impl Workbench {
             );
         }
         for (widget, target) in [
-            (&self.top_preview.title, PreviewTarget::TitleBar),
-            (&self.top_preview.tabs, PreviewTarget::TabBar),
+            (
+                self.top_preview.title.upcast_ref::<gtk::Widget>(),
+                PreviewTarget::TitleBar,
+            ),
+            (
+                self.top_preview.tabs.upcast_ref::<gtk::Widget>(),
+                PreviewTarget::TabBar,
+            ),
         ] {
             if within(widget.upcast_ref()).is_some() {
                 return hit(
@@ -6521,6 +6598,9 @@ impl Workbench {
         }
         let description = settings.font_description();
         self.preview_terminal.set_font(Some(&description));
+        let attributes = gtk::pango::AttrList::new();
+        attributes.insert(gtk::pango::AttrFontDesc::new(&description));
+        self.full_session.samples.entry.set_attributes(&attributes);
         self.refresh_window_top();
         self.starship_editor.set_preview_font(&description);
         self.preview_terminal

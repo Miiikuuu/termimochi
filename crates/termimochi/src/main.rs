@@ -11,6 +11,7 @@ mod greeting_image;
 mod greeting_official;
 mod greeting_output;
 mod greeting_startup;
+mod interactive_samples;
 mod kitty_document;
 mod kitty_session;
 mod layout;
