@@ -1,0 +1,61 @@
+diff --git a/agent/ptyxis-run-context.c b/agent/ptyxis-run-context.c
+index 28504e7..dffd338 100644
+--- a/agent/ptyxis-run-context.c
++++ b/agent/ptyxis-run-context.c
+@@ -1077,6 +1077,11 @@ ptyxis_run_context_create_stdio_stream (PtyxisRunContext  *self,
+ static gboolean
+ has_systemd (void)
+ {
++  /* Local preview build only: a private bus has no host user manager.
++   * Do not fall back to the daily session bus or import its environment. */
++  if (g_strcmp0 (g_getenv ("TERMIMOCHI_PRIVATE_SESSION"), "1") == 0)
++    return FALSE;
++
+   static gboolean initialized;
+   static gboolean has_systemd;
+ 
+diff --git a/src/ptyxis-profile.c b/src/ptyxis-profile.c
+index b803e8c..4913e33 100644
+--- a/src/ptyxis-profile.c
++++ b/src/ptyxis-profile.c
+@@ -229,6 +229,15 @@ ptyxis_profile_changed_cb (PtyxisProfile *self,
+     read_custom_links_from_settings (self);
+ }
+ 
++static void
++private_palettes_changed (GListModel *model, guint position, guint removed, guint added, PtyxisProfile *self)
++{
++  (void)model; (void)position; (void)removed; (void)added;
++  /* The file monitor has parsed the new palette before this notification.
++   * Rebind current terminals without changing IDs or accumulating palettes. */
++  g_object_notify_by_pspec (G_OBJECT (self), properties[PROP_PALETTE]);
++}
++
+ static void
+ ptyxis_profile_constructed (GObject *object)
+ {
+@@ -252,6 +261,9 @@ ptyxis_profile_constructed (GObject *object)
+                            G_CONNECT_SWAPPED);
+ 
+   read_custom_links_from_settings (self);
++  if (g_strcmp0 (g_getenv ("TERMIMOCHI_PRIVATE_SESSION"), "1") == 0)
++    g_signal_connect_object (ptyxis_palette_get_all (), "items-changed",
++                             G_CALLBACK (private_palettes_changed), self, 0);
+ }
+ 
+ static void
+diff --git a/src/ptyxis-terminal.c b/src/ptyxis-terminal.c
+index 0bbaab5..8f1f4e6 100644
+--- a/src/ptyxis-terminal.c
++++ b/src/ptyxis-terminal.c
+@@ -1597,6 +1597,10 @@ ptyxis_terminal_reset_for_size (PtyxisTerminal *self)
+   cols = width / self->cell_width;
+   rows = height / self->cell_height;
+ 
++  /* A newly embedded widget has not necessarily received an allocation yet. */
++  if (cols < 1 || rows < 1)
++    return;
++
+   vte_terminal_set_size (VTE_TERMINAL (self), cols, rows);
+ }
+ 

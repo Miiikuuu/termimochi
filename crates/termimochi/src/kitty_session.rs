@@ -717,6 +717,11 @@ impl Deployment {
     }
 }
 impl PreparedSession {
+    #[cfg(feature = "native-preview")]
+    pub(crate) fn bootstrap_path(&self) -> PathBuf {
+        self.deployment.directory.join("session.bash")
+    }
+
     pub fn launch(&self) -> Result<(), String> {
         let mut child = self
             .deployment

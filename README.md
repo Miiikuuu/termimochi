@@ -487,6 +487,11 @@ importing preserves symbols but does not silently change your font.
 
 ## Install for the current user
 
+For the separate experimental build with actual embedded Kitty and Ptyxis,
+see [Native interactive preview](docs/native-preview.md) and its explicit
+[validation limits](docs/native-preview-qa.md). The ordinary build and installer
+do not require Casilda or enable this backend.
+
 The installer builds both release binaries, installs the desktop metadata and
 all hicolor icons, and refreshes the desktop and icon caches. It does not need
 `sudo` with the default paths:

@@ -22,6 +22,24 @@ const ICON_FILES: &[&str] = &[
 ];
 
 fn main() {
+    if env::var_os("CARGO_FEATURE_NATIVE_PREVIEW").is_some() {
+        let output = Command::new("pkg-config")
+            .args(["--libs", "casilda-1.0 >= 1.4.0"])
+            .output()
+            .expect("native-preview requires pkg-config and local Casilda 1.4.0");
+        assert!(
+            output.status.success(),
+            "Build local native dependencies with scripts/build-native-preview.sh first"
+        );
+        for flag in String::from_utf8(output.stdout).unwrap().split_whitespace() {
+            if let Some(path) = flag.strip_prefix("-L") {
+                println!("cargo:rustc-link-search=native={path}");
+            } else if let Some(name) = flag.strip_prefix("-l") {
+                println!("cargo:rustc-link-lib={name}");
+            }
+        }
+        println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
+    }
     let crate_dir = PathBuf::from(
         env::var_os("CARGO_MANIFEST_DIR").expect("Cargo must provide CARGO_MANIFEST_DIR"),
     );

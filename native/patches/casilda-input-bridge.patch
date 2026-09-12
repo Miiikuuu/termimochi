@@ -1,0 +1,582 @@
+diff --git a/src/casilda-compositor.c b/src/casilda-compositor.c
+index f8b826c..63e011c 100644
+--- a/src/casilda-compositor.c
++++ b/src/casilda-compositor.c
+@@ -189,10 +189,13 @@
+ #include <wlr/types/wlr_xdg_shell.h>
+ #include <wlr/types/wlr_viewporter.h>
+ #include <wlr/types/wlr_fractional_scale_v1.h>
++#include <wlr/types/wlr_text_input_v3.h>
+ #include <xkbcommon/xkbcommon.h>
+ 
+ #include <gtk/gtk.h>
+ #include <glib/gstdio.h>
++#include <gio/gunixinputstream.h>
++#include <gio/gunixoutputstream.h>
+ 
+ #ifdef GDK_WINDOWING_WAYLAND
+ #include <gdk/wayland/gdkwayland.h>
+@@ -289,8 +292,17 @@ typedef struct
+   struct wl_listener request_cursor;
+   struct wl_listener request_set_selection;
+ 
++  GtkIMContext *im_context;
++  struct wlr_text_input_manager_v3 *text_input_manager;
++  struct wlr_text_input_v3 *active_text_input;
++  struct wl_listener new_text_input;
++  GCancellable *clipboard_cancel;
++  guint64 clipboard_epoch;
++  gboolean clipboard_setting;
++
+   struct wl_listener on_request_cursor;
+   struct wl_listener on_cursor_surface_commit;
++  struct wl_listener on_cursor_surface_destroy;
+   gint               hotspot_x;
+   gint               hotspot_y;
+   GdkTexture        *cursor_gdk_texture;
+@@ -861,11 +873,17 @@ casilda_compositor_cursor_handler_remove (CasildaCompositorPrivate *priv)
+       wl_list_remove (&priv->on_cursor_surface_commit.link);
+       memset (&priv->on_cursor_surface_commit, 0, sizeof (struct wl_listener));
+     }
++  if (priv->on_cursor_surface_destroy.notify)
++    {
++      wl_list_remove (&priv->on_cursor_surface_destroy.link);
++      memset (&priv->on_cursor_surface_destroy, 0, sizeof (struct wl_listener));
++    }
+ }
+ 
+ static void
+ casilda_compositor_reset_cursor (CasildaCompositorPrivate *priv)
+ {
++  casilda_compositor_cursor_handler_remove (priv);
+   if (priv->self)
+     gtk_widget_set_cursor (priv->self, NULL);
+ 
+@@ -1387,6 +1405,21 @@ on_scroll_controller_scroll_end (GtkEventControllerScroll *self,
+   return TRUE;
+ }
+ 
++static void
++text_input_focus (CasildaCompositorPrivate *priv, struct wlr_surface *surface)
++{
++  struct wlr_text_input_v3 *input;
++  wl_list_for_each (input, &priv->text_input_manager->text_inputs, link)
++    {
++      if (input->focused_surface == surface)
++        continue;
++      if (input->focused_surface)
++        wlr_text_input_v3_send_leave (input);
++      if (surface && wl_resource_get_client (input->resource) == wl_resource_get_client (surface->resource))
++        wlr_text_input_v3_send_enter (input, surface);
++    }
++}
++
+ static void
+ casilda_compositor_focus_toplevel (CasildaCompositorToplevel *toplevel,
+                                    struct wlr_surface        *surface)
+@@ -1430,6 +1463,7 @@ casilda_compositor_focus_toplevel (CasildaCompositorToplevel *toplevel,
+                                   priv->keyboard.keycodes,
+                                   priv->keyboard.num_keycodes,
+                                   &priv->keyboard.modifiers);
++  text_input_focus (priv, xdg_toplevel->base->surface);
+ }
+ 
+ static void
+@@ -1680,20 +1714,22 @@ on_key_controller_modifiers (G_GNUC_UNUSED GtkEventControllerKey *self,
+ 
+   if (state & GDK_SHIFT_MASK)
+     wl_state |= WLR_MODIFIER_SHIFT;
+-  else if (state & GDK_LOCK_MASK)
++  if (state & GDK_LOCK_MASK)
+     wl_state |= WLR_MODIFIER_CAPS;
+-  else if (state & GDK_CONTROL_MASK)
++  if (state & GDK_CONTROL_MASK)
+     wl_state |= WLR_MODIFIER_CTRL;
+-  else if (state & GDK_ALT_MASK)
++  if (state & GDK_ALT_MASK)
+     wl_state |= WLR_MODIFIER_ALT;
+-  else if (state & GDK_SUPER_MASK)
++  if (state & GDK_SUPER_MASK)
+     wl_state |= WLR_MODIFIER_LOGO;
+-  else if (state & GDK_HYPER_MASK)
++  if (state & GDK_HYPER_MASK)
+     wl_state |= WLR_MODIFIER_MOD2;
+-  else if (state & GDK_META_MASK)
++  if (state & GDK_META_MASK)
+     wl_state |= WLR_MODIFIER_MOD3;
+ 
+   modifiers.depressed = wl_state;
++  modifiers.group = priv->keyboard.modifiers.group;
++  priv->keyboard.modifiers = modifiers;
+ 
+   wlr_seat_keyboard_notify_modifiers (priv->seat, &modifiers);
+ 
+@@ -1741,6 +1777,14 @@ cursor_handle_surface_commit (struct wl_listener *listener, void *data)
+     gtk_widget_set_cursor (priv->self, priv->cursor_gdk_cursor);
+ }
+ 
++static void
++cursor_surface_destroy (struct wl_listener *listener, void *data)
++{
++  (void)data;
++  CasildaCompositorPrivate *priv = wl_container_of (listener, priv, on_cursor_surface_destroy);
++  casilda_compositor_reset_cursor (priv);
++}
++
+ static void
+ on_seat_request_cursor (struct wl_listener *listener, void *data)
+ {
+@@ -1766,6 +1810,8 @@ on_seat_request_cursor (struct wl_listener *listener, void *data)
+   /* Update cursor once the surface has been committed */
+   wl_signal_add (&surface->events.commit, &priv->on_cursor_surface_commit);
+   priv->on_cursor_surface_commit.notify = cursor_handle_surface_commit;
++  priv->on_cursor_surface_destroy.notify = cursor_surface_destroy;
++  wl_signal_add (&surface->events.destroy, &priv->on_cursor_surface_destroy);
+ }
+ 
+ static bool
+@@ -1981,6 +2027,156 @@ on_gdk_keyboard_notify (GObject *object, GParamSpec *pspec, CasildaCompositor *c
+     }
+ }
+ 
++typedef struct {
++  CasildaCompositorPrivate *priv;
++  struct wlr_text_input_v3 *input;
++  struct wl_listener enable, disable, commit, destroy;
++} TextInputBridge;
++
++static void
++im_commit (GtkIMContext *context, const char *text, CasildaCompositorPrivate *priv)
++{
++  g_debug ("Native IM commit event");
++  (void) context;
++  if (!priv->active_text_input || !priv->active_text_input->current_enabled)
++    return;
++  wlr_text_input_v3_send_preedit_string (priv->active_text_input, "", 0, 0);
++  wlr_text_input_v3_send_commit_string (priv->active_text_input, text);
++  wlr_text_input_v3_send_done (priv->active_text_input);
++}
++
++static void
++im_preedit (GtkIMContext *context, CasildaCompositorPrivate *priv)
++{
++  g_debug ("Native IM preedit event");
++  g_autofree char *text = NULL;
++  PangoAttrList *attrs = NULL;
++  int cursor = 0;
++  if (!priv->active_text_input || !priv->active_text_input->current_enabled)
++    return;
++  gtk_im_context_get_preedit_string (context, &text, &attrs, &cursor);
++  if (attrs) pango_attr_list_unref (attrs);
++  cursor = g_utf8_offset_to_pointer (text, cursor) - text;
++  wlr_text_input_v3_send_preedit_string (priv->active_text_input, text, cursor, cursor);
++  wlr_text_input_v3_send_done (priv->active_text_input);
++}
++
++static void
++text_input_update (TextInputBridge *bridge)
++{
++  CasildaCompositorPrivate *priv = bridge->priv;
++  struct wlr_text_input_v3 *input = bridge->input;
++  if (!input->current_enabled || !input->focused_surface)
++    return;
++  if (priv->active_text_input != input)
++    {
++      gtk_im_context_reset (priv->im_context);
++      priv->active_text_input = input;
++      gtk_event_controller_key_set_im_context (GTK_EVENT_CONTROLLER_KEY (priv->key_controller), priv->im_context);
++      if (gtk_widget_has_focus (priv->self))
++        gtk_im_context_focus_in (priv->im_context);
++    }
++  struct wlr_box box = input->current.cursor_rectangle;
++  /* Client coordinates -> compositor widget coordinates (candidate anchoring). */
++  struct wlr_xdg_toplevel *xdg = wlr_xdg_toplevel_try_from_wlr_surface (input->focused_surface);
++  if (xdg && xdg->base->data)
++    {
++      CasildaCompositorToplevel *top = xdg->base->data;
++      box.x += top->x; box.y += top->y;
++    }
++  GdkRectangle rect = {box.x, box.y, MAX (box.width, 1), MAX (box.height, 1)};
++  gtk_im_context_set_cursor_location (priv->im_context, &rect);
++  if (input->current.surrounding.text)
++    gtk_im_context_set_surrounding_with_selection (priv->im_context,
++      input->current.surrounding.text, -1, input->current.surrounding.cursor, input->current.surrounding.anchor);
++}
++
++static void
++text_input_enable (struct wl_listener *listener, void *data)
++{
++  (void) data;
++  TextInputBridge *bridge = wl_container_of (listener, bridge, enable);
++  g_debug ("Native text input enabled");
++  text_input_update (bridge);
++}
++
++static void
++text_input_commit (struct wl_listener *listener, void *data)
++{
++  (void) data;
++  TextInputBridge *bridge = wl_container_of (listener, bridge, commit);
++  text_input_update (bridge);
++}
++
++static void
++text_input_deactivate (TextInputBridge *bridge)
++{
++  CasildaCompositorPrivate *priv = bridge->priv;
++  if (priv->active_text_input != bridge->input)
++    return;
++  priv->active_text_input = NULL;
++  if (priv->im_context)
++    {
++      gtk_im_context_reset (priv->im_context);
++      gtk_im_context_focus_out (priv->im_context);
++    }
++  if (priv->key_controller)
++    gtk_event_controller_key_set_im_context (GTK_EVENT_CONTROLLER_KEY (priv->key_controller), NULL);
++}
++
++static void
++text_input_disable (struct wl_listener *listener, void *data)
++{
++  (void) data;
++  TextInputBridge *bridge = wl_container_of (listener, bridge, disable);
++  g_debug ("Native text input disabled");
++  text_input_deactivate (bridge);
++}
++
++static void
++text_input_destroy (struct wl_listener *listener, void *data)
++{
++  (void) data;
++  TextInputBridge *bridge = wl_container_of (listener, bridge, destroy);
++  text_input_deactivate (bridge);
++  wl_list_remove (&bridge->enable.link);
++  wl_list_remove (&bridge->disable.link);
++  wl_list_remove (&bridge->commit.link);
++  wl_list_remove (&bridge->destroy.link);
++  g_free (bridge);
++}
++
++static void
++text_input_new (struct wl_listener *listener, void *data)
++{
++  CasildaCompositorPrivate *priv = wl_container_of (listener, priv, new_text_input);
++  TextInputBridge *bridge = g_new0 (TextInputBridge, 1);
++  bridge->priv = priv; bridge->input = data;
++  bridge->enable.notify = text_input_enable;
++  bridge->disable.notify = text_input_disable;
++  bridge->commit.notify = text_input_commit;
++  bridge->destroy.notify = text_input_destroy;
++  wl_signal_add (&bridge->input->events.enable, &bridge->enable);
++  wl_signal_add (&bridge->input->events.disable, &bridge->disable);
++  wl_signal_add (&bridge->input->events.commit, &bridge->commit);
++  wl_signal_add (&bridge->input->events.destroy, &bridge->destroy);
++  text_input_focus (priv, priv->seat->keyboard_state.focused_surface);
++}
++
++static void
++im_focus_changed (GtkWidget *widget, GParamSpec *pspec, CasildaCompositorPrivate *priv)
++{
++  (void) pspec;
++  if (!priv->im_context) return;
++  if (gtk_widget_has_focus (widget) && priv->active_text_input)
++    gtk_im_context_focus_in (priv->im_context);
++  else
++    {
++      gtk_im_context_reset (priv->im_context);
++      gtk_im_context_focus_out (priv->im_context);
++    }
++}
++
+ static void
+ casilda_compositor_keyboard_init (CasildaCompositorPrivate *priv)
+ {
+@@ -1994,6 +2190,11 @@ casilda_compositor_keyboard_init (CasildaCompositorPrivate *priv)
+   gseat = gdk_display_get_default_seat (gdisplay);
+   gkeyboard = gdk_seat_get_keyboard (gseat);
+ 
++  /* Clients need an initial keymap, not just later layout notifications. */
++  struct xkb_keymap *keymap = _gdk_device_get_xkb_keymap (gkeyboard);
++  wlr_keyboard_set_keymap (&priv->keyboard, keymap);
++  xkb_keymap_unref (keymap);
++
+   /* layout-names and active-layout-index notification */
+   g_signal_connect_object (gkeyboard, "notify", G_CALLBACK (on_gdk_keyboard_notify), priv->self, G_CONNECT_DEFAULT);
+ 
+@@ -2011,6 +2212,10 @@ casilda_compositor_keyboard_init (CasildaCompositorPrivate *priv)
+                     priv);
+   gtk_widget_add_controller (priv->self, priv->key_controller);
+   g_object_ref (priv->key_controller);
++  priv->im_context = gtk_im_multicontext_new ();
++  g_signal_connect (priv->im_context, "commit", G_CALLBACK (im_commit), priv);
++  g_signal_connect (priv->im_context, "preedit-changed", G_CALLBACK (im_preedit), priv);
++  g_signal_connect (priv->self, "notify::has-focus", G_CALLBACK (im_focus_changed), priv);
+ }
+ 
+ static void
+@@ -2059,6 +2264,10 @@ casilda_compositor_dispose (GObject *object)
+ {
+   CasildaCompositorPrivate *priv = GET_PRIVATE (object);
+ 
++  priv->active_text_input = NULL;
++  if (priv->clipboard_cancel) g_cancellable_cancel (priv->clipboard_cancel);
++  g_clear_object (&priv->clipboard_cancel);
++  g_clear_object (&priv->im_context);
+   g_clear_object (&priv->motion_controller);
+   g_clear_object (&priv->scroll_controller);
+   g_clear_object (&priv->touchpad_gesture_controller);
+@@ -2086,6 +2295,7 @@ casilda_compositor_finalize (GObject *object)
+   wl_list_remove (&priv->request_activate.link);
+   wl_list_remove (&priv->request_set_selection.link);
+   wl_list_remove (&priv->request_set_shape.link);
++  wl_list_remove (&priv->new_text_input.link);
+ 
+   wl_list_remove (&priv->on_request_cursor.link);
+ 
+@@ -2100,6 +2310,7 @@ casilda_compositor_finalize (GObject *object)
+   wl_display_destroy (priv->wl_display);
+ 
+   g_source_destroy (priv->wl_source);
++  g_source_unref (priv->wl_source);
+ 
+   G_OBJECT_CLASS (casilda_compositor_parent_class)->finalize (object);
+ }
+@@ -2210,6 +2421,8 @@ casilda_compositor_realize (GtkWidget *widget)
+ 
+   GTK_WIDGET_CLASS (casilda_compositor_parent_class)->realize (widget);
+ 
++  gtk_im_context_set_client_widget (priv->im_context, widget);
++
+   priv->frame_clock = gtk_widget_get_frame_clock (widget);
+   priv->frame_clock_source =
+     g_signal_connect (priv->frame_clock, "update",
+@@ -2222,6 +2435,8 @@ casilda_compositor_unrealize (GtkWidget *widget)
+ {
+   CasildaCompositorPrivate *priv = GET_PRIVATE (widget);
+ 
++  gtk_im_context_set_client_widget (priv->im_context, NULL);
++
+   if (priv->frame_clock && priv->frame_clock_source)
+     {
+       g_signal_handler_disconnect (priv->frame_clock, priv->frame_clock_source);
+@@ -2275,6 +2490,149 @@ casilda_compositor_class_init (CasildaCompositorClass *klass)
+ 
+ /* wlroots */
+ 
++/* Text-only clipboard bridge. Reads are asynchronous, bounded to 1 MiB and
++ * cancelled on focus loss, replacement or destruction. No clipboard logging. */
++#define CLIPBOARD_LIMIT (1024 * 1024)
++typedef struct {
++  struct wlr_data_source base;
++  GBytes *bytes;
++} ClipboardSource;
++typedef struct {
++  GWeakRef widget;
++  GInputStream *stream;
++  GCancellable *cancel;
++  GByteArray *bytes;
++  guint64 epoch;
++  gboolean to_host;
++} ClipboardRead;
++
++static gboolean clipboard_timeout (gpointer data);
++
++static void clipboard_write_done (GObject *stream, GAsyncResult *result, gpointer data)
++{
++  g_output_stream_write_all_finish (G_OUTPUT_STREAM (stream), result, NULL, NULL);
++  g_output_stream_close (G_OUTPUT_STREAM (stream), NULL, NULL);
++  g_bytes_unref (data);
++  g_object_unref (stream);
++}
++static void clipboard_source_send (struct wlr_data_source *base, const char *mime, int32_t fd)
++{
++  (void) mime;
++  ClipboardSource *source = wl_container_of (base, source, base);
++  GOutputStream *stream = g_unix_output_stream_new (fd, TRUE);
++  gsize size;
++  gconstpointer bytes = g_bytes_get_data (source->bytes, &size);
++  GCancellable *cancel = g_cancellable_new ();
++  g_timeout_add_full (G_PRIORITY_DEFAULT, 3000, clipboard_timeout, g_object_ref (cancel), g_object_unref);
++  g_output_stream_write_all_async (stream, bytes ? bytes : "", size, G_PRIORITY_DEFAULT, cancel,
++                                  clipboard_write_done, g_bytes_ref (source->bytes));
++  g_object_unref (cancel);
++}
++static void clipboard_source_destroy (struct wlr_data_source *base)
++{
++  ClipboardSource *source = wl_container_of (base, source, base);
++  g_bytes_unref (source->bytes);
++  g_free (source);
++}
++static const struct wlr_data_source_impl clipboard_impl = {
++  .send = clipboard_source_send, .destroy = clipboard_source_destroy
++};
++static void clipboard_read_free (ClipboardRead *read)
++{
++  g_weak_ref_clear (&read->widget);
++  g_clear_object (&read->stream);
++  g_object_unref (read->cancel);
++  g_byte_array_unref (read->bytes);
++  g_free (read);
++}
++static gboolean clipboard_timeout (gpointer data)
++{
++  g_cancellable_cancel (data);
++  return G_SOURCE_REMOVE;
++}
++static ClipboardRead *clipboard_read_new (CasildaCompositorPrivate *priv, gboolean to_host)
++{
++  if (priv->clipboard_cancel) g_cancellable_cancel (priv->clipboard_cancel);
++  g_clear_object (&priv->clipboard_cancel);
++  priv->clipboard_cancel = g_cancellable_new ();
++  ClipboardRead *read = g_new0 (ClipboardRead, 1);
++  g_weak_ref_init (&read->widget, priv->self);
++  read->cancel = g_object_ref (priv->clipboard_cancel);
++  read->bytes = g_byte_array_new ();
++  read->epoch = ++priv->clipboard_epoch;
++  read->to_host = to_host;
++  g_timeout_add_full (G_PRIORITY_DEFAULT, 3000, clipboard_timeout,
++                     g_object_ref (read->cancel), g_object_unref);
++  return read;
++}
++static void clipboard_read_chunk (GObject *stream, GAsyncResult *result, gpointer data)
++{
++  ClipboardRead *read = data;
++  g_autoptr (GBytes) chunk = g_input_stream_read_bytes_finish (G_INPUT_STREAM (stream), result, NULL);
++  g_autoptr (GtkWidget) widget = g_weak_ref_get (&read->widget);
++  if (!chunk || !widget || g_cancellable_is_cancelled (read->cancel))
++    { clipboard_read_free (read); return; }
++  CasildaCompositorPrivate *priv = GET_PRIVATE (widget);
++  gsize size;
++  gconstpointer bytes = g_bytes_get_data (chunk, &size);
++  if (read->epoch != priv->clipboard_epoch || read->bytes->len + size > CLIPBOARD_LIMIT)
++    { clipboard_read_free (read); return; }
++  if (size)
++    {
++      g_byte_array_append (read->bytes, bytes, size);
++      g_input_stream_read_bytes_async (read->stream, 16384, G_PRIORITY_DEFAULT,
++                                      read->cancel, clipboard_read_chunk, read);
++      return;
++    }
++  if (!g_utf8_validate (read->bytes->data ? (const char *)read->bytes->data : "", read->bytes->len, NULL))
++    { clipboard_read_free (read); return; }
++  if (read->to_host)
++    {
++      g_byte_array_append (read->bytes, (const guint8 *)"", 1);
++      priv->clipboard_setting = TRUE;
++      gdk_clipboard_set_text (gtk_widget_get_clipboard (widget), (const char *)read->bytes->data);
++      priv->clipboard_setting = FALSE;
++    }
++  else
++    {
++      ClipboardSource *source = g_new0 (ClipboardSource, 1);
++      wlr_data_source_init (&source->base, &clipboard_impl);
++      source->bytes = g_bytes_new (read->bytes->data, read->bytes->len);
++      const char *mimes[] = {"text/plain;charset=utf-8", "text/plain", "UTF8_STRING"};
++      for (guint i = 0; i < G_N_ELEMENTS (mimes); i++)
++        {
++          char **slot = wl_array_add (&source->base.mime_types, sizeof (char *));
++          *slot = g_strdup (mimes[i]);
++        }
++      wlr_seat_set_selection (priv->seat, &source->base, wl_display_next_serial (priv->wl_display));
++    }
++  clipboard_read_free (read);
++}
++static void clipboard_host_ready (GObject *clipboard, GAsyncResult *result, gpointer data)
++{
++  ClipboardRead *read = data;
++  read->stream = gdk_clipboard_read_finish (GDK_CLIPBOARD (clipboard), result, NULL, NULL);
++  if (!read->stream) { clipboard_read_free (read); return; }
++  g_input_stream_read_bytes_async (read->stream, 16384, G_PRIORITY_DEFAULT,
++                                  read->cancel, clipboard_read_chunk, read);
++}
++static void clipboard_host_changed (GdkClipboard *clipboard, GtkWidget *widget)
++{
++  CasildaCompositorPrivate *priv = GET_PRIVATE (widget);
++  if (priv->clipboard_setting || !gtk_widget_has_focus (priv->self)) return;
++  const char *mimes[] = {"text/plain;charset=utf-8", "text/plain", "UTF8_STRING", NULL};
++  ClipboardRead *read = clipboard_read_new (priv, FALSE);
++  gdk_clipboard_read_async (clipboard, mimes, G_PRIORITY_DEFAULT, read->cancel, clipboard_host_ready, read);
++}
++static void clipboard_focus_changed (GtkWidget *widget, GParamSpec *pspec, CasildaCompositorPrivate *priv)
++{
++  (void) pspec;
++  if (gtk_widget_has_focus (widget))
++    clipboard_host_changed (gtk_widget_get_clipboard (widget), widget);
++  else if (priv->clipboard_cancel)
++    g_cancellable_cancel (priv->clipboard_cancel);
++}
++
+ static void
+ seat_request_set_selection (struct wl_listener *listener, void *data)
+ {
+@@ -2282,7 +2640,20 @@ seat_request_set_selection (struct wl_listener *listener, void *data)
+   struct wlr_seat_request_set_selection_event *event = data;
+ 
+   wlr_seat_set_selection (priv->seat, event->source, event->serial);
+-  /* TODO: integrate with Gtk clipboard */
++  if (!event->source || !gtk_widget_has_focus (priv->self)) return;
++  const char *mime = NULL;
++  char **candidate;
++  wl_array_for_each (candidate, &event->source->mime_types)
++    if (g_str_equal (*candidate, "text/plain;charset=utf-8") || g_str_equal (*candidate, "text/plain"))
++      { mime = *candidate; break; }
++  if (!mime) return;
++  int fds[2];
++  if (pipe (fds) != 0) return;
++  ClipboardRead *read = clipboard_read_new (priv, TRUE);
++  read->stream = g_unix_input_stream_new (fds[0], TRUE);
++  wlr_data_source_send (event->source, mime, fds[1]);
++  g_input_stream_read_bytes_async (read->stream, 16384, G_PRIORITY_DEFAULT,
++                                  read->cancel, clipboard_read_chunk, read);
+ }
+ 
+ static void
+@@ -2841,7 +3212,9 @@ casilda_compositor_wlr_init (CasildaCompositorPrivate *priv)
+   priv->wl_display = wl_display_create ();
+ 
+ #ifdef ENABLE_DMABUF
+-  if (g_getenv ("CASILDA_FORCE_SOFTWARE") == NULL)
++  /* This local build defaults to verified native SHM surfaces. DMA-BUF import
++   * under Xvfb/llvmpipe corrupts Kitty pixels; hardware is a separate opt-in. */
++  if (g_getenv ("CASILDA_ENABLE_DMABUF") != NULL && g_getenv ("CASILDA_FORCE_SOFTWARE") == NULL)
+     casilda_buffer_configure_dmabuf (priv->wl_display);
+ #endif
+ 
+@@ -2850,6 +3223,9 @@ casilda_compositor_wlr_init (CasildaCompositorPrivate *priv)
+   wlr_compositor_create (priv->wl_display, 6, NULL);
+   wlr_subcompositor_create (priv->wl_display);
+   wlr_data_device_manager_create (priv->wl_display);
++  priv->text_input_manager = wlr_text_input_manager_v3_create (priv->wl_display);
++  priv->new_text_input.notify = text_input_new;
++  wl_signal_add (&priv->text_input_manager->events.new_text_input, &priv->new_text_input);
+ 
+   wlr_viewporter_create (priv->wl_display);
+   wlr_fractional_scale_manager_v1_create (priv->wl_display, 1);
+@@ -2880,6 +3256,9 @@ casilda_compositor_wlr_init (CasildaCompositorPrivate *priv)
+   wl_signal_add (&priv->seat->events.request_set_selection, &priv->request_set_selection);
+ 
+   wlr_seat_set_capabilities (priv->seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
++  g_signal_connect_object (gtk_widget_get_clipboard (priv->self), "changed",
++                           G_CALLBACK (clipboard_host_changed), priv->self, 0);
++  g_signal_connect (priv->self, "notify::has-focus", G_CALLBACK (clipboard_focus_changed), priv);
+ 
+   if (!priv->socket)
+     return;
+@@ -3042,4 +3421,3 @@ casilda_compositor_spawn_async (CasildaCompositor *compositor,
+ 
+   return retval;
+ }
+-
+diff --git a/src/meson.build b/src/meson.build
+index a1a2591..428315a 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -27,6 +27,7 @@ casilda_headers += configure_file(
+ 
+ casilda_deps = [
+   gtk4_dep,
++  dependency('gio-unix-2.0'),
+   wlroots_dep,
+   xkbcommon,
+   wayland_server_dep,

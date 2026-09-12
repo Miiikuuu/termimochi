@@ -21,6 +21,8 @@ mod document_use;
 mod documents;
 mod full_session;
 mod greeting;
+#[cfg(feature = "native-preview")]
+mod native_terminal;
 mod output_bar;
 mod preview_hint;
 mod preview_scene;
@@ -326,6 +328,8 @@ struct PreviewChunk {
 type InitialPromptKey = (u64, PathBuf, usize, u32);
 
 struct Workbench {
+    #[cfg(feature = "native-preview")]
+    native_terminal: native_terminal::NativePane,
     typed: typed_documents::TypedSession,
     document_use: document_use::DocumentUseBinding,
     window: glib::WeakRef<adw::ApplicationWindow>,
@@ -891,6 +895,8 @@ fn present_with_mode(
         window_top: layout.window_top,
         top_preview: preview.top_preview,
         preview_content: preview.content,
+        #[cfg(feature = "native-preview")]
+        native_terminal: preview.native_terminal,
         terminal_title: preview.terminal_title,
         preview_terminal_shell: preview.terminal_shell,
         inspect_button: preview.inspect_button,
@@ -1069,6 +1075,8 @@ fn present_with_mode(
 }
 
 struct PreviewWidgets {
+    #[cfg(feature = "native-preview")]
+    native_terminal: native_terminal::NativePane,
     top_preview: window_top::TopPreview,
     root: gtk::Overlay,
     content: gtk::Box,
@@ -2823,6 +2831,14 @@ fn build_preview(
     inspect_layer.add_overlay(&inspect_label);
     inspect_layer.set_measure_overlay(&inspect_label, false);
     inspect_layer.set_clip_overlay(&inspect_label, true);
+    #[cfg(feature = "native-preview")]
+    let native_terminal = native_terminal::NativePane::new(&inspect_layer, &heading);
+    #[cfg(feature = "native-preview")]
+    {
+        preview_header.append(&native_terminal.mode);
+        content.append(&native_terminal.stack);
+    }
+    #[cfg(not(feature = "native-preview"))]
     content.append(&inspect_layer);
 
     let quality = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -2880,6 +2896,8 @@ fn build_preview(
     content.append(&quality);
 
     PreviewWidgets {
+        #[cfg(feature = "native-preview")]
+        native_terminal,
         top_preview,
         root: preview_hint::attach(divider, &terminal_viewport, &content),
         content,
@@ -3256,6 +3274,8 @@ impl Workbench {
     }
 
     fn refresh_history_actions(&self) {
+        #[cfg(feature = "native-preview")]
+        self.native_terminal.dirty.set(true);
         self.refresh_document_scope();
         if self.is_theme() && !self.updating.get() {
             self.record_theme_edit();
@@ -3952,6 +3972,8 @@ impl Workbench {
     }
 
     fn connect_signals(this: &Rc<Self>) {
+        #[cfg(feature = "native-preview")]
+        Self::connect_native_terminal(this);
         Self::connect_color_targets(this);
         Self::connect_preview_scene(this);
         Self::connect_full_session(this);
@@ -3961,6 +3983,11 @@ impl Workbench {
                 return glib::Propagation::Proceed;
             };
             this.settle_active_edit();
+            #[cfg(feature = "native-preview")]
+            if this.native_is_running() {
+                this.request_native_stop(true);
+                return glib::Propagation::Stop;
+            }
             if !this.has_unsaved_setup() {
                 return glib::Propagation::Proceed;
             }

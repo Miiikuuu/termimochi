@@ -1144,6 +1144,7 @@ dependencies = [
  "image",
  "jsonc-parser",
  "libadwaita",
+ "libc",
  "png",
  "resvg",
  "roxmltree 0.21.1",

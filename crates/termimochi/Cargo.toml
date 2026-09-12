@@ -12,7 +12,12 @@ repository.workspace = true
 name = "termimochi"
 path = "src/main.rs"
 
+[features]
+default = []
+native-preview = ["dep:libc"]
+
 [dependencies]
+libc = { version = "0.2", optional = true }
 adw.workspace = true
 gtk.workspace = true
 vte.workspace = true

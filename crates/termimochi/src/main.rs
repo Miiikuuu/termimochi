@@ -15,6 +15,8 @@ mod kitty_document;
 mod kitty_session;
 mod layout;
 mod layout_apply;
+#[cfg(feature = "native-preview")]
+mod native_preview;
 mod pixel_trial;
 mod preview;
 mod preview_context;
