@@ -280,11 +280,21 @@ impl Workbench {
                 deployment.name, deployment.version
             ),
         );
-        body.append(&super::scheme::label("This entry is available again from Open Independent Kitty Scheme, including after restarting TermiMochi. Opening starts a real interactive Bash; your original rc/profile files are not loaded."));
+        body.append(&super::scheme::label("Open in Kitty uses isolated Bash. For everyday use without opening the editor, choose Add / Update App Launcher and explicitly select your Bash environment. The normal Kitty icon and default terminal stay unchanged."));
         let state = gtk::Label::builder().wrap(true).xalign(0.0).build();
         body.append(&state);
         let open = gtk::Button::with_label("Open in Kitty");
         buttons.append(&open);
+        let daily = gtk::Button::with_label("Add / Update App Launcher…");
+        let weak = Rc::downgrade(self);
+        let entry = deployment.clone();
+        daily.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.choose_daily_launcher(entry.clone());
+            }
+        });
+        buttons.append(&daily);
+        self.add_daily_launcher_actions(&body, &deployment.id);
         let restore = gtk::Button::with_label("Restore / Deactivate Entry…");
         buttons.append(&restore);
         let entry = deployment.clone();
@@ -298,8 +308,11 @@ impl Workbench {
         let weak = Rc::downgrade(self);
         restore.connect_clicked(move |_| {
             let Some(this) = weak.upgrade() else { return; };
-            let confirm = gtk::AlertDialog::builder().message("Restore the previous independent entry?").detail("Only this project's current-version pointer changes. Version files and referenced assets are retained. External changes block restoration.")
-                .buttons(["Cancel", "Restore Entry"]).cancel_button(0).default_button(0).modal(true).build();
+            let has_previous = deployment.previous.is_some();
+            let confirm = gtk::AlertDialog::builder()
+                .message(if has_previous { "Restore the previous independent entry?" } else { "Deactivate this independent entry?" })
+                .detail(if has_previous { "Only the current-version pointer changes. Version files remain. A pinned app launcher will require review if its version no longer matches. External changes block restoration." } else { "There is no previous version. This removes the entry from the active library and stops its app launcher from opening. Version files and artwork remain. Remove the app-menu launcher separately if it is no longer needed." })
+                .buttons(["Cancel", if has_previous { "Restore Entry" } else { "Deactivate Entry" }]).cancel_button(0).default_button(0).modal(true).build();
             let entry = deployment.clone(); let state = state.clone();
             confirm.choose(Some(&this.window()), gio::Cancellable::NONE, move |result| { if result == Ok(1) {
                 match kitty_session::restore(&root(), &entry.id, &entry.version) {
@@ -344,6 +357,25 @@ impl Workbench {
                 }
             });
             body.append(&button);
+        }
+        body.append(&super::scheme::label(
+            "Application-menu launchers (including deactivated themes)",
+        ));
+        match kitty_session::launcher::Installed::list() {
+            Ok(entries) => {
+                for (name, result) in entries {
+                    body.append(&super::scheme::label(&name));
+                    match result {
+                        Ok(entry) => self.daily_launcher_buttons(&body, entry),
+                        Err(e) => body.append(&super::scheme::label(&format!(
+                            "Launcher needs repair: {e}"
+                        ))),
+                    }
+                }
+            }
+            Err(e) => body.append(&super::scheme::label(&format!(
+                "Cannot read launchers: {e}"
+            ))),
         }
         window.present();
     }

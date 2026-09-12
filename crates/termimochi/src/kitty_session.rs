@@ -13,6 +13,7 @@ use std::{
 
 const LIMIT: u64 = 40 * 1024 * 1024;
 const MANIFEST: &str = "manifest.json";
+pub(crate) mod launcher;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Ownership {
@@ -434,7 +435,7 @@ impl Plan {
 
     pub fn review_text(&self) -> String {
         let destination = self.root.join(&self.deployment_id);
-        let replacement = self.previous_summary.as_ref().map_or_else(|| "Create a new independent entry; no prior active version.".to_owned(), |(name, version)| format!("Update existing independent entry: {name}\nCurrent version to replace: {version}\nThe previous version and assets remain available for recovery."));
+        let replacement = self.previous_summary.as_ref().map_or_else(|| "Create a new independent entry; no prior active version.".to_owned(), |(name, version)| format!("Update existing independent entry: {name}\nCurrent version to replace: {version}\nThe previous version and assets remain available for recovery.\nIf an app-menu launcher exists, review Update App Launcher for this new version; the old launcher will not silently switch."));
         let mut text = format!(
             "Kitty · {}\nDeployment ID: {}\nEntry destination: {}\nVersion artifacts: {}\n{}\nDisplay: {}\nOwned output: {}\n\n{}",
             self.name,
@@ -574,6 +575,12 @@ fn bootstrap(directory: &Path, deps: &Dependencies) -> Result<String, String> {
     let mut script = String::from(
         "# Generated controlled session; never source imported shell code.\nunset PROMPT_COMMAND BASH_ENV ENV HISTFILE\nPS1='\\u@\\h:\\w\\$ '\n",
     );
+    script.push_str(&theme_initialization(directory, deps)?);
+    Ok(script)
+}
+
+fn theme_initialization(directory: &Path, deps: &Dependencies) -> Result<String, String> {
+    let mut script = String::new();
     if let Some(helper) = &deps.helper {
         script.push_str(&format!(
             "{} {}\n",

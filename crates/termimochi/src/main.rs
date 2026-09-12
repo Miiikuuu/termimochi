@@ -43,6 +43,13 @@ pub(crate) const APPLICATION_ID: &str = "io.github.miiikuuu.termimochi";
 pub(crate) const RESOURCE_BASE: &str = "/io/github/miiikuuu/termimochi";
 
 fn main() -> gtk::glib::ExitCode {
+    let args: Vec<_> = std::env::args_os().collect();
+    if args
+        .get(1)
+        .is_some_and(|s| s == kitty_session::launcher::ARG)
+    {
+        return kitty_session::launcher::dispatch(&args);
+    }
     if std::env::args_os()
         .nth(1)
         .is_some_and(|arg| arg == pixel_trial::startup::ARG)

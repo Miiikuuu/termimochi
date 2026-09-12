@@ -12,7 +12,7 @@ import time
 title = b"TermiMochi point-to-edit test"
 if os.environ.get("TERMIMOCHI_TEST_WINDOW_TITLE"):
     assert os.environ.get("DISPLAY") not in (None, ":0", ":1"), "Title override requires an isolated test display"
-    assert os.environ["TERMIMOCHI_TEST_WINDOW_TITLE"] in ("TermiMochi Image Trial", "TermiMochi point-to-edit test (Failed)")
+    assert os.environ["TERMIMOCHI_TEST_WINDOW_TITLE"] in ("TermiMochi Image Trial", "TermiMochi point-to-edit test (Failed)", "TermiMochi · Daily Launcher Native")
     title = os.environ["TERMIMOCHI_TEST_WINDOW_TITLE"].encode()
 x11 = c.CDLL("libX11.so.6")
 xtst = c.CDLL("libXtst.so.6")
@@ -42,7 +42,8 @@ root = x11.XDefaultRootWindow(d)
 def find_window(w):
     name = c.c_char_p()
     if x11.XFetchName(d, w, c.byref(name)):
-        matches = name.value == title
+        # Kitty's legacy WM_NAME may be Latin-1 while _NET_WM_NAME is UTF-8.
+        matches = name.value in (title, title.decode().encode('latin-1', errors='replace'))
         x11.XFree(name)
         if matches:
             return w
