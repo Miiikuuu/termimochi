@@ -22,6 +22,18 @@ T.XTestFakeKeyEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
 d = X.XOpenDisplay(os.environ['DISPLAY'].encode())
 assert d
 X.XSetInputFocus(d, request['xid'], 1, 0)
+if 'click' in request:
+    X.XDefaultRootWindow.argtypes = [C.c_void_p]
+    X.XDefaultRootWindow.restype = C.c_ulong
+    X.XTranslateCoordinates.argtypes = [C.c_void_p,C.c_ulong,C.c_ulong,C.c_int,C.c_int,C.POINTER(C.c_int),C.POINTER(C.c_int),C.POINTER(C.c_ulong)]
+    T.XTestFakeMotionEvent.argtypes = [C.c_void_p,C.c_int,C.c_int,C.c_int,C.c_ulong]
+    T.XTestFakeButtonEvent.argtypes = [C.c_void_p,C.c_uint,C.c_int,C.c_ulong]
+    ox,oy,child = C.c_int(),C.c_int(),C.c_ulong()
+    X.XTranslateCoordinates(d,request['xid'],X.XDefaultRootWindow(d),0,0,C.byref(ox),C.byref(oy),C.byref(child))
+    T.XTestFakeMotionEvent(d,-1,ox.value+request['click'][0],oy.value+request['click'][1],0)
+    T.XTestFakeButtonEvent(d,1,1,0)
+    T.XTestFakeButtonEvent(d,1,0,0)
+    X.XFlush(d)
 
 def key(symbol, down):
     T.XTestFakeKeyEvent(d, X.XKeysymToKeycode(d, symbol), down, 0)
@@ -58,6 +70,8 @@ chord(0xffff)
 if request['ime']:
     chord(0xffe3, ord(' '))
     text('nihao')
+    from PIL import ImageGrab
+    ImageGrab.grab(xdisplay=os.environ['DISPLAY']).save(Path(request['evidence_dir'])/'sample-ime-candidates.png')
     checkpoint('preedit')
     chord(0xff0d)
     checkpoint('preedit-enter')

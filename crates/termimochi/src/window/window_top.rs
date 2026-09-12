@@ -283,7 +283,7 @@ impl TopPreview {
             );
             cr.set_font_size(12.0);
             cr.move_to(14.0, f64::from(h) / 2.0 + 4.0);
-            let _ = cr.show_text("+     Ptyxis — bash");
+            let _ = cr.show_text("Ptyxis — bash");
             for offset in [-4.0, 0.0, 4.0] {
                 cr.arc(
                     f64::from(w) - 24.0,
@@ -581,7 +581,7 @@ impl Workbench {
                 shell.last_child()
             }
         } else {
-            Some(self.top_preview.title.clone().upcast())
+            self.top_preview.title.parent()
         };
         // A no-op reorder must remain a no-op; avoid disturbing active GIF/VTE.
         if self.top_preview.tabs.prev_sibling() != sibling {

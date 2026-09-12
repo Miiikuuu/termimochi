@@ -44,7 +44,9 @@ that looks balanced elsewhere can therefore become almost unreadable.
   offers interactive samples with independent tabs, GTK text input and finite
   commands such as `help`, `git diff`, `fastfetch` and `clear`. These commands never
   execute on the host. Greeting art/GIF, information, Prompt and sample output share
-  the workspace's colors, font and cell geometry; width Fit/Zoom never changes Columns or
+  the workspace's colors, font and cell geometry. Default Actual size reflows at the theme
+  font size; Fit scales the entire finite simulated window, including inline GTK input.
+  Observation grids and zoom never change saved Columns or
   dirties Save. GIF playback is shared and respects reduced motion. This GTK/VTE
   composition does **not** verify Kitty/Sixel: **Try Greeting** remains a temporary
   real Greeting-only trial. See [interactive samples](docs/interactive-samples.md) and the

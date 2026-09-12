@@ -16,7 +16,7 @@ pub(super) struct Samples {
     new_tab: gtk::Button,
     close_tab: gtk::Button,
     reset: gtk::Button,
-    notice: gtk::Label,
+    pub notice: gtk::Label,
     syncing: Cell<bool>,
     preedit: Cell<bool>,
 }
@@ -46,16 +46,17 @@ impl Samples {
         tabs.append(&more);
         let input_row = gtk::Box::new(gtk::Orientation::Vertical, 2);
         let entry = gtk::Entry::builder()
-            .placeholder_text("Type help · samples only")
             .max_length(256)
-            .hexpand(true)
+            .width_chars(1)
             .enable_undo(true)
             .build();
         entry.update_property(&[gtk::accessible::Property::Label("Sample command input")]);
+        entry.add_css_class("sample-command");
+        input_row.set_halign(gtk::Align::Start);
+        input_row.set_valign(gtk::Align::Start);
         let notice = gtk::Label::builder().xalign(0.0).wrap(true).build();
         notice.set_visible(false);
         input_row.append(&entry);
-        input_row.append(&notice);
         Self {
             anchors: RefCell::new(Vec::new()),
             prompt_projection: RefCell::new(None),
@@ -76,6 +77,27 @@ impl Samples {
 impl Workbench {
     pub(super) fn connect_interactive_samples(this: &Rc<Self>) {
         let s = &this.full_session.samples;
+        let weak = Rc::downgrade(this);
+        this.preview_terminal.connect_cursor_moved(move |_| {
+            if let Some(this) = weak.upgrade() {
+                Self::schedule_sample_input(&this);
+            }
+        });
+        let weak = Rc::downgrade(this);
+        this.preview_terminal.connect_contents_changed(move |_| {
+            if let Some(this) = weak.upgrade() {
+                Self::schedule_sample_input(&this);
+            }
+        });
+        let weak = Rc::downgrade(this);
+        this.preview_terminal
+            .vadjustment()
+            .unwrap()
+            .connect_changed(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    Self::schedule_sample_input(&this);
+                }
+            });
         let weak = Rc::downgrade(this);
         *this.preview_scroll.user_scrolled.borrow_mut() = Some(Box::new(move || {
             if let Some(this) = weak.upgrade() {
@@ -140,6 +162,7 @@ impl Workbench {
                     .borrow_mut()
                     .current_mut()
                     .draft = entry.text().into();
+                this.preview_scroll.follow_input();
             }
         });
         let weak = Rc::downgrade(this);
@@ -340,8 +363,7 @@ impl Workbench {
         let adjustment = &self.preview_scroll.adjustment;
         let mut state = self.full_session.samples.state.borrow_mut();
         let tab = state.current_mut();
-        tab.scroll_row = adjustment.value()
-            / (self.preview_terminal.char_height().max(1) as f64 * self.full_session.scale.get());
+        tab.scroll_row = adjustment.value() / self.preview_terminal.char_height().max(1) as f64;
         tab.follow = adjustment.value() + adjustment.page_size() >= adjustment.upper() - 2.0;
         tab.scroll_anchor = self
             .full_session
@@ -569,7 +591,7 @@ impl Workbench {
             }
         }
         self.feed_sample_prompt(tab.directory);
-        self.feed_preview(PREVIEW_SHOW_CURSOR);
+        self.feed_preview(b"\x1b[?25l");
         let text: String = self
             .preview_feed
             .borrow()
@@ -610,7 +632,14 @@ impl Workbench {
         full.collecting.set(false);
         // Pure palette changes update VTE's color table above, not its contents.
         // Projection changes re-render records; they never re-run sample actions.
-        if *full.rendered.borrow() != text {
+        let text_changed = *full.rendered.borrow() != text;
+        let metrics = (
+            self.preview_terminal.column_count(),
+            self.preview_terminal.char_width(),
+            self.preview_terminal.char_height(),
+        );
+        let geometry_changed = full.rendered_geometry.replace(metrics) != metrics;
+        if text_changed {
             self.preview_terminal.reset(true, true);
             self.preview_terminal.feed(text.as_bytes());
             *full.rendered.borrow_mut() = text;
@@ -624,7 +653,7 @@ impl Workbench {
         ));
         if tab.follow {
             self.preview_scroll.follow_input();
-        } else {
+        } else if text_changed || geometry_changed {
             let row = tab
                 .scroll_anchor
                 .and_then(|(id, offset)| {
@@ -634,9 +663,8 @@ impl Workbench {
                         .map(|(_, row)| (row + offset) as f64)
                 })
                 .unwrap_or(tab.scroll_row);
-            self.preview_scroll.restore_after_redraw(
-                row * self.preview_terminal.char_height().max(1) as f64 * full.scale.get(),
-            );
+            self.preview_scroll
+                .restore_after_redraw(row * self.preview_terminal.char_height().max(1) as f64);
         }
         *full.samples.anchors.borrow_mut() = anchors;
     }

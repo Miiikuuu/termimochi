@@ -142,6 +142,9 @@ fn interactive_samples_vertical_workbench() {
     for (width, height) in [(1024, 700), (1280, 900)] {
         window.set_default_size(width, height);
         settle();
+        // Input belongs to scrollable content, no longer a bottom form.
+        this.preview_scroll.follow_input();
+        settle();
         assert!(s.entry.is_mapped());
         let bounds = s.entry.compute_bounds(&window).unwrap();
         assert!(bounds.y() + bounds.height() <= window.height() as f32);
@@ -263,6 +266,16 @@ fn interactive_samples_gif_anchors() {
 #[test]
 #[ignore = "isolated XTest GTK input: keys, completion/history, Unicode clipboard and optional real Fcitx preedit"]
 fn interactive_samples_keyboard() {
+    keyboard(false);
+}
+
+#[test]
+#[ignore = "isolated XTest GTK input in whole-window Fit: real click, shortcuts and optional Fcitx preedit"]
+fn interactive_samples_keyboard_fit() {
+    keyboard(true);
+}
+
+fn keyboard(fit: bool) {
     use glib::translate::ToGlibPtr;
     unsafe extern "C" {
         fn gdk_x11_surface_get_xid(
@@ -282,6 +295,13 @@ fn interactive_samples_keyboard() {
     let window = app.active_window().unwrap();
     let this = controller(&window);
     ready(&this);
+    if fit {
+        window.set_default_size(1130, 830);
+        this.full_session.zoom.set_selected(0);
+        settle();
+        settle();
+        assert!(this.full_session.scale.get() < 1.0);
+    }
     let s = &this.full_session.samples;
     s.entry.grab_focus();
     settle();
@@ -295,9 +315,16 @@ fn interactive_samples_keyboard() {
     let before = this.design_snapshot().unwrap();
     let ime = std::env::var("GTK_IM_MODULE").as_deref() == Ok("fcitx");
     let xid = unsafe { gdk_x11_surface_get_xid(window.surface().unwrap().to_glib_none().0) };
+    this.preview_scroll.follow_input();
+    settle();
+    let r = s.entry.compute_bounds(&window).unwrap();
+    let (dx, dy) = window.surface_transform();
+    let device = window.scale_factor() as f64;
+    this.palette_module_button.grab_focus(); // the driver's real click must restore input focus
     std::fs::write(
         root.path().join("input.json"),
-        serde_json::to_vec(&serde_json::json!({"xid":xid,"ime":ime})).unwrap(),
+        serde_json::to_vec(&serde_json::json!({"xid":xid,"ime":ime,"evidence_dir":glib::user_cache_dir(),
+            "click": [((r.x() as f64 + 3.0 + dx)*device) as i32,((r.y() as f64 + r.height() as f64/2.0 +dy)*device) as i32]})).unwrap(),
     )
     .unwrap();
     let mut child = std::process::Command::new("python3")

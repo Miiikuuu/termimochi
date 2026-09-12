@@ -48,14 +48,16 @@ pub(super) struct FullSession {
     pub play: gtk::ToggleButton,
     pub picture: gtk::Picture,
     pub overlay: gtk::Overlay,
-    pub scaled: gtk::Fixed,
+    pub frame: preview_frame::PreviewFrame,
     pub scale: Cell<f64>,
     pub image: Cell<Option<ImageCells>>,
     pub rows: Cell<usize>,
     pub collecting: Cell<bool>,
     pub samples: interactive_samples::Samples,
     pub rendered: RefCell<String>,
+    pub rendered_geometry: Cell<(i64, i64, i64)>,
     pub extra_images: RefCell<Vec<(gtk::Picture, ImageCells)>>,
+    pub input_pending: Cell<bool>,
     notice: gtk::Label,
 }
 
@@ -70,9 +72,15 @@ impl FullSession {
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
         notice.set_tooltip_text(Some("Greeting, system information, prompt and simulated commands share this design canvas. GTK images do not prove Kitty/Sixel compatibility. Use Try Greeting for a real greeting trial."));
-        let zoom = gtk::DropDown::from_strings(&["Fit", "100%", "75%", "50%"]);
+        let zoom = gtk::DropDown::from_strings(&[
+            "Fit window",
+            "100% · fixed grid",
+            "75%",
+            "50%",
+            "Actual size",
+        ]);
         zoom.add_css_class("preview-scenario");
-        zoom.set_selected(0);
+        zoom.set_selected(4);
         zoom.update_property(&[gtk::accessible::Property::Label("Full Session zoom")]);
         zoom.set_tooltip_text(Some("Scale the entire scene for observation. Never changes Columns, font settings or saved state."));
         let play = gtk::ToggleButton::with_label("Play GIF");
@@ -96,10 +104,10 @@ impl FullSession {
         overlay.add_overlay(&picture);
         overlay.set_measure_overlay(&picture, false);
         overlay.set_clip_overlay(&picture, true);
-        let scaled = gtk::Fixed::new();
-        scaled.set_halign(gtk::Align::Start);
-        scaled.set_valign(gtk::Align::Start);
-        scaled.put(&overlay, 0.0, 0.0);
+        let samples = interactive_samples::Samples::new();
+        overlay.add_overlay(&samples.input_row);
+        overlay.set_measure_overlay(&samples.input_row, false);
+        overlay.set_clip_overlay(&samples.input_row, true);
         Self {
             active: Cell::new(false),
             toolbar,
@@ -107,14 +115,16 @@ impl FullSession {
             play,
             picture,
             overlay,
-            scaled,
+            frame: preview_frame::PreviewFrame::new(),
             scale: Cell::new(1.0),
             image: Cell::new(None),
             rows: Cell::new(24),
             collecting: Cell::new(false),
-            samples: interactive_samples::Samples::new(),
+            samples,
             rendered: RefCell::new(String::new()),
+            rendered_geometry: Cell::new((0, 0, 0)),
             extra_images: RefCell::new(Vec::new()),
+            input_pending: Cell::new(false),
             notice,
         }
     }
@@ -136,9 +146,16 @@ impl Workbench {
             .presentation
             .observe_pixels(&this.full_session.picture, &this.full_session.play);
         let weak = Rc::downgrade(this);
+        this.full_session.frame.connect_geometry_changed(move || {
+            if let Some(this) = weak.upgrade() {
+                this.schedule_preview_reflow();
+            }
+        });
+        let weak = Rc::downgrade(this);
         this.full_session.zoom.connect_selected_notify(move |_| {
             if let Some(this) = weak.upgrade() {
                 this.refresh_full_transform();
+                this.schedule_preview_reflow();
             }
         });
         let weak = Rc::downgrade(this);
@@ -172,6 +189,22 @@ impl Workbench {
         #[cfg(not(feature = "native-preview"))]
         let show_toolbar = active;
         full.toolbar.set_visible(show_toolbar);
+        let header = self
+            .terminal_title
+            .parent()
+            .and_then(|p| p.parent())
+            .and_downcast::<gtk::Box>()
+            .unwrap();
+        if active && self.preview_selector.parent().as_ref() != Some(full.toolbar.upcast_ref()) {
+            header.remove(&self.preview_selector);
+            full.toolbar.append(&self.preview_selector);
+        } else if !active
+            && self.preview_selector.parent().as_ref() == Some(full.toolbar.upcast_ref())
+        {
+            full.toolbar.remove(&self.preview_selector);
+            header.append(&self.preview_selector);
+        }
+        header.set_visible(!active);
         full.samples.tabs.set_visible(active);
         full.samples.input_row.set_visible(active);
         if active && full.overlay.child().is_none() {
@@ -183,7 +216,8 @@ impl Workbench {
             self.preview_terminal_viewport
                 .set_child(None::<&gtk::Widget>);
             full.overlay.set_child(Some(&self.preview_terminal_canvas));
-            self.preview_terminal_viewport.set_child(Some(&full.scaled));
+            self.preview_terminal_viewport
+                .set_child(Some(&full.overlay));
         } else if !active && full.overlay.child().is_some() {
             self.preview_terminal_viewport
                 .set_child(None::<&gtk::Widget>);
@@ -191,6 +225,9 @@ impl Workbench {
             self.preview_terminal_viewport
                 .set_child(Some(&self.preview_terminal_canvas));
             self.preview_scroll.set_scale(1.0);
+        }
+        if !active {
+            full.frame.configure(false, 4, 1, 1);
         }
         if !active {
             full.picture.set_visible(false);
@@ -314,45 +351,101 @@ impl Workbench {
             picture.set_size_request(image.columns as i32 * cw, image.rows as i32 * ch);
             picture.set_visible(true);
         }
-        let logical_width = self.preview_terminal_canvas.width_request().max(1);
-        let logical_height = self.preview_terminal_canvas.height_request().max(1);
-        let available = self
-            .preview_terminal_viewport
-            .hadjustment()
-            .page_size()
-            .max(1.0);
-        let scale = match full.zoom.selected() {
-            1 => 1.0,
-            2 => 0.75,
-            3 => 0.5,
-            _ => (available / f64::from(logical_width)).clamp(0.001, 1.0),
+        let layout = self.layout_settings();
+        // GTK 4.14's public API exposes computed CSS padding through this
+        // accessor; read it instead of duplicating stylesheet pixel constants.
+        #[allow(deprecated)]
+        let chrome = self.preview_terminal_shell.style_context().padding();
+        let rail = self
+            .preview_terminal_scrollbar_revealer
+            .measure(gtk::Orientation::Horizontal, -1)
+            .1;
+        let target_width = layout.columns as i32 * cw
+            + 2 * padding
+            + i32::from(chrome.left() + chrome.right())
+            + rail;
+        // Target height is finite window occupancy, never transcript/history.
+        let title_height = self
+            .top_preview
+            .title
+            .parent()
+            .map_or(0, |p| p.measure(gtk::Orientation::Vertical, target_width).1);
+        let tabs_height = if self.top_preview.tabs.is_visible() {
+            self.top_preview
+                .tabs
+                .measure(gtk::Orientation::Vertical, target_width)
+                .1
+        } else {
+            0
         };
-        // The transformed canvas needs an explicit scroll extent; GtkFixed's
-        // natural allocation can otherwise crop the lower rows after zoom.
-        full.scaled.set_size_request(
-            (f64::from(logical_width) * scale).ceil() as i32,
-            (f64::from(logical_height) * scale).ceil() as i32,
+        let target_height = layout.rows as i32 * ch
+            + 2 * padding
+            + title_height
+            + tabs_height
+            + i32::from(chrome.top() + chrome.bottom())
+            + self.preview_terminal_shell.spacing() * 2
+            + 4;
+        full.frame
+            .configure(true, full.zoom.selected(), target_width, target_height);
+        let scale = full.frame.scale();
+        full.scale.set(scale);
+        // The scroll adjustment stays in untransformed terminal coordinates;
+        // GTK transforms the entire window, including this scroller and IME.
+        self.preview_scroll.set_scale(1.0);
+        self.position_sample_input();
+        full.play.set_visible(
+            self.full_pixel_design()
+                && full.image.get().is_some()
+                && self.greeting.settings().presentation.visual == Visual::Animation,
         );
-        if full.scale.replace(scale) != scale {
-            full.scaled.set_child_transform(
-                &full.overlay,
-                Some(&gtk::gsk::Transform::new().scale(scale as f32, scale as f32)),
-            );
-            self.preview_scroll.set_scale(scale);
-        }
-        full.notice.set_text(
-            if full.image.get().is_some_and(|image| {
-                image.column + image.columns as usize
-                    > self.preview_terminal.column_count() as usize
-            }) {
-                "Interactive samples · artwork exceeds grid"
-            } else {
-                "Interactive samples · no local commands"
-            },
-        );
+        let scope = if full.image.get().is_some_and(|image| {
+            image.column + image.columns as usize > self.preview_terminal.column_count() as usize
+        }) {
+            "Interactive samples · artwork exceeds grid"
+        } else if self.typed.target.get() == Some(crate::design_document::TargetHint::Ptyxis)
+            && self.greeting.settings().presentation.visual != Visual::Character
+        {
+            "Interactive samples · character reference; design unchanged"
+        } else {
+            "Interactive samples · no local commands"
+        };
+        full.notice
+            .set_text(&format!("{scope} · {:.0}%", scale * 100.0));
         full.notice.set_tooltip_text(Some(if self.typed.target.get() == Some(crate::design_document::TargetHint::Ptyxis) {
             "Ptyxis design approximation. Image/GIF protocol output is not supported here; Full uses character fallback. Artwork view remains available."
-        } else { "Interactive samples, not native verification. Fit scales width only; scroll to see more output. Try Greeting remains a real temporary trial." }));
+        } else { "Interactive samples, not native verification. Actual size follows the viewport at the theme font size. Fixed grid uses theme initial columns; Fit scales the complete finite window. Try Greeting remains a real temporary trial." }));
+    }
+
+    pub(super) fn schedule_sample_input(this: &Rc<Self>) {
+        if this.full_session.input_pending.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(this);
+        glib::idle_add_local_once(move || {
+            if let Some(this) = weak.upgrade() {
+                this.full_session.input_pending.set(false);
+                this.position_sample_input();
+            }
+        });
+    }
+
+    pub(super) fn position_sample_input(&self) {
+        if !self.full_session.active.get() || self.full_session.collecting.get() {
+            return;
+        }
+        let terminal = &self.preview_terminal;
+        let (column, row) = terminal.cursor_position();
+        let origin = preview_visible_origin(terminal).map_or(0, |(origin, _)| origin);
+        let cw = terminal.char_width().max(1) as i32;
+        let ch = terminal.char_height().max(1) as i32;
+        let input = &self.full_session.samples.input_row;
+        input.set_margin_start(terminal.margin_start() + column as i32 * cw);
+        input.set_margin_top(terminal.margin_top() + (row - origin).max(0) as i32 * ch);
+        input.set_size_request(
+            ((terminal.column_count() - column).max(1) as i32 * cw).max(cw),
+            ch,
+        );
+        self.full_session.samples.entry.set_height_request(ch);
     }
 }
 
@@ -478,6 +571,9 @@ mod tests {
         this.greeting.replace(settings.clone(), true);
         this.prompt_source_selector.set_selected(1);
         this.preview_scene_selector.set_selected(0);
+        // Fixed artwork occupancy; the geometry test covers adaptive default.
+        this.column_count_input.set_value(100.0);
+        this.full_session.zoom.set_selected(1);
         ready(&this);
         let full = &this.full_session;
         this.sample_action(crate::interactive_samples::Action::Help);
@@ -601,6 +697,7 @@ mod tests {
         let previous_text = feed(&this);
         this.prompt_layout_selector.set_selected(1);
         settle();
+        super::preview_geometry_tests::aligned(&this);
         assert_ne!(feed(&this), previous_text);
         assert!(full.active.get());
         this.prompt_compare_selector.set_selected(1);
@@ -632,8 +729,8 @@ mod tests {
                 full.scale.get(),
                 this.preview_terminal_canvas.height_request(),
                 full.overlay.height(),
-                full.scaled.height(),
-                full.scaled.height_request()
+                full.frame.height(),
+                full.frame.height_request()
             );
             let history = this.preview_terminal.vadjustment().unwrap();
             assert!(

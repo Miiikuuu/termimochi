@@ -46,9 +46,13 @@ Full reuses its existing VTE feed/map and cell-positioned overlay. There is no P
 in the sample renderer. A projection refresh never invokes the reducer; unchanged
 text is not fed again on palette refresh. Greeting is projected once per redraw,
 and repeated `fastfetch` records reuse the prepared image/animation texture.
-Clear removes all anchors in that tab. Fit now fits **width**, with a finite-height
-scroll viewport; it does not shrink an arbitrarily tall transcript into a poster.
-Columns remain character occupancy, not a zoom setting.
+Clear removes all anchors in that tab. Default **Actual size** uses the theme font
+size with a viewport-derived observation grid. **100% · fixed grid** uses the theme's
+initial columns, with local scrolling where necessary. **Fit window** transforms
+the complete finite window (title, tabs, viewport, image and inline GTK input), not
+an arbitrarily tall transcript. Columns remain character occupancy, not zoom.
+The GTK input is positioned at VTE's final Prompt, inside the content scroller;
+VTE's artificial input cursor is hidden. See [geometry/input QA](preview-geometry-input-qa.md).
 
 Designer prompts use the current PromptSettings with the virtual directory.
 Imported Starship uses three immutable declarative directory projections in the

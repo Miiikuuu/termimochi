@@ -25,6 +25,9 @@ mod interactive_samples;
 #[cfg(feature = "native-preview")]
 mod native_terminal;
 mod output_bar;
+mod preview_frame;
+#[cfg(test)]
+mod preview_geometry_tests;
 mod preview_hint;
 mod preview_scene;
 mod preview_scroll;
@@ -2706,11 +2709,15 @@ fn build_preview(
     terminal_header.append(&compare_selector);
     terminal_header.append(&selector);
     terminal_header.append(&prompt_selector);
-    terminal.append(&terminal_header);
+    content.append(&terminal_header);
     let top_preview = window_top::TopPreview::new();
-    terminal.append(&top_preview.title);
+    let top_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    top_preview.title.set_hexpand(true);
+    top_row.append(&top_preview.title);
+    top_row.append(&full_session.samples.tabs);
+    terminal.append(&top_row);
     terminal.append(&top_preview.tabs);
-    full_session.toolbar.append(&full_session.samples.tabs);
+    full_session.toolbar.append(&full_session.samples.notice);
 
     let vte_terminal = vte::Terminal::builder()
         .audible_bell(false)
@@ -2807,11 +2814,11 @@ fn build_preview(
     terminal_stage.append(&terminal_viewport);
     terminal_stage.append(&terminal_scrollbar_revealer);
     terminal.append(&terminal_stage);
-    terminal.append(&full_session.samples.input_row);
 
     let inspect_layer = gtk::Overlay::new();
     inspect_layer.set_vexpand(true);
-    inspect_layer.set_child(Some(&terminal));
+    full_session.frame.set_child(&terminal);
+    inspect_layer.set_child(Some(&full_session.frame));
     let inspect_highlight = gtk::DrawingArea::new();
     inspect_highlight.set_can_target(false);
     inspect_highlight.set_focusable(false);
@@ -2901,7 +2908,16 @@ fn build_preview(
     diagnostic_surface.add_css_class("diagnostic-log-surface");
     diagnostic_surface.set_overflow(gtk::Overflow::Hidden);
     diagnostic_surface.set_visible(false);
-    diagnostic_surface.append(&diagnostic_scroll);
+    let details = gtk::Expander::builder()
+        .label("Details")
+        .child(&diagnostic_scroll)
+        .build();
+    details.connect_expanded_notify(|details| {
+        if details.has_css_class("errors-present") && !details.is_expanded() {
+            details.set_expanded(true);
+        }
+    });
+    diagnostic_surface.append(&details);
     quality.append(&diagnostic_surface);
     content.append(&quality);
 
@@ -4854,9 +4870,10 @@ impl Workbench {
         self.sync_preview_scene();
         self.sync_full_session();
         self.refresh_output_bar();
-        if !self.greeting_preview.get()
-            || !self.preview_input.borrow().text().is_empty()
-            || !self.preview_input.borrow().submitted().is_empty()
+        if !self.full_session.active.get()
+            && (!self.greeting_preview.get()
+                || !self.preview_input.borrow().text().is_empty()
+                || !self.preview_input.borrow().submitted().is_empty())
         {
             self.preview_scroll.follow_input();
         }
@@ -6074,7 +6091,7 @@ impl Workbench {
         let color0 = variant.get("Color0").unwrap_or(background);
 
         let css = format!(
-            "#termimochi-terminal.{} {{ background-color: {background}; color: {foreground}; }}",
+            "#termimochi-terminal.{0} {{ background-color: {background}; color: {foreground}; }} #termimochi-terminal.{0} .sample-command {{ color: {foreground}; caret-color: {foreground}; }}",
             self.terminal_css_scope
         );
         let terminal_palette: Vec<_> = (0..16)
@@ -6454,8 +6471,10 @@ impl Workbench {
             0
         };
         let columns = if self.full_session.active.get() {
-            if greeting_width > 0 {
-                usize::from(greeting_width)
+            if self.full_session.zoom.selected() == 4 && viewport_width > 0 && cell_width > 0 {
+                ((viewport_width - i64::from(layout.content_padding) * 2).max(cell_width)
+                    / cell_width)
+                    .clamp(12, 400) as usize
             } else {
                 layout.columns
             }
@@ -6490,7 +6509,7 @@ impl Workbench {
         // Keep the full grid in the terminal's own viewport; the header/log
         // stay mounted. This never changes the saved Layout document.
         let rows = if self.full_session.active.get() {
-            layout.rows.max(self.full_session.rows.get())
+            self.full_session.rows.get().max(2) + 1
         } else if self.greeting_preview.get() {
             layout.rows.max(
                 (self.greeting_text_for_width(columns).lines().count()
@@ -6781,6 +6800,18 @@ impl Workbench {
         }
 
         self.diagnostic_surface.set_visible(issue_count > 0);
+        if let Some(details) = self
+            .diagnostic_surface
+            .first_child()
+            .and_downcast::<gtk::Expander>()
+        {
+            if errors > 0 {
+                details.add_css_class("errors-present");
+                details.set_expanded(true);
+            } else {
+                details.remove_css_class("errors-present");
+            }
+        }
 
         for issue in visible_issues {
             let (icon_name, class, severity_name) = match issue.severity {

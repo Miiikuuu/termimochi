@@ -1,5 +1,8 @@
 # Interactive samples — QA ledger
 
+Historical implementation ledger. The default viewport, inline input and whole-window
+Fit limitations are superseded by [geometry/input QA](preview-geometry-input-qa.md).
+
 Date: 2026-09-12. Base: `28e506ce304e334f0924e07aac77f9d55c530b96`
 (`main`), plus the uncommitted implementation described in
 [interactive-samples.md](interactive-samples.md). No commit, push, installation to

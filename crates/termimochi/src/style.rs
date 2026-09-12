@@ -460,6 +460,19 @@ scale.picker-hue-scale slider {
   padding: 0;
 }
 
+.sample-command, .sample-command:focus-within {
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+.sample-command text { min-height: 0; padding: 0; margin: 0; }
+
 .preview-inspected {
   box-shadow: 0 0 0 2px alpha(#526b73, 0.32);
   transition: box-shadow 180ms ease-out;
