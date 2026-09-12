@@ -4,6 +4,7 @@ use crate::{greeting::GreetingSettings, greeting_fields, starship_modules::MODUL
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Source {
+    WindowTop,
     Designer(PromptSegmentKind),
     Greeting,
     Field(usize),

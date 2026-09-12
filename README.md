@@ -58,10 +58,20 @@ that looks balanced elsewhere can therefore become almost unreadable.
   **⋮** menu offers **Restore Previous Typography**. Saving alone never applies.
 - Live layout controls for content padding, rows and columns, cursor behavior,
   tab and scrollbar chrome, and preview-window spacing.
-- Layout presets: **⋮ → Save Layout Preset** restores all eight
+- **Layout → Window Top** groups title-bar background mode and Kitty native tabs:
+  visibility/minimum tab count, top/bottom position, Fade/Slant/Separator/Powerline,
+  and active/inactive text/background colors. Title-bar recoloring is enabled only
+  for Kitty on GNOME Wayland; the design approximation is not native verification.
+  Values share the theme's sparse layout, Undo/Redo, Save and reviewed Kitty entry.
+  Ptyxis workspaces expose their native header background/text colors here too,
+  sharing `TitlebarBackground` / `TitlebarForeground` with **Palette → Ptyxis
+  Window Top**. Both targets have window-local header/tab design previews;
+  Ptyxis tab shape and selection shading remain Adwaita-controlled.
+  [Capabilities and Chinese acceptance card](docs/window-top.md).
+- Layout presets: **⋮ → Save Layout Preset** restores layout
   settings next launch, with independent Undo/Redo and portable
   `.termimochi-layout.json` import/export. **⋮ → Layout — Apply…** backs up and
-  applies global cursor, scrollbar and new-window grid settings; exact padding,
+  applies Ptyxis global cursor, scrollbar and new-window grid settings; exact padding,
   tab bar and preview-window spacing remain preview-only. The **⋮** menu offers
   **Restore Previous Layout**. Remembered window sizing is disabled only after
   explicit Apply confirmation, so the chosen grid can take effect.

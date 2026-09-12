@@ -568,6 +568,9 @@ impl DesignDocument {
     /// use from_workspace with this document's scope, never serialize the bridge.
     pub fn project_preview(&self, references: &Workspace) -> Workspace {
         let mut workspace = references.clone();
+        if self.target_hint == Some(TargetHint::Kitty) {
+            crate::layout::window_top::reset_reference(&mut workspace.layout);
+        }
         if let Some(theme) = &self.theme {
             workspace.light = theme.light;
         }

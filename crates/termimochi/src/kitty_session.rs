@@ -243,8 +243,26 @@ pub(crate) fn appearance_configuration(
                 B::On => "0.5",
                 B::System => "-1",
             };
-            config.push_str(&format!("window_padding_width {}\nwindow_margin_width {}\ninitial_window_width {}c\ninitial_window_height {}c\nremember_window_size no\ncursor_shape {shape}\ncursor_blink_interval {blink}\ntab_bar_style {}\n", l.content_padding, l.window_spacing, l.columns, l.rows, if l.tab_bar { "fade" } else { "hidden" }));
-            notes.push("Layout: grid and cursor mapped; spacing is Kitty points (not VTE pixels). Scrollbar is unsupported. Tab bar is visible only when multiple tabs exist.".into());
+            config.push_str(&format!("window_padding_width {}\nwindow_margin_width {}\ninitial_window_width {}c\ninitial_window_height {}c\nremember_window_size no\ncursor_shape {shape}\ncursor_blink_interval {blink}\n", l.content_padding, l.window_spacing, l.columns, l.rows));
+            for (key, value) in crate::layout::window_top::properties(&l) {
+                config.push_str(&format!("{key} {value}\n"));
+            }
+            notes.push("Layout: grid and cursor mapped; spacing is Kitty points (not VTE pixels). Scrollbar is unsupported. Tab visibility follows the configured minimum tab count.".into());
+        }
+    }
+    if config
+        .lines()
+        .any(|l| l.starts_with("wayland_titlebar_color "))
+    {
+        if crate::layout::window_top::titlebar_supported() {
+            notes.push("Title bar: Kitty GNOME Wayland client-side decoration color. Verify the actual window; the App preview is an approximation.".into());
+        } else {
+            config = config
+                .lines()
+                .filter(|l| !l.starts_with("wayland_titlebar_color "))
+                .map(|l| format!("{l}\n"))
+                .collect();
+            notes.push("Title bar color NOT applied: this environment is not verified GNOME Wayland client-side decoration. The design retains the value for supported environments.".into());
         }
     }
     Ok((config, notes))

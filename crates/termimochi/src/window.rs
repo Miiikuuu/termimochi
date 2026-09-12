@@ -33,6 +33,7 @@ mod typed_documents;
 mod typed_kitty;
 #[cfg(test)]
 mod typed_tests;
+mod window_top;
 
 use crate::{
     color_picker::{ColorPicker, ColorSwatch, scroll_parent_vertically},
@@ -361,6 +362,8 @@ struct Workbench {
     color_picker: ColorPicker,
     terminal_css_provider: gtk::CssProvider,
     terminal_css_scope: String,
+    window_top: window_top::WindowTop,
+    top_preview: window_top::TopPreview,
     preview_content: gtk::Box,
     terminal_title: gtk::Label,
     preview_terminal_shell: gtk::Box,
@@ -885,6 +888,8 @@ fn present_with_mode(
         color_targets: editor.color_targets,
         terminal_css_provider,
         terminal_css_scope,
+        window_top: layout.window_top,
+        top_preview: preview.top_preview,
         preview_content: preview.content,
         terminal_title: preview.terminal_title,
         preview_terminal_shell: preview.terminal_shell,
@@ -1064,6 +1069,7 @@ fn present_with_mode(
 }
 
 struct PreviewWidgets {
+    top_preview: window_top::TopPreview,
     root: gtk::Overlay,
     content: gtk::Box,
     terminal_title: gtk::Label,
@@ -1123,6 +1129,7 @@ struct TypographyWidgets {
 }
 
 struct LayoutWidgets {
+    window_top: window_top::WindowTop,
     root: gtk::ScrolledWindow,
     content_padding_input: gtk::SpinButton,
     column_count_input: gtk::SpinButton,
@@ -1635,11 +1642,13 @@ fn build_layout_editor(defaults: &LayoutSettings) -> LayoutWidgets {
     content.append(&layout_group(
         "Window",
         [
-            layout_row("Tab Bar", &tab_bar_switch),
             layout_row("Scrollbar", &scrollbar_switch),
             layout_row("Window Spacing", &window_spacing_input),
         ],
     ));
+
+    let window_top = window_top::WindowTop::new(defaults, &tab_bar_switch);
+    content.append(&window_top.root);
 
     // Saving and applying remain in the fixed output bar.
     let status = gtk::Label::new(Some("Preview only · not saved"));
@@ -1675,6 +1684,7 @@ fn build_layout_editor(defaults: &LayoutSettings) -> LayoutWidgets {
         .build();
 
     LayoutWidgets {
+        window_top,
         root: scroll,
         content_padding_input,
         column_count_input,
@@ -2688,6 +2698,9 @@ fn build_preview(
     terminal_header.append(&selector);
     terminal_header.append(&prompt_selector);
     terminal.append(&terminal_header);
+    let top_preview = window_top::TopPreview::new();
+    terminal.append(&top_preview.title);
+    terminal.append(&top_preview.tabs);
 
     let vte_terminal = vte::Terminal::builder()
         .audible_bell(false)
@@ -2867,6 +2880,7 @@ fn build_preview(
     content.append(&quality);
 
     PreviewWidgets {
+        top_preview,
         root: preview_hint::attach(divider, &terminal_viewport, &content),
         content,
         terminal_title,
@@ -3213,6 +3227,7 @@ impl Workbench {
     }
 
     fn settle_active_edit(&self) {
+        self.window_top.finish_palette();
         self.finish_active_edit();
         self.normalize_name_entry();
     }
@@ -3222,6 +3237,8 @@ impl Workbench {
         !self.name_valid.get()
             || self.name_entry.text().as_str() != model.palette.name()
             || self.color_picker.has_invalid_draft()
+            || self.typed.target.get() == Some(crate::design_document::TargetHint::Ptyxis)
+                && self.window_top.palette_draft()
     }
 
     fn discard_drafts(&self) {
@@ -3232,6 +3249,7 @@ impl Workbench {
         set_name_entry_error(&self.name_entry, None);
         self.updating.set(false);
         self.color_picker.discard_draft();
+        self.window_top.discard_palette();
         self.refresh_titles();
         self.refresh_deployment();
         self.refresh_history_actions();
@@ -4417,6 +4435,7 @@ impl Workbench {
                 }
             });
         }
+        Self::connect_window_top(this);
 
         let weak = Rc::downgrade(this);
         this.name_entry.connect_changed(move |entry| {
@@ -4536,13 +4555,19 @@ impl Workbench {
     }
 
     fn select_color(&self, key: &str) {
-        let Some(selected) = self.controls.get(key) else {
+        if !termimochi_core::KNOWN_COLOR_KEYS.contains(&key) {
             return;
-        };
+        }
         if *self.selected_color_key.borrow() != key {
             self.settle_active_edit();
         }
-        selected.swatch.set_selected(true);
+        if let Some(selected) = self.controls.get(key) {
+            selected.swatch.set_selected(true);
+        } else {
+            for control in self.controls.values() {
+                control.swatch.set_selected(false);
+            }
+        }
         *self.selected_color_key.borrow_mut() = key.to_owned();
 
         let color = {
@@ -5704,6 +5729,23 @@ impl Workbench {
                 gtk::graphene::Rect::new(0.0, 0.0, picture.width() as f32, picture.height() as f32),
             );
         }
+        for (widget, target) in [
+            (&self.top_preview.title, PreviewTarget::TitleBar),
+            (&self.top_preview.tabs, PreviewTarget::TabBar),
+        ] {
+            if within(widget.upcast_ref()).is_some() {
+                return hit(
+                    target,
+                    widget.upcast_ref(),
+                    gtk::graphene::Rect::new(
+                        0.0,
+                        0.0,
+                        widget.width() as f32,
+                        widget.height() as f32,
+                    ),
+                );
+            }
+        }
         if within(self.preview_terminal_tab.upcast_ref()).is_some() {
             let tab = &self.preview_terminal_tab;
             return hit(
@@ -5834,9 +5876,10 @@ impl Workbench {
             | PreviewTarget::GreetingFields
             | PreviewTarget::GreetingField(_) => EditorModule::Greeting,
             PreviewTarget::Typography => EditorModule::Typography,
-            PreviewTarget::Cursor | PreviewTarget::Padding | PreviewTarget::TabBar => {
-                EditorModule::Layout
-            }
+            PreviewTarget::Cursor
+            | PreviewTarget::Padding
+            | PreviewTarget::TabBar
+            | PreviewTarget::TitleBar => EditorModule::Layout,
             PreviewTarget::Prompt
             | PreviewTarget::PromptCopy
             | PreviewTarget::PromptSegment(_)
@@ -5871,6 +5914,7 @@ impl Workbench {
             PreviewTarget::Cursor => Some(self.cursor_shape_selector.clone().upcast()),
             PreviewTarget::Padding => Some(self.content_padding_input.clone().upcast()),
             PreviewTarget::TabBar => Some(self.tab_bar_switch.clone().upcast()),
+            PreviewTarget::TitleBar => Some(self.window_top.title_focus()),
             PreviewTarget::Prompt => Some(self.prompt_source_selector.clone().upcast()),
             PreviewTarget::PromptCopy => Some(self.starship_editor.symbol.clone().upcast()),
             PreviewTarget::PromptCharacter => Some(self.prompt_character_selector.clone().upcast()),
@@ -5974,6 +6018,7 @@ impl Workbench {
         let report = lint_palette(&model.palette, Target::Codex);
         let issues: Vec<_> = report.issues_for(kind).cloned().collect();
         drop(model);
+        self.refresh_window_top();
         self.refresh_diagnostics(&issues);
     }
 
@@ -6255,7 +6300,7 @@ impl Workbench {
     }
 
     fn layout_settings(&self) -> LayoutSettings {
-        LayoutSettings::new(
+        let mut settings = LayoutSettings::new(
             self.content_padding_input.value_as_int(),
             usize::try_from(self.column_count_input.value_as_int()).unwrap_or(MIN_COLUMNS),
             usize::try_from(self.row_count_input.value_as_int()).unwrap_or(MIN_ROWS),
@@ -6264,7 +6309,9 @@ impl Workbench {
             self.tab_bar_switch.is_active(),
             self.scrollbar_switch.is_active(),
             self.window_spacing_input.value_as_int(),
-        )
+        );
+        self.window_top.read(&mut settings);
+        settings
     }
 
     fn schedule_preview_reflow(self: &Rc<Self>) {
@@ -6401,6 +6448,7 @@ impl Workbench {
         self.preview_terminal
             .set_cursor_blink_mode(layout.cursor_blink.vte_mode());
         self.preview_terminal_tab.set_visible(layout.tab_bar);
+        self.refresh_window_top();
         self.preview_terminal_scrollbar_revealer
             .set_reveal_child(layout.scrollbar);
         self.preview_content.set_margin_top(layout.window_spacing);
@@ -6446,6 +6494,7 @@ impl Workbench {
         }
         let description = settings.font_description();
         self.preview_terminal.set_font(Some(&description));
+        self.refresh_window_top();
         self.starship_editor.set_preview_font(&description);
         self.preview_terminal
             .set_cell_height_scale(settings.line_height);
@@ -7425,6 +7474,7 @@ impl Workbench {
         self.cursor_blink_selector
             .set_selected(layout.cursor_blink.index());
         self.tab_bar_switch.set_active(layout.tab_bar);
+        self.window_top.set(layout);
         self.scrollbar_switch.set_active(layout.scrollbar);
         self.window_spacing_input
             .set_value(f64::from(layout.window_spacing));

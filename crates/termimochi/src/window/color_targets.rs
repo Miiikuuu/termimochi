@@ -24,6 +24,7 @@ impl ColorTargets {
             "Prompt Designer",
             "Greeting",
             "Your Starship",
+            "Ptyxis Window Top",
         ]);
         scope.set_hexpand(true);
         scope.update_property(&[gtk::accessible::Property::Label("Color Target")]);
@@ -99,6 +100,7 @@ impl Workbench {
                     .get(this.color_targets.role.selected() as usize)
                     .map(|r| r.source.clone());
                 let module = match source {
+                    Some(Source::WindowTop) => EditorModule::Layout,
                     Some(Source::Designer(_)) | Some(Source::Starship { .. }) => {
                         EditorModule::Prompt
                     }
@@ -109,6 +111,7 @@ impl Workbench {
                     return;
                 }
                 match source {
+                    Some(Source::WindowTop) => this.inspect_preview_target(PreviewTarget::TitleBar),
                     Some(Source::Designer(kind)) => {
                         this.inspect_preview_target(PreviewTarget::PromptSegment(kind))
                     }
@@ -157,6 +160,16 @@ impl Workbench {
                 .collect(),
             2 => sources::greeting_roles(&self.greeting.settings()),
             3 => sources::starship_roles(),
+            4 => ["TitlebarBackground", "TitlebarForeground"]
+                .into_iter()
+                .map(|key| Role {
+                    label: color_display_name(key),
+                    key: (self.typed.target.get()
+                        == Some(crate::design_document::TargetHint::Ptyxis))
+                    .then(|| key.to_owned()),
+                    source: Source::WindowTop,
+                })
+                .collect(),
             _ => vec![],
         };
         let old = controls.roles.borrow();
@@ -198,7 +211,9 @@ impl Workbench {
             ));
             controls.note.set_tooltip_text(Some("Changing this color affects every terminal, prompt or greeting element using the same palette slot. Edit source to change the binding instead."));
         } else if scope != 0 {
-            controls.note.set_text(if scope == 3 {
+            controls.note.set_text(if scope == 4 {
+                "Ptyxis-only colors · use Layout for Kitty window styling"
+            } else if scope == 3 {
                 "Source-owned style · edit in Prompt"
             } else {
                 "Source-owned color · edit in Greeting"

@@ -300,7 +300,7 @@ impl ApplyRequest {
             })
             .collect();
         format!(
-            "Scope: all Ptyxis windows and profiles.\n{}\n\nSpecified grid size applies to new windows and disables remembered sizing. Unspecified grid fields keep their current values; existing windows are not resized.\n\nPreview only (saved, not applied): exact content padding, tab bar and window spacing.\n\nA private backup is created before changing settings. Fonts, colors and shell files are untouched.",
+            "Scope: all Ptyxis windows and profiles.\n{}\n\nSpecified grid size applies to new windows and disables remembered sizing. Unspecified grid fields keep their current values; existing windows are not resized.\n\nPreview only (saved, not applied): exact content padding, tab bar and window spacing. Window Top titlebar mode, tab position/style and tab colors are unsupported by this Ptyxis adapter.\n\nA private backup is created before changing settings. Fonts, colors and shell files are untouched.",
             changes.join("\n")
         )
     }

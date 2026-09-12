@@ -1,5 +1,117 @@
 use super::*;
 
+#[test]
+#[ignore = "private Xvfb/HOME/XDG; real Kitty tabs: all four safe styles, both edges, minimum count, hidden, colors"]
+fn window_top_real_kitty_styles_edges_and_colors() {
+    assert_eq!(std::env::var("GSETTINGS_BACKEND").as_deref(), Ok("memory"));
+    assert!(std::env::var_os("XDG_RUNTIME_DIR").is_some());
+    assert!(!matches!(
+        std::env::var("DISPLAY").as_deref(),
+        Ok(":0" | ":1") | Err(_)
+    ));
+    use crate::layout::window_top::{TabEdge, TabStyle};
+    let temp = tempfile::tempdir().unwrap();
+    let mut cases = vec![];
+    let mut combinations: Vec<_> = TabStyle::ALL
+        .into_iter()
+        .flat_map(|s| [TabEdge::Top, TabEdge::Bottom].map(|e| (s, e, true)))
+        .collect();
+    combinations.push((TabStyle::Fade, TabEdge::Bottom, false));
+    for (i, (style, edge, visible)) in combinations.into_iter().enumerate() {
+        let mut w = workspace();
+        w.layout.columns = 80;
+        w.layout.rows = 20;
+        w.layout.tab_bar = visible;
+        w.layout.tab_style = style;
+        w.layout.tab_edge = edge;
+        w.layout.tab_min_tabs = if i == 0 { 1 } else { 2 };
+        w.layout.tab_active_fg = [250, 250, 250];
+        w.layout.tab_active_bg = [34, 68, 102];
+        w.layout.tab_inactive_fg = [221, 221, 221];
+        w.layout.tab_inactive_bg = [115, 84, 33];
+        w.layout.titlebar_color = crate::layout::window_top::TitlebarColor::Custom([12, 34, 56]);
+        let (configuration, notes) = appearance_configuration(
+            &w,
+            Ownership {
+                layout: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert!(!configuration.contains("wayland_titlebar_color"));
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("Title bar color NOT applied"))
+        );
+        let entry = Plan::prepare(
+            temp.path(),
+            &format!("chrome-{i}"),
+            "Chrome",
+            1,
+            &w,
+            Ownership {
+                palette: true,
+                layout: true,
+                ..Default::default()
+            },
+            None,
+            [8, 16],
+        )
+        .unwrap()
+        .publish()
+        .unwrap();
+        let command = entry.command().unwrap();
+        let mut args: Vec<_> = command
+            .get_args()
+            .map(|v| v.to_string_lossy().into_owned())
+            .collect();
+        let socket = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap())
+            .join(format!("chrome-{i}.sock"));
+        args.splice(
+            args.len() - 4..args.len() - 4,
+            [
+                "--override".into(),
+                "allow_remote_control=yes".into(),
+                "--override".into(),
+                "linux_display_server=x11".into(),
+                "--listen-on".into(),
+                format!("unix:{}", socket.display()),
+                "--title".into(),
+                "TermiMochi point-to-edit test".into(),
+            ],
+        );
+        let mut env: BTreeMap<String, String> = command
+            .get_envs()
+            .filter_map(|(k, v)| {
+                v.map(|v| {
+                    (
+                        k.to_string_lossy().into_owned(),
+                        v.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect();
+        env.insert("LIBGL_ALWAYS_SOFTWARE".into(), "1".into());
+        cases.push(serde_json::json!({"program":command.get_program().to_string_lossy(),"args":args,"env":env,"socket":format!("unix:{}",socket.display()),"name":format!("{}-{}-{visible}",style.native(),edge.native()),"visible":visible,"minimum":w.layout.tab_min_tabs,"edge":edge.native()}));
+    }
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/window-top-test-driver.py");
+    let request = serde_json::json!({"cases":cases,"driver":Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/preview-pointer-driver.py")});
+    let out = Command::new("/usr/bin/python3")
+        .arg(script)
+        .arg(request.to_string())
+        .output()
+        .unwrap();
+    println!("{}", String::from_utf8_lossy(&out.stdout));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 fn workspace() -> Workspace {
     Workspace::new(
         &termimochi_core::PtyxisPalette::from_text(include_str!(

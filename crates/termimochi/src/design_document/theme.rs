@@ -58,7 +58,7 @@ pub(crate) fn kitty_field(group: &str, field: &str) -> Option<&'static str> {
         ("layout", "rows") => Some("initial_window_height"),
         ("layout", "cursor_shape") => Some("cursor_shape"),
         ("layout", "cursor_blink") => Some("cursor_blink_interval"),
-        ("layout", "tab_bar") => Some("tab_bar_style"),
+        ("layout", field) => crate::layout::window_top::kitty_field(field),
         _ => None,
     }
 }

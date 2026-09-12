@@ -309,6 +309,7 @@ impl Workbench {
         }
         self.greeting
             .restrict_to_artwork(self.typed.scope.get().artwork);
+        self.refresh_window_top();
         let pairs = [
             (EditorModule::Palette, &self.palette_module_button),
             (EditorModule::Typography, &self.typography_module_button),

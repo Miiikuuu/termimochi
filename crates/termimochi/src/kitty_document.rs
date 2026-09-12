@@ -42,6 +42,13 @@ pub(crate) fn category(key: &str) -> Option<usize> {
             | "cursor_shape"
             | "cursor_blink_interval"
             | "tab_bar_style"
+            | "tab_bar_edge"
+            | "tab_bar_min_tabs"
+            | "active_tab_foreground"
+            | "active_tab_background"
+            | "inactive_tab_foreground"
+            | "inactive_tab_background"
+            | "wayland_titlebar_color"
             | "remember_window_size"
     ) {
         Some(2)
@@ -81,6 +88,15 @@ fn valid(key: &str, value: &str) -> bool {
             "fade" | "slant" | "separator" | "powerline" | "hidden"
         ),
         "remember_window_size" => matches!(value, "yes" | "no"),
+        "tab_bar_edge" => matches!(value, "top" | "bottom"),
+        "tab_bar_min_tabs" => value.parse::<u8>().is_ok_and(|n| (1..=16).contains(&n)),
+        "wayland_titlebar_color" => {
+            crate::layout::window_top::TitlebarColor::parse(value).is_some()
+        }
+        "active_tab_foreground"
+        | "active_tab_background"
+        | "inactive_tab_foreground"
+        | "inactive_tab_background" => crate::layout::window_top::color(value).is_ok(),
         "modify_font" => {
             let mut p = value.split_whitespace();
             matches!(p.next(), Some("cell_width" | "cell_height"))
@@ -151,6 +167,7 @@ impl KittyDocument {
         reference: &crate::workspace::Workspace,
     ) -> Result<crate::workspace::Workspace, String> {
         let mut result = reference.clone();
+        crate::layout::window_top::reset_reference(&mut result.layout);
         let mut palette = result.palette()?;
         let variant = result.variant();
         for (key, value) in &self.properties {
@@ -246,7 +263,35 @@ impl KittyDocument {
                         crate::layout::PreviewCursorBlink::On
                     }
                 }
-                "tab_bar_style" => result.layout.tab_bar = value != "hidden",
+                "tab_bar_style" => {
+                    result.layout.tab_bar = value != "hidden";
+                    result.layout.tab_style =
+                        crate::layout::window_top::TabStyle::parse(value).unwrap_or_default();
+                }
+                "tab_bar_edge" => {
+                    result.layout.tab_edge = if value == "top" {
+                        crate::layout::window_top::TabEdge::Top
+                    } else {
+                        crate::layout::window_top::TabEdge::Bottom
+                    }
+                }
+                "tab_bar_min_tabs" => result.layout.tab_min_tabs = value.parse().unwrap(),
+                "wayland_titlebar_color" => {
+                    result.layout.titlebar_color =
+                        crate::layout::window_top::TitlebarColor::parse(value).unwrap()
+                }
+                "active_tab_foreground" => {
+                    result.layout.tab_active_fg = crate::layout::window_top::color(value).unwrap()
+                }
+                "active_tab_background" => {
+                    result.layout.tab_active_bg = crate::layout::window_top::color(value).unwrap()
+                }
+                "inactive_tab_foreground" => {
+                    result.layout.tab_inactive_fg = crate::layout::window_top::color(value).unwrap()
+                }
+                "inactive_tab_background" => {
+                    result.layout.tab_inactive_bg = crate::layout::window_top::color(value).unwrap()
+                }
                 _ => {}
             }
         }
@@ -382,6 +427,7 @@ pub(crate) fn workspace_properties(
     ] {
         values.insert(key.into(), value);
     }
+    values.extend(crate::layout::window_top::properties(&workspace.layout));
     Ok(values)
 }
 

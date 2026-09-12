@@ -1,5 +1,6 @@
 use crate::preview::{PREVIEW_COLUMNS, PREVIEW_ROWS};
 use serde::{Deserialize, Serialize};
+pub(crate) mod window_top;
 
 pub(crate) const MIN_CONTENT_PADDING: i32 = 0;
 pub(crate) const MAX_CONTENT_PADDING: i32 = 24;
@@ -113,6 +114,22 @@ pub(crate) struct LayoutSettings {
     pub(crate) tab_bar: bool,
     pub(crate) scrollbar: bool,
     pub(crate) window_spacing: i32,
+    #[serde(default)]
+    pub(crate) titlebar_color: window_top::TitlebarColor,
+    #[serde(default)]
+    pub(crate) tab_style: window_top::TabStyle,
+    #[serde(default)]
+    pub(crate) tab_edge: window_top::TabEdge,
+    #[serde(default = "window_top::default_min_tabs")]
+    pub(crate) tab_min_tabs: u8,
+    #[serde(default = "window_top::active_fg")]
+    pub(crate) tab_active_fg: [u8; 3],
+    #[serde(default = "window_top::active_bg")]
+    pub(crate) tab_active_bg: [u8; 3],
+    #[serde(default = "window_top::inactive_fg")]
+    pub(crate) tab_inactive_fg: [u8; 3],
+    #[serde(default = "window_top::inactive_bg")]
+    pub(crate) tab_inactive_bg: [u8; 3],
 }
 
 impl Default for LayoutSettings {
@@ -126,6 +143,14 @@ impl Default for LayoutSettings {
             tab_bar: true,
             scrollbar: false,
             window_spacing: DEFAULT_WINDOW_SPACING,
+            titlebar_color: Default::default(),
+            tab_style: Default::default(),
+            tab_edge: Default::default(),
+            tab_min_tabs: window_top::default_min_tabs(),
+            tab_active_fg: window_top::active_fg(),
+            tab_active_bg: window_top::active_bg(),
+            tab_inactive_fg: window_top::inactive_fg(),
+            tab_inactive_bg: window_top::inactive_bg(),
         }
     }
 }
@@ -136,6 +161,7 @@ impl LayoutSettings {
             || !(MIN_COLUMNS..=MAX_COLUMNS).contains(&self.columns)
             || !(MIN_ROWS..=MAX_ROWS).contains(&self.rows)
             || !(MIN_WINDOW_SPACING..=MAX_WINDOW_SPACING).contains(&self.window_spacing)
+            || !(1..=16).contains(&self.tab_min_tabs)
         {
             return Err(
                 "Layout dimensions or spacing are outside the supported preview range.".into(),
@@ -163,6 +189,7 @@ impl LayoutSettings {
             tab_bar,
             scrollbar,
             window_spacing: window_spacing.clamp(MIN_WINDOW_SPACING, MAX_WINDOW_SPACING),
+            ..Default::default()
         }
     }
 }

@@ -17,6 +17,7 @@ impl Workbench {
         self.cursor_blink_selector
             .set_selected(settings.cursor_blink.index());
         self.tab_bar_switch.set_active(settings.tab_bar);
+        self.window_top.set(&settings);
         self.scrollbar_switch.set_active(settings.scrollbar);
         self.window_spacing_input
             .set_value(settings.window_spacing.into());
@@ -30,6 +31,7 @@ impl Workbench {
     }
 
     pub(super) fn committed_layout(&self) -> Result<LayoutSettings, String> {
+        self.window_top.commit()?;
         for input in [
             &self.content_padding_input,
             &self.column_count_input,
