@@ -85,6 +85,16 @@ that looks balanced elsewhere can therefore become almost unreadable.
   recovery. **⋮ → Open Independent Kitty Scheme…** reopens published entries after
   restart. This does not change the default terminal or daily shell configuration;
   unsupported native directives are retained but reported as inert in this session.
+- Published Kitty themes can become daily application-menu entries: **Add / Update
+  App Launcher… → choose Bash environment → Try Daily Session → confirm → Create /
+  Update App Launcher**. Search for **theme name — Kitty** in the system app menu,
+  without opening the editor or copying a command. **My Bash Environment** explicitly
+  runs local Bash startup (without writing it); **Isolated Bash** keeps the controlled
+  environment. Entries pin a reviewed theme version and retain a private runtime;
+  later theme publication requires updating the launcher. The independent scheme
+  library also offers launcher opening and conflict-checked undo, including for
+  deactivated entries. Ordinary Kitty and the default terminal are unchanged.
+  [Daily-use workflow, safety and Chinese acceptance card](docs/kitty-daily-launcher.md).
 - Greeting starts with **Preset → TermiMochi** selected for new users; turn on
   the header switch to preview it. This complete native preset combines the
   brand mark, user/host title, separator, system/desktop/hardware fields and a

@@ -16,6 +16,7 @@ use termimochi_core::{
 use vte::prelude::*;
 
 mod color_targets;
+mod daily_launcher;
 mod document_use;
 mod documents;
 mod full_session;
@@ -359,6 +360,7 @@ struct Workbench {
     selected_color_title: gtk::Label,
     color_picker: ColorPicker,
     terminal_css_provider: gtk::CssProvider,
+    terminal_css_scope: String,
     preview_content: gtk::Box,
     terminal_title: gtk::Label,
     preview_terminal_shell: gtk::Box,
@@ -818,6 +820,10 @@ fn present_with_mode(
     let base_css_provider = gtk::CssProvider::new();
     base_css_provider.load_from_data(&chrome_css(gtk::check_version(4, 16, 0).is_none()));
     let terminal_css_provider = gtk::CssProvider::new();
+    // Display providers match every window. Scope mutable preview colors to
+    // this shell, independently of document identity (including Save As/copies).
+    let terminal_css_scope = format!("terminal-instance-{}", glib::uuid_string_random());
+    preview.terminal_shell.add_css_class(&terminal_css_scope);
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
@@ -829,6 +835,11 @@ fn present_with_mode(
             &terminal_css_provider,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
         );
+        let colors = terminal_css_provider.clone();
+        window.connect_destroy(move |_| {
+            gtk::style_context_remove_provider_for_display(&display, &colors);
+            gtk::style_context_remove_provider_for_display(&display, &base_css_provider);
+        });
     }
 
     let window_ref = glib::WeakRef::new();
@@ -873,6 +884,7 @@ fn present_with_mode(
         color_picker: editor.color_picker,
         color_targets: editor.color_targets,
         terminal_css_provider,
+        terminal_css_scope,
         preview_content: preview.content,
         terminal_title: preview.terminal_title,
         preview_terminal_shell: preview.terminal_shell,
@@ -5914,7 +5926,8 @@ impl Workbench {
         let color0 = variant.get("Color0").unwrap_or(background);
 
         let css = format!(
-            "#termimochi-terminal {{ background-color: {background}; color: {foreground}; }}"
+            "#termimochi-terminal.{} {{ background-color: {background}; color: {foreground}; }}",
+            self.terminal_css_scope
         );
         let terminal_palette: Vec<_> = (0..16)
             .map(|index| rgba_from_rgb(variant.get(&format!("Color{index}")).unwrap_or(background)))
