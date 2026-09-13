@@ -82,6 +82,45 @@ fn opens_profile(items: &[Item], selected: &[bool], has_profile: bool) -> bool {
         })
 }
 
+// Read-only presentation of the scoped plan, never a second application plan.
+struct SummaryRow {
+    title: String,
+    detail: String,
+    id: &'static str,
+    available: bool,
+    required: bool,
+}
+
+fn review_summary(rows: &[SummaryRow], selected: &[bool]) -> (String, String) {
+    let mut changes = Vec::new();
+    let mut blockers = Vec::new();
+    for (row, selected) in rows.iter().zip(selected) {
+        if !row.required {
+            continue;
+        }
+        if !row.available {
+            blockers.push(format!("{}\n{}", row.title, row.detail));
+        } else if *selected {
+            changes.push(format!("{}\n{}", row.title, row.detail));
+        }
+    }
+    (
+        if changes.is_empty() {
+            "No changes selected.".into()
+        } else {
+            changes.join("\n\n")
+        },
+        if blockers.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Cannot apply these requested settings:\n{}",
+                blockers.join("\n\n")
+            )
+        },
+    )
+}
+
 pub(super) fn dialog(
     parent: &adw::ApplicationWindow,
     title: &str,
@@ -261,6 +300,19 @@ impl Workbench {
                 .map(|request| (request.detail(), None, Action::Layout(request))),
         );
         plan.items.push(Item { id: "preview-only", title: "Layout · preview only".into(), detail: "Exact content padding, tab bar and window spacing are saved in the workspace, but cannot be applied to Ptyxis. Preview animation is not a terminal setting.".into(), versions: None, action: None });
+        if let Some(theme) = theme {
+            let unsupported = layout_apply::unsupported_theme_fields(&theme.layout);
+            if !unsupported.is_empty() {
+                plan.items.last_mut().unwrap().detail = format!(
+                    "Saved, but not applied to Ptyxis: {}.",
+                    unsupported
+                        .iter()
+                        .map(|field| field.replace('_', " "))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
         let prompt = (|| {
             scope.require(crate::design_document::Action::Prompt)?;
             let designer = self.prompt_source_selector.selected() == 1;
@@ -424,13 +476,20 @@ impl Workbench {
         let plan = self.scheme_plan(&workspace);
         let (window, body, buttons) = dialog(&self.window(), "Apply This Scheme", &plan.target);
         body.append(&label(
-            &plan.target.lines().skip(2).collect::<Vec<_>>().join("\n"),
+            "Review this theme's changes. Save does not apply settings.",
         ));
-        body.append(&label("Review this theme's changes. Only explicitly included settings are selected; preview references stay out. Nothing changes until you confirm. Save never applies settings."));
         let summary = label("");
         summary.set_widget_name("scheme-summary");
         body.append(&summary);
+        let blockers = label("");
+        blockers.set_widget_name("scheme-blockers");
+        blockers.add_css_class("warning");
+        blockers.add_css_class("heading");
+        body.append(&blockers);
         let advanced = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        advanced.append(&label(
+            &plan.target.lines().skip(2).collect::<Vec<_>>().join("\n"),
+        ));
         advanced.append(&label("Change the selected components or inspect exact destinations and file diffs. Each successful change has its own backup; a failed item does not undo the others."));
         let checks: Vec<_> = plan
             .items
@@ -487,7 +546,18 @@ impl Workbench {
                     detail.push('\n');
                     detail.push_str(i.detail.lines().next().unwrap_or(""));
                 }
-                (i.title.clone(), detail, i.id, i.action.is_some())
+                SummaryRow {
+                    title: i.title.clone(),
+                    detail,
+                    id: i.id,
+                    available: i.action.is_some(),
+                    // Other rows have already been filtered by the owned scope.
+                    // A generic layout limitation is relevant only if requested.
+                    required: i.id != "preview-only"
+                        || design.theme.as_ref().is_none_or(|theme| {
+                            !layout_apply::unsupported_theme_fields(&theme.layout).is_empty()
+                        }),
+                }
             })
             .collect();
         let has_profile = plan.profile_uuid.is_some();
@@ -501,27 +571,16 @@ impl Workbench {
                 })
                 .collect();
             let opening = has_profile
-                && rows.iter().zip(&selected).any(|((_, _, id, _), selected)| {
-                    *selected && matches!(*id, "activate" | "typography" | "layout")
+                && rows.iter().zip(&selected).any(|(row, selected)| {
+                    *selected && matches!(row.id, "activate" | "typography" | "layout")
                 });
-            let mut text = rows
-                .iter()
-                .zip(&selected)
-                .map(|((title, detail, _, available), selected)| {
-                    if *selected {
-                        format!("{title}\n{detail}")
-                    } else if !available {
-                        format!("{title} · Not applied\n{detail}")
-                    } else {
-                        format!("{title} · Not selected")
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n");
+            let (mut text, issues) = review_summary(&rows, &selected);
             if opening {
-                text.push_str("\n\nAfter applying, open this exact Ptyxis profile with its normal shell. Existing startup commands may run. This is not a full-scheme isolated trial.");
+                text.push_str("\n\nOpens the reviewed Ptyxis profile; its normal shell/startup commands may run. Not an isolated trial.");
             }
             summary.set_label(&text);
+            blockers.set_visible(!issues.is_empty());
+            blockers.set_label(&issues);
             if let Some(button) = button.upgrade() {
                 button.set_sensitive(selected.iter().any(|s| *s));
                 button.set_label(if opening {
@@ -883,6 +942,49 @@ fn add(plan: &mut Plan, id: &'static str, title: &str, prepared: Prepared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summary_omits_references_and_unselected_items_but_retains_owned_blockers() {
+        let row = |title: &str, available, required| SummaryRow {
+            title: title.into(),
+            detail: format!("{title} effect"),
+            id: "test",
+            available,
+            required,
+        };
+        let rows = [
+            row("Font", true, true),
+            row("Reference", false, false),
+            row("Unselected", true, true),
+            row("Missing dependency", false, true),
+        ];
+        let (changes, blockers) = review_summary(&rows, &[true, false, false, false]);
+        assert_eq!(changes, "Font\nFont effect");
+        assert_eq!(
+            blockers,
+            "Cannot apply these requested settings:\nMissing dependency\nMissing dependency effect"
+        );
+        assert_eq!(
+            review_summary(&rows[..1], &[false]),
+            ("No changes selected.".into(), String::new())
+        );
+    }
+
+    #[test]
+    fn layout_limitations_follow_the_adapters_actual_sparse_fields() {
+        let fields =
+            serde_json::from_value(serde_json::json!({"columns": 100, "cursor_shape": "ibeam"}))
+                .unwrap();
+        assert!(layout_apply::unsupported_theme_fields(&fields).is_empty());
+        let fields = serde_json::from_value(
+            serde_json::json!({"columns": 100, "content_padding": 12, "tab_edge": "top"}),
+        )
+        .unwrap();
+        assert_eq!(
+            layout_apply::unsupported_theme_fields(&fields),
+            ["content_padding", "tab_edge"]
+        );
+    }
     use crate::window::greeting::tests::{descendants, project_controller as controller, settle};
 
     fn memory_profile() -> (gio::Settings, gio::Settings) {
@@ -1235,6 +1337,27 @@ mod tests {
         settle();
         let review = top("Apply This Scheme");
         let font = check(&review, "typography");
+        let summary_label = |window: &gtk::Window, name: &str| {
+            descendants(window.upcast_ref())
+                .into_iter()
+                .find(|w| w.widget_name() == name)
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap()
+        };
+        let summary = summary_label(&review, "scheme-summary");
+        assert!(summary.text().contains("font settings are global"));
+        for unrelated in [
+            "Palette",
+            "Layout",
+            "Prompt",
+            "Greeting",
+            "Not applied",
+            "Not selected",
+        ] {
+            assert!(!summary.text().contains(unrelated));
+        }
+        assert!(!summary_label(&review, "scheme-blockers").is_visible());
         assert!(font.is_active() && font.is_sensitive());
         let controls: Vec<_> = descendants(review.upcast_ref())
             .into_iter()
@@ -1252,6 +1375,7 @@ mod tests {
         assert!(button(&review, "Apply & Open Profile").is_sensitive());
         font.set_active(false);
         assert!(!button(&review, "Apply Changes").is_sensitive());
+        assert_eq!(summary.text(), "No changes selected.");
         font.set_active(true);
         settle();
         capture(&review, "theme-compact-review.png");
@@ -1277,6 +1401,69 @@ mod tests {
         report.restore(&directory).unwrap();
         assert_eq!(global.user_value("font-name"), old_font);
         top("Scheme Application Results").destroy();
+
+        // A supported layout edit must not advertise unrelated limitations.
+        let mut layout = crate::design_document::DesignDocument::new_theme(
+            crate::design_document::TargetHint::Ptyxis,
+            "Layout summary",
+            true,
+        );
+        layout
+            .theme
+            .as_mut()
+            .unwrap()
+            .layout
+            .insert("columns".into(), 100.into());
+        this.load_design(layout.clone());
+        settle();
+        this.request_scheme_apply();
+        settle();
+        let review = top("Apply This Scheme");
+        assert!(!summary_label(&review, "scheme-blockers").is_visible());
+        assert!(!check(&review, "preview-only").is_mapped());
+        capture(&review, "summary-supported-layout.png");
+        button(&review, "Cancel").emit_clicked();
+
+        // The same limitation becomes prominent when explicitly authored.
+        layout
+            .theme
+            .as_mut()
+            .unwrap()
+            .layout
+            .insert("content_padding".into(), 12.into());
+        this.load_design(layout);
+        settle();
+        this.request_scheme_apply();
+        settle();
+        let review = top("Apply This Scheme");
+        let issue = summary_label(&review, "scheme-blockers");
+        assert!(issue.is_mapped() && issue.has_css_class("warning"));
+        assert!(issue.text().contains("content padding"));
+        assert!(!issue.text().contains("tab bar"));
+        capture(&review, "summary-requested-layout-blocker.png");
+        button(&review, "Cancel").emit_clicked();
+
+        let mut missing = before.clone();
+        missing
+            .theme
+            .as_mut()
+            .unwrap()
+            .typography
+            .insert("family".into(), "TermiMochi Missing QA Font 7391".into());
+        this.load_design(missing);
+        settle();
+        this.request_scheme_apply();
+        settle();
+        let review = top("Apply This Scheme");
+        let issue = summary_label(&review, "scheme-blockers");
+        assert!(issue.is_mapped());
+        assert!(issue.text().contains("selected font is missing"));
+        assert!(!button(&review, "Apply Changes").is_sensitive());
+        capture(&review, "summary-missing-font.png");
+        button(&review, "Cancel").emit_clicked();
+        assert_eq!(global.user_value("font-name"), old_font);
+        assert_eq!(global.user_value("default-columns"), old_columns);
+        assert_eq!(profile.user_value("palette"), old_palette);
         main.destroy();
         settle();
     }

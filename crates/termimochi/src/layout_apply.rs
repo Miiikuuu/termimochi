@@ -20,6 +20,23 @@ const KEYS: [&str; 6] = [
     "restore-window-size",
 ];
 const RECEIPT: &str = "last-layout-apply.json";
+const THEME_KEYS: [(&str, &str); 5] = [
+    ("cursor_shape", "cursor-shape"),
+    ("cursor_blink", "cursor-blink-mode"),
+    ("scrollbar", "scrollbar-policy"),
+    ("columns", "default-columns"),
+    ("rows", "default-rows"),
+];
+
+pub(crate) fn unsupported_theme_fields(
+    fields: &crate::design_document::theme::Fields,
+) -> Vec<&str> {
+    fields
+        .keys()
+        .map(String::as_str)
+        .filter(|field| !THEME_KEYS.iter().any(|(supported, _)| supported == field))
+        .collect()
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -242,13 +259,7 @@ impl ApplyRequest {
         let request = &mut self;
         let desired = request.receipt.after.clone();
         request.receipt.after = request.receipt.before.user.clone();
-        for (field, key) in [
-            ("cursor_shape", "cursor-shape"),
-            ("cursor_blink", "cursor-blink-mode"),
-            ("scrollbar", "scrollbar-policy"),
-            ("columns", "default-columns"),
-            ("rows", "default-rows"),
-        ] {
+        for (field, key) in THEME_KEYS {
             if fields.contains_key(field) {
                 request
                     .receipt

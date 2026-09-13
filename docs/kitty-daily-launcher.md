@@ -8,8 +8,8 @@
 | 操作 | 应看到什么 |
 | --- | --- |
 | 在 Kitty 主题中完成设置并 Save | 保存设计；普通终端不应变化 |
-| Use Theme → Try in Kitty → 确认外观及 GIF → Create / Update Independent Entry | 发布同一目标的独立主题版本 |
-| 结果页 Add / Update App Launcher… | 选择 Isolated Bash 或 My Bash Environment |
+| Use Theme → Try in Kitty → 确认外观及 GIF → Apply & Open in Kitty | 发布同一目标的独立主题版本并打开；失败时可从结果页重试打开 |
+| 结果页 Advanced · app launcher & recovery → Add / Update App Launcher… | 选择 Isolated Bash 或 My Bash Environment |
 | 选择 My Bash Environment | 明确提示将执行本机 `/etc/bash.bashrc` 和 `~/.bashrc`；不修改它们 |
 | 审阅页 Try Daily Session | 打开实际 Kitty；检查主题、GIF、自己的 alias / 环境初始化是否正常 |
 | 勾选确认 → Create / Update App Launcher | 未试用、未确认时不能创建；成功页显示可搜索的名称 |
@@ -21,7 +21,8 @@
 | 停用没有前一版的主题 | 明确显示 Deactivate Entry，不再声称存在可恢复的前一版；应用菜单入口仍可从库中撤回 |
 
 已有独立主题不必重新导入：从 **Open Independent Kitty Scheme…** 打开对应版本，
-再选择 **Add / Update App Launcher…**。本次代码验证不会替用户完成日常安装。
+在结果页展开 **Advanced · app launcher & recovery**，再选择
+**Add / Update App Launcher…**。本次代码验证不会替用户完成日常安装。
 
 ## 架构与保存位置
 

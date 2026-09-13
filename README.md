@@ -11,6 +11,35 @@ The first target is the Codex composer contrast trap in a light Ptyxis theme:
 Codex can draw composer text with `Foreground` on a `Color0` surface. A palette
 that looks balanced elsewhere can therefore become almost unreadable.
 
+## Save and use a theme
+
+1. Choose **New Theme…**, open a Kitty configuration or Ptyxis palette, or use
+   **From My Terminal…** to read saved terminal settings into a new theme.
+2. Edit Palette, Typography, Layout, Prompt and Greeting in that same workspace.
+   The right-hand **Full / Terminal / Prompt / Greeting** scene stays independent
+   of the editor page. Default interactive samples do not execute local commands.
+3. **Save / Ctrl+S** saves the complete `.termimochi-design.json` theme, including
+   its assets and explicitly authored settings. It does not apply configuration.
+4. Click **Use Theme…** and follow the theme's target:
+
+| Target | Review, apply and open | Open again / recover |
+| --- | --- | --- |
+| Kitty | **Try in Kitty**, inspect the actual window, confirm the included settings (including GIF motion when present), then **Apply & Open in Kitty**. | **⋮ → Open Independent Kitty Scheme…**. The result's **Advanced · app launcher & recovery** offers an optional desktop launcher and recovery. |
+| Ptyxis | Review the actual profile and global/shared effects. Supported owned settings are preselected. **Apply & Open Profile** opens the reviewed profile after successful appearance application; other selections use **Apply Changes**. | **Open Profile Tab**, or **⋮ → Last Application & Recovery…** after restart. Recovery requires confirmation and preserves external edits. |
+
+The main review summarizes selected changes and related blockers. Use
+**Advanced · components & files** on Ptyxis to change the selection or inspect
+destinations/diffs. Unspecified reference values are never automatically applied;
+requested but unsupported settings remain prominent. Ptyxis font changes can
+affect every profile. Its opened profile uses its normal shell/startup commands,
+not an isolated full-theme trial.
+
+**Try Greeting** tests only Greeting, not the whole theme. GTK GIF playback is
+not proof of Kitty/Sixel support. A Kitty theme opens as an independent controlled
+session; the normal Kitty icon and default terminal are unchanged. Creating a
+daily app-menu launcher is a separate reviewed action, never a side effect of Save
+or Apply. [Application guide](docs/apply-scheme.md).
+
 ## Current MVP
 
 - One theme, one target workspace. **New Theme…** selects Kitty or Ptyxis;
@@ -52,8 +81,8 @@ that looks balanced elsewhere can therefore become almost unreadable.
   execute on the host. Greeting art/GIF, information, Prompt and sample output share
   the workspace's colors, font and cell geometry. Default Actual size reflows at the theme
   font size; Fit scales the entire finite simulated window, including inline GTK input.
-  Observation grids and zoom never change saved Columns or
-  dirties Save. GIF playback is shared and respects reduced motion. This GTK/VTE
+  Observation grids and zoom never change saved Columns or mark the theme
+  modified. GIF playback is shared and respects reduced motion. This GTK/VTE
   composition does **not** verify Kitty/Sixel: **Try Greeting** remains a temporary
   real Greeting-only trial. See [interactive samples](docs/interactive-samples.md) and the
   [manual acceptance card (Chinese)](docs/interactive-samples-acceptance-zh.md).
@@ -62,12 +91,11 @@ that looks balanced elsewhere can therefore become almost unreadable.
   content separately from its outer shadow. [Presentation/import acceptance card (Chinese)](docs/preview-presentation-acceptance-zh.md).
 - Live VTE typography controls for installed monospace families, point size,
   weight, line height and cell width, with fallback-safe Nerd icon checks.
-- Typography presets: **⋮ → Save Typography Preset** remembers
-  all five font settings for the next launch. Open and export portable
-  `.termimochi-font.json` files; typography edits have their own Undo/Redo.
-  **⋮ → Typography — Apply…** confirms the app-wide font and target-profile spacing,
-  saves a private backup, and blocks external-change conflicts. The Typography
-  **⋮** menu offers **Restore Previous Typography**. Saving alone never applies.
+- Reusable typography presets: **⋮ → Save Typography Preset** and portable
+  `.termimochi-font.json` import/export remain secondary tools. Normal themes
+  save their font overrides with **Save** and apply through **Use Theme…**.
+  Single-component typography documents retain separate Ptyxis Apply/recovery
+  tools; these cannot bypass theme review.
 - Live layout controls for content padding, rows and columns, cursor behavior,
   tab and scrollbar chrome, and preview-window spacing.
 - **Layout → Window Top** groups title-bar background mode and Kitty native tabs:
@@ -80,19 +108,18 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Window Top**. Both targets have window-local header/tab design previews;
   Ptyxis tab shape and selection shading remain Adwaita-controlled.
   [Capabilities and Chinese acceptance card](docs/window-top.md).
-- Layout presets: **⋮ → Save Layout Preset** restores layout
-  settings next launch, with independent Undo/Redo and portable
-  `.termimochi-layout.json` import/export. **⋮ → Layout — Apply…** backs up and
-  applies Ptyxis global cursor, scrollbar and new-window grid settings; exact padding,
-  tab bar and preview-window spacing remain preview-only. The **⋮** menu offers
-  **Restore Previous Layout**. Remembered window sizing is disabled only after
-  explicit Apply confirmation, so the chosen grid can take effect.
-- Complete setups require an explicit **Project** with selected components.
-  Projects retain selected colors, fonts, layout, Prompt and Greeting, including
-  editable image/GIF originals. Old `.termimochi.json` workspaces open as inert
+- Reusable layout presets retain **⋮ → Save Layout Preset** and portable
+  `.termimochi-layout.json` import/export. Use **Save** and **Use Theme…** for the
+  current theme. Ptyxis supports global cursor, scrollbar and new-window grid
+  settings; unsupported owned padding/tab settings are identified before applying.
+  Applying explicit grid overrides disables remembered sizing, not on Save.
+  Advanced layout documents retain separate Apply/recovery tools.
+- A complete setup is a theme; no Project assembly is required. It retains
+  colors, fonts, layout, Prompt and Greeting, including editable image/GIF originals.
+  Old `.termimochi.json` workspaces open as inert
   Legacy documents; convert an explicit copy to use them. Opening never applies
   terminal settings. Saved native sources reopen detached from local write permission.
-- **Apply Scheme…** uses the current document and selected target, separately from
+- **Use Theme…** uses the current theme and its target, separately from
   Save. The Ptyxis path reviews the exact profile,
   global versus profile scope, palette installation versus activation, and file
   destinations. Starship/Fastfetch replacements include before/after views.
@@ -101,13 +128,14 @@ that looks balanced elsewhere can therefore become almost unreadable.
   after restart and restores this application's changes with conflict checks.
   **Open Profile Tab** opens the reviewed Ptyxis profile for verification; no
   shell startup files are edited. See [Applying a scheme](docs/apply-scheme.md).
-- **Kitty** documents/projects use one controlled Bash session for owned appearance,
+- **Kitty** themes use one controlled Bash session for owned appearance,
   current Prompt and Greeting. The same GUI guides real temporary trial, visual
-  confirmation, review, versioned publication, **Open in Kitty**, and conflict-checked
+  confirmation, review, **Apply & Open in Kitty**, and conflict-checked
   recovery. **⋮ → Open Independent Kitty Scheme…** reopens published entries after
   restart. This does not change the default terminal or daily shell configuration;
   unsupported native directives are retained but reported as inert in this session.
-- Published Kitty themes can become daily application-menu entries: **Add / Update
+- Published Kitty themes can become daily application-menu entries: in the result,
+  expand **Advanced · app launcher & recovery**, then **Add / Update
   App Launcher… → choose Bash environment → Try Daily Session → confirm → Create /
   Update App Launcher**. Search for **theme name — Kitty** in the system app menu,
   without opening the editor or copying a command. **My Bash Environment** explicitly
@@ -167,8 +195,8 @@ that looks balanced elsewhere can therefore become almost unreadable.
   removal, tolerance and edge softness. Edge-connected removal protects enclosed
   details by default; this is not AI removal of complex photo backgrounds.
   **Reset adjustments** keeps the character mode and width. Original shows the
-  same crop without tone edits. Recipes are conversion drafts, not saved source
-  images: reimport the original to adjust them after closing. See the
+  same crop without tone edits. **Use Artwork** retains the editable original and
+  recipe; **Edit Artwork…** reopens them after saving and reopening the theme. See the
   [image conversion guide](docs/image-conversion.md) for usage and algorithm references.
   Click **Use Artwork** to replace only the logo;
   Cancel leaves the greeting unchanged and Undo restores the previous artwork.
@@ -194,11 +222,11 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Fastfetch/TXT/ANSI exports contain only the rendered artwork, never source
   images or recipes. Existing artwork without a source offers **Reimport
   Original…**; old conversion settings cannot be reconstructed from ANSI alone.
-  **Save Preset** remembers it inside TermiMochi for next launch; it does not apply
-  anything externally. Its confirmation offers **Review & Apply…**, also available
-  as **⋮ → Greeting — Apply…**, to back up and update Fastfetch only after
-  explicit confirmation. Run `fastfetch` again to see the result; startup files
-  remain unchanged. **Export Fastfetch Configuration…**
+  **Save Greeting Preset** creates a reusable component preset, not an external
+  application. For the current theme use **Save**, then **Use Theme…**. The Kitty
+  route opens its reviewed Greeting with the independent theme; Ptyxis uses the
+  shared/configuration effects shown in review, without adding a startup hook.
+  **Export Fastfetch Configuration…**
   embeds the same colored artwork in `config.jsonc` without changing shell startup.
   ANSI imports retain 16/256/RGB colors and supported text styles; cursor
   movement, screen clearing, clipboard/title commands, links and unsupported
@@ -238,16 +266,19 @@ that looks balanced elsewhere can therefore become almost unreadable.
   See [image export requirements](docs/image-conversion.md#pixel-image-bundles).
   The main workbench offers **Try Greeting** (Kitty, Ptyxis or xterm): a
   temporary, safe-field-only trial that leaves your daily configuration alone.
-  Confirm the actual picture/motion using GUI feedback, then **Review Scheme &
-  Apply…** to back up Fastfetch and install permanent assets with
-  absolute paths. Static Kitty, animation and Sixel have separate verification
+  Use **Use Theme…** for normal theme application. In advanced single-component
+  workflows, **Use Design…** reviews the owned Greeting/artwork and installs
+  managed assets with absolute paths after the required visual check.
+  Static Kitty, animation and Sixel have separate verification
   states; unknown is not supported-by-assumption. Switching to **Character** is an
   explicit alternative. See [terminal trials and installation](docs/pixel-trials.md).
-  Images default to an independent managed config, leaving shared Fastfetch
+  Advanced standalone image installs default to an independent managed config, leaving shared Fastfetch
   untouched and reporting **Installed · not enabled**. Shared pixel replacement
   requires a separate opt-in and warns that every reader is affected. A Kitty
   image configuration can leave a blank logo in Ptyxis; choose Character explicitly
-  and review Greeting application, or restore the previous application record.
+  and review the target theme, or restore the previous application record.
+  Normal Kitty themes instead include the image/GIF in their independent session;
+  opening them does not require a manual `fastfetch --config` command.
   Automatic per-terminal startup routing is not implemented.
   Managed Kitty PNG/GIF installs also include a reviewed startup settling guard,
   preventing the tested cold-start blank-image race without clearing the terminal
@@ -262,7 +293,8 @@ that looks balanced elsewhere can therefore become almost unreadable.
   rendering, offline detection differences, missing icon glyphs and imported
   settings that are retained but not simulated.
 - **Bottom bar ⋮ → Sources → Load Current Configuration** reads the standard user
-  `fastfetch/config.jsonc` (or existing `config.json`); **Import…** selects another
+  `fastfetch/config.jsonc` (or existing `config.json`); **Import Fastfetch
+  Configuration…** selects another
   `config.jsonc`, `config.json` or `.fastfetch.jsonc` file. Imports retain JSONC
   comments, formatting, duplicate module types and unrecognized options.
   Supported fields can be edited; other modules remain read-only. Imported
@@ -280,20 +312,18 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Use **Add image / GIF…** (also accepts text artwork) to replace it with embedded, sanitized `data-raw` text
   for portable Fastfetch output. Original imported ANSI controls remain in the
   source until this explicit replacement; the preview alone does not clean it.
-- **Review & Apply…** shows the exact destination and Before/After text, then
-  requires **Back Up & Apply**. External changes block replacement. **Restore
-  Previous…** restores the last successful apply, including after restarting
-  TermiMochi; backups and the checked rollback record live under
-  `XDG_STATE_HOME/termimochi/fastfetch-state`. Restore also checks for external
-  edits and retains a recovery copy. Imported unsupported settings remain in
-  the applied file and can run when Fastfetch is invoked; review them first.
-  **Run Fastfetch in a new terminal after applying** opens a new **Ptyxis** window
-  and executes the applied config once. It is on by default for designer configs
-  and off for imported configs, which may contain commands or network modules.
-  Press Enter in the result window to close it. The run is outside the offline
-  preview sandbox and uses Ptyxis's configured appearance, not an unsaved app
-  theme. Missing launch tools do not undo a successful config apply. Cancel,
-  failed/conflicting apply, Save Preset and Restore do not launch a terminal.
+- Shared Fastfetch changes are reviewed through **Use Theme…** (or **Use Design…**
+  for an advanced Greeting document), with exact destinations and before/after
+  text in **Advanced · components & files**. Application records and per-item
+  backups live under `XDG_STATE_HOME/termimochi/scheme-applies`.
+  **Last Application & Recovery…** reopens results after restart; external edits
+  block replacement or recovery. Imported unsupported settings remain in the
+  full applied file and may execute when Fastfetch is invoked.
+  Running that exact file is a separate result-page action:
+  **Advanced · run exact Greeting configuration → Review & Run Applied Greeting… →
+  Run This Configuration Once**. It retains the reviewed target and explicitly
+  reviews command/network modules and `preRun`; it is not automatically selected
+  after Apply. An opening failure does not undo a successful configuration write.
   A successful apply also saves the current Greeting preset for the next launch.
   If that local save fails, a persistent notice reports the partial success;
   conflicting presets are never overwritten. Startup and window refocus compare
@@ -312,7 +342,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   or network modules automatically; the confirmation explicitly warns about this.
   Other shells are not configured. Portable presets cannot enable this setting.
 - Greeting width can follow Layout or use an exact **80 / 100 / 120 columns**,
-  without changing the Layout document. Pan wider grids with Shift+wheel.
+  without changing the theme's Layout settings. Pan wider grids with Shift+wheel.
   A short, once-per-window hint appears when the preview is too wide: drag
   the center divider or widen the window for more room. It dismisses on resize/panning or
   after seven seconds, without interrupting terminal input or selection.
@@ -320,7 +350,8 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Taller artwork expands the greeting canvas inside an independently scrolling
   terminal. **Live Preview**, its controls and **Preview Checks** stay fixed;
   wheel gestures never spill into the editor or logs at the terminal's edges.
-  The optional Layout scrollbar spans both full-size artwork and terminal history.
+  Editor overflow navigation remains available even with the theme's Scrollbar
+  disabled; it is not saved as a terminal setting.
   Typing reveals the input line without moving the surrounding interface. The Fastfetch
   export captures the currently resolved horizontal/stacked composition; it
   does not resize your terminal or implement runtime-responsive JSONC.
@@ -328,7 +359,7 @@ that looks balanced elsewhere can therefore become almost unreadable.
   the play button. Motion is **preview only**, respects system reduced motion,
   and never changes terminal text; Fastfetch exports remain static.
 - **⋮ → Save Greeting Preset** retains a reusable component preset; main Save / `Ctrl+S` saves the entire current theme. New themes do not silently enable a saved Greeting preset.
-  Import/export `.termimochi-greeting.json` presets, or **Export Fastfetch…** to
+  Import/export `.termimochi-greeting.json` presets, or **Export Fastfetch Configuration…** to
   `config.jsonc` or a separate `.fastfetch.jsonc` file. Basic, unstyled custom preview
   needs no Fastfetch installation; field overrides, official presets and imports
   need system **Fastfetch 2.57+ (2.x) + Bubblewrap** for native preview.
@@ -344,8 +375,8 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Existing destinations require an explicit **Back Up & Replace** confirmation;
   private backups are kept in `termimochi-backups` beside the export. Symlinks,
   hard links and concurrent external changes are rejected. Choosing your active
-  Fastfetch config changes future Fastfetch runs; Review & Apply can also run it
-  once immediately. `.bashrc` is never modified.
+  Fastfetch config changes future Fastfetch runs; the reviewed application result
+  offers a separate one-time run. Export and application do not edit `.bashrc`.
   Existing workspaces without a Greeting section load with it disabled; older
   eight-field presets preserve their order and add GPU/Disk switched off.
 - Optional point-to-edit in Live Preview: enable **Inspect** (off by default)
@@ -366,10 +397,11 @@ that looks balanced elsewhere can therefore become almost unreadable.
   modes; modules can be added, removed, reordered and recolored. One/two-line
   layout, prompt spacing, ASCII symbols and SSH-only hostnames export to an
   independent `starship.toml` without editing shell startup files.
-- A default Current Folder preview with asynchronously collected directory,
-  Git and installed-tool context; optional Shell, Codex, Git status/diff,
-  test-output, syntax, htop and multilingual alignment samples. VTE renders
-  both modes, with local typing and cursor motion that never execute input.
+- Default Full uses interactive samples with simulated context, independent of
+  real directory loading. Optional Current Folder observation asynchronously
+  collects bounded, read-only directory, Git and installed-tool context. Shell,
+  Codex, Git status/diff, test-output, syntax, htop and multilingual samples are
+  also available. Sample input never executes local commands.
 - Read-only import of your existing Starship prompt, preserving its format,
   custom color palette, symbols and multiline structure. Your Starship and
   Designer are separate modes; importing never overwrites the original file.
@@ -378,11 +410,11 @@ that looks balanced elsewhere can therefore become almost unreadable.
   Conda and runtime state. Choose the module and, where applicable, its symbol
   or style field; edit text, color, bold, format and visibility. Language modules
   also offer version layouts and sandboxed Rust/Node.js/Python/Go samples.
-  Cross-module undo/redo and module-only reset are included. Edits stay in memory
-  until saved; other modules and comments are retained. **Save Changes** confirms
-  writing back and creates a private backup first. **Save As** saves separately;
-  **Restore Previous Version** backs up the current file before restoring.
-  External changes block writing back. Shell startup files are never changed.
+  Cross-module undo/redo and module-only reset are included; other modules and
+  comments are retained. **Save** keeps the edited Prompt inside the theme;
+  **Use Theme…** reviews its target-specific application. Advanced standalone
+  Starship documents retain reviewed write-back/export and recovery tools.
+  External changes block writing back. This workflow does not edit shell startup.
 - Selecting a module or field adds a **simulated command and its complete prompt**:
   enter a language project, stage Git changes, or show a failed command.
   The existing preview is retained above the examples. Edits update that prompt
@@ -400,7 +432,8 @@ that looks balanced elsewhere can therefore become almost unreadable.
   with primary-font, fallback and missing-glyph details on hover.
 - Embedded multi-resolution application icon and Linux desktop metadata.
 - Atomic open, save and save-as workflows.
-- One-click Ptyxis installation with backup, change detection and rollback.
+- Reviewed Ptyxis palette installation/activation with backups, change detection
+  and recovery. Installation alone does not select the palette.
 - Kitty, Ghostty, WezTerm and Alacritty exports for the active variant.
 - Human-readable and JSON CLI output.
 
@@ -410,15 +443,17 @@ The activity rail selects what to edit. The independent **Preview Scene** select
 on the right selects **Full**, **Terminal**, **Prompt**, or **Greeting** to observe. Switching
 editor modules retains that scene, including an image/GIF while editing Palette.
 Scene selection is session-only and does not modify the saved scheme.
-The fixed bottom bar keeps **Save**, **Try Greeting**, **Apply Scheme…**, and **⋮** accessible while
-properties scroll. **Save** stores only the current document's owned contents; external
-changes require review and confirmation. The former module-specific Apply,
-Install and Export actions remain under **⋮**, alongside imports, reloads,
-restores, and **Last Application & Recovery…**.
-Every module's Save menu and `Ctrl+S` save the current design; `Ctrl+Shift+S` saves
-it under a new name. `Ctrl+O` detects the selected native file or design and opens
-a separate document window. Only explicit **Apply…** / **Export…** actions write
-native configuration files. Scope checks also cover shortcuts and Inspect.
+The fixed bottom bar keeps **Save**, **Use Theme…**, and **⋮** accessible while
+properties scroll; **Try Greeting** appears when the document owns Greeting/artwork.
+Module-specific Apply/Install tools remain available for advanced single-component
+documents, not as shortcuts around theme review. Imports, native exports, reloads,
+restores and **Last Application & Recovery…** remain under **⋮**.
+Every module's Save menu and `Ctrl+S` save the complete current theme (or the owned
+contents of an advanced document); `Ctrl+Shift+S` saves under a new name. `Ctrl+O`
+detects the selected native file or design and opens a separate window. Native
+configuration writes require an explicit reviewed application or export; preview
+reference values never enter that write set. Scope checks also cover shortcuts
+and Inspect.
 
 Palette's target selector can locate **Prompt Designer** segment colors and
 **Greeting** accent/text and individual field name/content colors in the shared
@@ -450,7 +485,7 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgio-2.0-d
 
 ## Run
 
-To inspect the unified scheme workflow without using your daily configuration:
+To inspect the theme workflow with isolated application state:
 
 ```bash
 cargo build --workspace --release --locked
@@ -458,12 +493,11 @@ bash scripts/run-isolated.sh
 ```
 
 This creates isolated application state, not a filesystem sandbox; use test copies.
-See the [implementation and verification report](docs/implementation-2026-09-10.md)
-and [acceptance walkthrough (Chinese)](docs/acceptance-card-zh.md). Main Save / Ctrl+S
-now saves the current typed design (the older report describes the previous workspace model).
-**Try Greeting** tests only the greeting, not the
-whole font/color/prompt scheme. Greeting's **Try Greeting** and **Apply Scheme…** honor
-its Display setting; independent image installation does not enable shell startup.
+Follow [Save and use a theme](#save-and-use-a-theme) and the
+[application guide](docs/apply-scheme.md). **Save / Ctrl+S** saves the complete
+theme; **Use Theme…** reviews changes for its target. **Try Greeting** tests only
+Greeting, not the whole font/color/prompt theme. Independent image installation
+does not enable shell startup.
 
 ```bash
 cargo run -p termimochi
@@ -471,22 +505,24 @@ cargo run -p termimochi
 
 Preview Source identifies the imported appearance and any approximations.
 Launching from Ptyxis can select its inherited profile; a desktop launch uses
-the configured default, not another window's active tab. Appearance import
-currently targets Ptyxis; other terminal profiles are not imported. Temporary
-zoom and transparency are not copied. Arbitrary shell `PS1` scripts are not imported.
+the configured default, not another window's active tab. **From My Terminal…**
+can also import a saved Kitty configuration; it does not inspect a running Kitty
+window's transient state. Temporary zoom and transparency are not copied.
+Arbitrary shell `PS1` scripts are not imported.
 
-Current Folder uses the app's working directory and can be refreshed. Its
+The optional Current Folder observation uses the app's working directory and can be refreshed. Its
 context comes from bounded, read-only probes, not an attached shell session;
 previous command status and timing are unavailable. Sample scenarios provide
 repeatable success, failure, SSH and alignment checks in Designer.
 
 Your Starship reads `STARSHIP_CONFIG`, or `starship.toml` in the user's XDG
 configuration directory (normally `~/.config`). **Reload from Disk** rereads it,
-with confirmation before discarding unsaved edits. **⋮ → Prompt — Apply…** opens
-the backed-up save confirmation; **⋮ → Save Starship As…** exports separately.
-`Ctrl+S` saves a local typed design instead. Backups are kept beside the
-resolved configuration as `.NAME.termimochi-backup-TIMESTAMP-RANDOM.bak`, with
-owner-only permissions; Restore Previous Version also works after restarting.
+with confirmation before discarding unsaved edits. **Save / Ctrl+S** saves its
+edits inside the theme, not the active Starship file. **Use Theme…** supplies the
+Prompt to the independent Kitty session; on Ptyxis it reviews a bound-file update
+or export-only result when no writable source is bound. **⋮ → Save Starship As…**
+exports separately. Advanced standalone Starship documents retain reviewed native
+write-back and recovery. Backups are private and external-change checks apply.
 The installed Starship renderer runs asynchronously with a read-only filesystem,
 isolated temporary cache and no network. Only reviewed built-in modules and
 declarative options are passed through; custom commands, unreviewed modules,
@@ -564,9 +600,10 @@ cargo run -p termimochi-cli -- \
   --variant dark --format wezterm --output fog-paper-dark.lua
 ```
 
-The desktop app's install action writes to Ptyxis' per-user palette directory.
-It creates a backup before replacing a file and records a verified one-step
-rollback; rollback stops if another program changed the installed file.
+Reviewed Ptyxis palette installation writes to its per-user palette directory.
+It creates a backup before replacing a file; recovery stops if another program
+changed the installed file. Install-only does not activate a palette; theme review
+lists profile activation separately.
 
 ## Verify
 
@@ -585,20 +622,22 @@ copies. Private action icons are embedded only; no fixed resource count is used.
 CI also runs the isolated installer, a GUI smoke test, crate packaging and tests
 of the unpacked packages, plus a separate RustSec dependency audit.
 
-For the full opt-in native/GUI regression matrix, start a **dedicated Xvfb**
+For the opt-in isolated GTK regression matrix, start a **dedicated Xvfb**
 display, then run:
 
 ```bash
 Xvfb :91 -screen 0 2880x1900x24 -nolisten tcp -noreset
 # In another terminal:
-python3 scripts/test-regression.py --display :91 --scale 1 --scale 2
+python3 scripts/test-regression.py --release --display :91 --scale 1 --scale 2
 ```
 
 This requires Fastfetch, Bubblewrap, `prlimit`, Ptyxis, `dbus-run-session`, `xwininfo`,
 and the X11 libraries used by the pointer driver. Each case uses a separate
 process, private D-Bus session, HOME and XDG directories; the terminal-launch
 test opens Ptyxis on the test display only. The runner pins the test and SVG-worker builds,
-enforces per-case timeouts and writes logs plus `results.json` under `/tmp`.
+enforces per-case timeouts and writes logs plus `results.json` under `TMPDIR`
+(normally `/tmp`). `--release` tests optimized builds; omitted/ignored cases are
+not passed tests. This matrix alone does not certify experimental native embedding.
 Use `--filter extreme_settings` for the cross-module extreme-value/rapid-switch
 test. Ordinary tests additionally cover a 672-case artwork/layout matrix and
 1,024 seeded terminal-control streams. These checks supplement, not replace,
@@ -607,6 +646,10 @@ manual testing on real desktop compositors.
 Ptyxis builds requiring `systemd-run --user --scope` may be unable to spawn under a
 fully private runtime without a user manager. Keep these cases environment-blocked;
 do not connect the runner to your real desktop bus to make the report green.
+The [compact application QA report](docs/compact-apply-qa.md) and
+[isolated stock-Ptyxis acceptance guide](docs/ptyxis-apply-acceptance.md) distinguish
+GTK review checks from actual profile application, opening and recovery, and list
+the dedicated environment and remaining validation limits.
 
 ## Repository structure
 

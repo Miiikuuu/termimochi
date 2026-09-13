@@ -4,6 +4,39 @@ Follow-up: the previously unverified Ptyxis Apply → actual Open → Restore
 path now has [isolated Release/system-Ptyxis evidence](ptyxis-apply-acceptance.md).
 The original test scope below is retained; daily systemd/Wayland remains unverified.
 
+## Follow-up: focused main summary
+
+Base `8f57f14`; the owned scope already excluded other modules from a sparse
+font-only theme's plan. This change removes the generic all-module explanation
+from the main area and leaves unselected rows/irrelevant preview limitations in
+Advanced. The summary lists selected changes and their effects; a separate
+prominent warning retains unavailable **owned** requests. Missing fonts are
+not hidden. Requested unsupported layout fields are listed by name, using the
+same field map as the Ptyxis layout adapter; an owned columns-only edit no
+longer advertises unrelated padding/tab limitations. No write scope, selection
+default, confirmation, backup, conflict or recovery behavior changes.
+
+Validation: strict default Clippy, formatting and 422 ordinary workspace tests
+passed; 89 ignored tests are not included in that count. The optimized GTK
+matrix [passed 6/6 at 1×/2×](../target/qa/release-acceptance/termimochi-regression-xuaejigu/results.json),
+covering cancel/apply/recovery/conflicts and the extended sparse summary case.
+Actual GTK screenshots:
+
+- [Font-only summary](../target/qa/release-acceptance/termimochi-regression-xuaejigu/1x-window-scheme-tests-scheme_theme_compact_review_selects_only_owned_settings/cache/theme-compact-review.png).
+- [Explicitly requested unsupported padding](../target/qa/release-acceptance/termimochi-regression-xuaejigu/1x-window-scheme-tests-scheme_theme_compact_review_selects_only_owned_settings/cache/summary-requested-layout-blocker.png).
+- [Missing requested font](../target/qa/release-acceptance/termimochi-regression-xuaejigu/1x-window-scheme-tests-scheme_theme_compact_review_selects_only_owned_settings/cache/summary-missing-font.png).
+
+These GTK cases use the optimized test harness. The separate real Release →
+system Ptyxis [apply/open/restore/missing-target check passed](../target/qa/release-acceptance/ptyxis-apply-m4h85bjx/result.json)
+under the previously documented private-bus/keyfile/systemd-mask conditions.
+The default Release binary at `target/release/termimochi` has SHA256
+`3c4c6a9c10a296e787b5a36a78580e57afb3e638b115f9c986b7741c9552006b`.
+Native-preview feature,
+daily Wayland/systemd and human usability are not newly certified by this
+summary-only patch. No daily configuration writes, commit or push.
+
+## Original compact-apply delivery
+
 This patch simplifies the final application flow on `main` / `13faee83`, on
 top of the existing uncommitted release-acceptance work. It does not replace
 the theme model or preview architecture. No commit, push, daily installation,
