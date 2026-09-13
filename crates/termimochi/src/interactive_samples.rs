@@ -118,6 +118,7 @@ pub(crate) struct Tab {
     pub history_draft: String,
     /// Character-row observation anchor, independent of font/zoom pixels.
     pub scroll_row: f64,
+    pub scroll_column: f64,
     pub scroll_anchor: Option<(u64, usize)>,
     pub follow: bool,
     next_block: u64,
@@ -133,6 +134,7 @@ impl Tab {
             history_index: None,
             history_draft: String::new(),
             scroll_row: 0.0,
+            scroll_column: 0.0,
             scroll_anchor: None,
             follow: false,
             next_block: 0,
@@ -169,6 +171,7 @@ impl Tab {
             Action::Clear => {
                 self.blocks.clear();
                 self.scroll_row = 0.0;
+                self.scroll_column = 0.0;
                 self.scroll_anchor = None;
                 return;
             }

@@ -65,6 +65,9 @@ pub(super) struct FullSession {
     pub extra_images: RefCell<Vec<(gtk::Picture, ImageCells)>>,
     pub input_pending: Cell<bool>,
     pub character_fallback: Cell<bool>,
+    pub navigation_v: gtk::Scrollbar,
+    pub navigation_h: gtk::Scrollbar,
+    pub input_jump: gtk::Button,
     pub(super) notice: gtk::Label,
 }
 
@@ -98,6 +101,33 @@ impl FullSession {
         toolbar.append(&notice);
         toolbar.append(&zoom);
         toolbar.append(&play);
+        let input_jump = gtk::Button::from_icon_name("go-bottom-symbolic");
+        input_jump.add_css_class("flat");
+        input_jump.set_tooltip_text(Some("Jump to sample input · preview navigation only"));
+        input_jump.update_property(&[gtk::accessible::Property::Label("Jump to sample input")]);
+        input_jump.set_visible(false);
+        toolbar.append(&input_jump);
+        let navigation_v =
+            gtk::Scrollbar::new(gtk::Orientation::Vertical, None::<&gtk::Adjustment>);
+        navigation_v.set_halign(gtk::Align::End);
+        navigation_v.set_margin_end(6);
+        navigation_v.set_margin_top(36);
+        navigation_v.set_margin_bottom(36);
+        let navigation_h =
+            gtk::Scrollbar::new(gtk::Orientation::Horizontal, None::<&gtk::Adjustment>);
+        navigation_h.set_valign(gtk::Align::End);
+        navigation_h.set_margin_bottom(6);
+        navigation_h.set_margin_start(36);
+        navigation_h.set_margin_end(36);
+        for bar in [&navigation_v, &navigation_h] {
+            bar.set_tooltip_text(Some(
+                "Preview navigation · independent of the theme's Scrollbar setting",
+            ));
+            bar.set_visible(false);
+            bar.update_property(&[gtk::accessible::Property::Label(
+                "Preview overflow navigation",
+            )]);
+        }
         let picture = gtk::Picture::builder()
             .content_fit(gtk::ContentFit::Fill)
             .halign(gtk::Align::Start)
@@ -133,6 +163,9 @@ impl FullSession {
             extra_images: RefCell::new(Vec::new()),
             input_pending: Cell::new(false),
             character_fallback: Cell::new(false),
+            navigation_v,
+            navigation_h,
+            input_jump,
             notice,
         }
     }
@@ -150,6 +183,30 @@ impl Workbench {
     }
 
     pub(super) fn connect_full_session(this: &Rc<Self>) {
+        let weak = Rc::downgrade(this);
+        this.full_session.input_jump.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.full_session
+                    .samples
+                    .state
+                    .borrow_mut()
+                    .current_mut()
+                    .follow = true;
+                this.preview_scroll.follow_input();
+                this.full_session.samples.entry.grab_focus();
+            }
+        });
+        for adjustment in [
+            this.preview_scroll.adjustment.clone(),
+            this.preview_terminal_viewport.hadjustment(),
+        ] {
+            let weak = Rc::downgrade(this);
+            adjustment.connect_changed(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.sync_full_navigation();
+                }
+            });
+        }
         this.greeting
             .presentation
             .observe_pixels(&this.full_session.picture, &this.full_session.play);
@@ -205,6 +262,7 @@ impl Workbench {
         #[cfg(not(feature = "native-preview"))]
         let show_toolbar = active;
         full.toolbar.set_visible(show_toolbar);
+        self.sync_full_navigation();
         let header = self
             .terminal_title
             .parent()
@@ -241,6 +299,15 @@ impl Workbench {
             self.preview_terminal_viewport
                 .set_child(Some(&self.preview_terminal_canvas));
             self.preview_scroll.set_scale(1.0);
+        }
+        if let Some(viewport) = self
+            .preview_terminal_viewport
+            .child()
+            .and_downcast::<gtk::Viewport>()
+        {
+            // GtkViewport would reveal the whole wide Entry on focus, aligning
+            // its far edge and hiding the prompt. Full follows the GTK caret.
+            viewport.set_scroll_to_focus(!active);
         }
         if !active {
             full.frame.configure(false, 4, 1, 1);
@@ -317,7 +384,9 @@ impl Workbench {
         let facts = context.as_ref().map(|c| &c.greeting).unwrap_or(&fallback);
         let result = self.greeting_official_result.borrow();
         let native = match result.as_ref() {
-            Some(Ok(output)) => Some(output.render(columns.clamp(12, 240) - 1)),
+            // Retain the bounded full information first; the shared Greeting
+            // projection wraps it to the observed information column below.
+            Some(Ok(output)) => Some(output.render(240)),
             Some(Err(_)) => {
                 Some("Native information unavailable · see Greeting compatibility".into())
             }
@@ -452,6 +521,21 @@ impl Workbench {
         full.notice.set_tooltip_text(Some(if full.character_fallback.get() {
             "The visible artwork uses a character fallback, not native image/GIF output. The saved design is unchanged. Artwork view remains available."
         } else { "Interactive samples, not native verification. Actual size follows the viewport at the theme font size. Fixed grid uses theme initial columns; Fit scales the complete finite window. Try Greeting remains a real temporary trial." }));
+        self.sync_full_navigation();
+    }
+
+    fn sync_full_navigation(&self) {
+        let full = &self.full_session;
+        let active = full.toolbar.is_visible();
+        let overflows = |a: &gtk::Adjustment| a.upper() - a.lower() > a.page_size() + 1.0;
+        let vertical = active && overflows(&self.preview_scroll.adjustment);
+        let horizontal = active && overflows(&self.preview_terminal_viewport.hadjustment());
+        full.navigation_v.set_visible(vertical);
+        full.navigation_h.set_visible(horizontal);
+        // Keep the toolbar's requisition stable as history starts overflowing;
+        // showing a new button here can grow a narrow window and change Fit.
+        full.input_jump.set_visible(active);
+        full.input_jump.set_sensitive(vertical || horizontal);
     }
 
     pub(super) fn schedule_sample_input(this: &Rc<Self>) {

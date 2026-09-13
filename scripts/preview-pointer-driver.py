@@ -131,6 +131,14 @@ button(False)
 if mode == "double":
     button(True)
     button(False)
+if mode == "sample_help":
+    assert os.environ.get("DISPLAY") not in (None, ":0", ":1"), "Sample typing requires a test display"
+    for symbol in [ord(ch) for ch in "help"] + [0xFF0D]:
+        keycode = x11.XKeysymToKeycode(d, symbol)
+        xtst.XTestFakeKeyEvent(d, keycode, 1, 0)
+        xtst.XTestFakeKeyEvent(d, keycode, 0, 0)
+        x11.XFlush(d)
+        time.sleep(0.08)
 if mode in ("click_escape", "click_enter"):
     keycode = x11.XKeysymToKeycode(d, 0xFF1B if mode == "click_escape" else 0xFF0D)
     xtst.XTestFakeKeyEvent(d, keycode, 1, 0)

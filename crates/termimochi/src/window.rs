@@ -29,6 +29,8 @@ mod preview_frame;
 #[cfg(test)]
 mod preview_geometry_tests;
 mod preview_hint;
+#[cfg(test)]
+mod preview_reachability_tests;
 mod preview_scene;
 mod preview_scroll;
 mod scheme;
@@ -2806,6 +2808,7 @@ fn build_preview(
         ),
     ]);
     let scroll = preview_scroll::PreviewScroll::new(&vte_terminal, &terminal_viewport);
+    scroll.set_input(&full_session.samples.entry);
     terminal_scrollbar.set_adjustment(Some(&scroll.adjustment));
     let terminal_stage = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     terminal_stage.set_hexpand(true);
@@ -2820,6 +2823,19 @@ fn build_preview(
     inspect_layer.set_vexpand(true);
     full_session.frame.set_child(&terminal);
     inspect_layer.set_child(Some(&full_session.frame));
+    // Editor navigation lives in the canvas gutter, outside the scaled target
+    // surface. Hidden native scrollbars must not hide preview reachability.
+    full_session
+        .navigation_v
+        .set_adjustment(Some(&scroll.adjustment));
+    full_session
+        .navigation_h
+        .set_adjustment(Some(&terminal_viewport.hadjustment()));
+    for bar in [&full_session.navigation_v, &full_session.navigation_h] {
+        scroll.watch_navigation(bar);
+        inspect_layer.add_overlay(bar);
+        inspect_layer.set_measure_overlay(bar, false);
+    }
     let inspect_highlight = gtk::DrawingArea::new();
     inspect_highlight.set_can_target(false);
     inspect_highlight.set_focusable(false);
@@ -6505,7 +6521,7 @@ impl Workbench {
         self.preview_terminal
             .set_hexpand(greeting_width == 0 && !self.full_session.active.get());
         self.preview_terminal_viewport.set_hscrollbar_policy(
-            if greeting_width > 0 || self.full_session.active.get() {
+            if greeting_width > 0 && !self.full_session.active.get() {
                 gtk::PolicyType::Automatic
             } else {
                 gtk::PolicyType::External
@@ -6552,8 +6568,17 @@ impl Workbench {
         let preview_height = add_widget_padding(terminal_height, layout.content_padding);
         self.preview_terminal.set_width_request(terminal_width);
         self.preview_terminal.set_height_request(terminal_height);
+        let artwork_width = if self.full_session.active.get() {
+            self.full_session.image.get().map_or(0, |image| {
+                (image.column as i32 + image.columns as i32)
+                    * self.preview_terminal.char_width().max(1) as i32
+                    + layout.content_padding * 2
+            })
+        } else {
+            0
+        };
         self.preview_terminal_canvas
-            .set_width_request(preview_width);
+            .set_width_request(preview_width.max(artwork_width));
         self.preview_terminal_canvas
             .set_height_request(preview_height);
         self.updating_geometry.set(false);

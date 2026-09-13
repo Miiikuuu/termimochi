@@ -644,8 +644,17 @@ impl GreetingSettings {
         }
         if self.needs_native() {
             for line in official.unwrap_or("Rendering native fields…").split("\r\n") {
-                let (text, cells) = clip_ansi(line, info_width);
-                info.push((text, cells, GreetingPart::Fields));
+                // Pixel reservations are the Full design projection. Preserve
+                // complete information there instead of silently clipping a
+                // saved module's value when the observation grid gets narrow.
+                let rows = if reservation.is_some() {
+                    wrap_ansi(line, info_width)
+                } else {
+                    vec![clip_ansi(line, info_width)]
+                };
+                for (text, cells) in rows {
+                    info.push((text, cells, GreetingPart::Fields));
+                }
             }
             // Fastfetch already ends its modules with LF; do not add that as
             // an extra empty data row alongside the logo.
@@ -856,6 +865,44 @@ pub(crate) fn clip_ansi(text: &str, width: usize) -> (String, usize) {
     }
     out.push_str("\x1b[0m");
     (out, used)
+}
+
+/// Wrap trusted text by grapheme cells, reopening SGR across line boundaries.
+/// This is a design-view projection, not a change to Fastfetch's native output.
+fn wrap_ansi(text: &str, width: usize) -> Vec<(String, usize)> {
+    let safe = crate::starship_import::terminal_safe_ansi(text);
+    let width = width.max(2);
+    let mut rest = safe.as_str();
+    let mut style = crate::greeting_art::Style::default();
+    let mut rows = Vec::new();
+    let (mut line, mut used) = (String::new(), 0);
+    while !rest.is_empty() {
+        if let Some(sequence) = rest.strip_prefix("\x1b[") {
+            let end = sequence.find('m').expect("sanitized SGR");
+            if let Some(codes) = crate::greeting_art::sgr(&sequence[..end]) {
+                style.apply(&codes);
+            }
+            line.push_str(&rest[..end + 3]);
+            rest = &rest[end + 3..];
+        } else {
+            let end = rest.find('\x1b').unwrap_or(rest.len());
+            for glyph in rest[..end].graphemes(true) {
+                let cells = glyph.width();
+                if used > 0 && used + cells > width {
+                    line.push_str("\x1b[0m");
+                    rows.push((line, used));
+                    line = style.prefix();
+                    used = 0;
+                }
+                line.push_str(glyph);
+                used += cells;
+            }
+            rest = &rest[end..];
+        }
+    }
+    line.push_str("\x1b[0m");
+    rows.push((line, used));
+    rows
 }
 
 fn unsafe_char(ch: char) -> bool {
@@ -1104,6 +1151,28 @@ impl Document for GreetingPreset {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_information_wrap_preserves_unicode_colors_and_tail() {
+        let source = "\x1b[31mCPU: 中文 e\u{301} 👩‍💻 Intel i7-13700H\x1b[0m";
+        for width in [2, 7, 20, 38, 84, 120] {
+            let rows = wrap_ansi(source, width);
+            assert!(rows.iter().all(|(_, cells)| *cells <= width));
+            let plain: String = rows
+                .iter()
+                .map(|(s, _)| crate::greeting_art::Artwork::parse(s).unwrap().plain)
+                .collect();
+            assert_eq!(plain, "CPU: 中文 e\u{301} 👩‍💻 Intel i7-13700H");
+            assert!(rows.iter().all(|(s, _)| s.ends_with("\x1b[0m")));
+            assert!(rows.iter().skip(1).all(|(s, _)| s.starts_with("\x1b[31m")));
+        }
+        let unsafe_source = "\x1b]52;c;secret\x07\x1b[2JCPU: safe tail";
+        let safe = wrap_ansi(unsafe_source, 7)
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect::<String>();
+        assert!(!safe.contains("secret") && !safe.contains("[2J"));
+    }
     #[test]
     fn brand_starter_is_a_complete_native_preset_without_migrating_custom_documents() {
         let starter = GreetingSettings::starter();

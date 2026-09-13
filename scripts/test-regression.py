@@ -60,6 +60,17 @@ def main():
     tests = [line.removesuffix(": test") for line in listing.splitlines()
              if line.endswith(": test") and
              (not args.filter or any(fragment in line for fragment in args.filter))]
+    # The screenshot-matched fixture contains private user artwork. Keep it
+    # out of the repo and out of ordinary matrices without counting it as pass.
+    unavailable = [test for test in tests if "preview_complex_greeting" in test
+                   and not os.environ.get("TERMIMOCHI_REACHABILITY_THEME")]
+    (output / "unverified.json").write_text(json.dumps([
+        {"test": test, "status": "unverified", "reason":
+         "Requires private TERMIMOCHI_REACHABILITY_THEME and matching FONTCONFIG_FILE"}
+        for test in unavailable], indent=2) + "\n")
+    for test in unavailable:
+        print(f"NOT RUN {test}: private reproduction fixture not provided", flush=True)
+    tests = [test for test in tests if test not in unavailable]
     if not tests:
         raise SystemExit("No matching tests; nothing was verified")
     results = []
@@ -112,7 +123,9 @@ def main():
             (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
             print(f"{'PASS' if passed else 'FAIL'} {scale}x {test} ({result['seconds']}s)", flush=True)
     failed = [r for r in results if not r["passed"]]
-    print(f"{len(results) - len(failed)}/{len(results)} passed; report: {output / 'results.json'}", flush=True)
+    print(f"{len(results) - len(failed)}/{len(results)} passed; "
+          f"{len(unavailable)} fixture-dependent tests unverified; "
+          f"report: {output / 'results.json'}", flush=True)
     raise SystemExit(bool(failed))
 
 

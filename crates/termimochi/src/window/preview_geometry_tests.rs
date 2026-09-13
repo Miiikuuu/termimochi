@@ -23,7 +23,7 @@ fn bounds(widget: &impl IsA<gtk::Widget>, window: &gtk::Window) -> [f32; 4] {
     [r.x(), r.y(), r.width(), r.height()]
 }
 
-fn capture(this: &Workbench, name: &str) {
+pub(super) fn capture(this: &Workbench, name: &str) {
     let window = this.window();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let node = loop {
@@ -423,7 +423,8 @@ fn preview_geometry_same_theme() {
         ready(&this);
         assert!(
             (this.full_session.scale.get() - scale).abs() < 0.001,
-            "Fit must not shrink with history"
+            "Fit must not shrink with history: before={scale}, after={}",
+            this.full_session.scale.get()
         );
         assert_eq!(bounds(&this.preview_terminal_viewport, &window), viewport);
         aligned(&this);

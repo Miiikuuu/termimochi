@@ -104,6 +104,14 @@ impl Workbench {
         *this.preview_scroll.user_scrolled.borrow_mut() = Some(Box::new(move || {
             if let Some(this) = weak.upgrade() {
                 this.save_sample_scroll();
+                // Explicit browsing stays put until the user types/submits
+                // or asks to reveal input, including horizontal-only panning.
+                this.full_session
+                    .samples
+                    .state
+                    .borrow_mut()
+                    .current_mut()
+                    .follow = false;
             }
         }));
         if let Some(text) = s.entry.delegate().and_downcast::<gtk::Text>() {
@@ -158,12 +166,27 @@ impl Workbench {
             if let Some(this) = weak.upgrade()
                 && !this.full_session.samples.syncing.get()
             {
+                {
+                    let mut state = this.full_session.samples.state.borrow_mut();
+                    let tab = state.current_mut();
+                    tab.draft = entry.text().into();
+                    tab.follow = true;
+                }
+                this.preview_scroll.follow_input();
+            }
+        });
+        let weak = Rc::downgrade(this);
+        s.entry.connect_cursor_position_notify(move |_| {
+            if let Some(this) = weak.upgrade()
+                && !this.full_session.samples.syncing.get()
+                && this.focused_sample_text().is_some()
+            {
                 this.full_session
                     .samples
                     .state
                     .borrow_mut()
                     .current_mut()
-                    .draft = entry.text().into();
+                    .follow = true;
                 this.preview_scroll.follow_input();
             }
         });
@@ -366,6 +389,8 @@ impl Workbench {
         let mut state = self.full_session.samples.state.borrow_mut();
         let tab = state.current_mut();
         tab.scroll_row = adjustment.value() / self.preview_terminal.char_height().max(1) as f64;
+        tab.scroll_column = self.preview_terminal_viewport.hadjustment().value()
+            / self.preview_terminal.char_width().max(1) as f64;
         tab.follow = adjustment.value() + adjustment.page_size() >= adjustment.upper() - 2.0;
         tab.scroll_anchor = self
             .full_session
@@ -677,6 +702,9 @@ impl Workbench {
                 .unwrap_or(tab.scroll_row);
             self.preview_scroll
                 .restore_after_redraw(row * self.preview_terminal.char_height().max(1) as f64);
+            self.preview_terminal_viewport
+                .hadjustment()
+                .set_value(tab.scroll_column * self.preview_terminal.char_width().max(1) as f64);
         }
         *full.samples.anchors.borrow_mut() = anchors;
     }

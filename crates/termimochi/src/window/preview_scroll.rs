@@ -9,6 +9,7 @@ pub(super) struct PreviewScroll {
     updating: Cell<bool>,
     generation: Cell<u64>,
     scale: Cell<f64>,
+    input: glib::WeakRef<gtk::Entry>,
     pub user_scrolled: RefCell<Option<Box<dyn Fn()>>>,
 }
 
@@ -33,6 +34,7 @@ impl PreviewScroll {
             updating: Cell::new(false),
             generation: Cell::new(0),
             scale: Cell::new(1.0),
+            input: glib::WeakRef::new(),
             user_scrolled: RefCell::new(None),
         });
         for source in [terminal.vadjustment().unwrap(), viewport.vadjustment()] {
@@ -61,6 +63,9 @@ impl PreviewScroll {
     pub fn set_scale(&self, scale: f64) {
         self.scale.set(scale);
         self.sync();
+    }
+    pub fn set_input(&self, entry: &gtk::Entry) {
+        self.input.set(Some(entry));
     }
     fn row_pixels(&self, terminal: &vte::Terminal) -> f64 {
         if terminal.is_scroll_unit_is_pixels() {
@@ -135,6 +140,35 @@ impl PreviewScroll {
         });
         stage.add_controller(controller);
     }
+    pub fn watch_navigation(self: &Rc<Self>, bar: &gtk::Scrollbar) {
+        // Observe raw events: GtkRange claims the pointer sequence, cancelling
+        // an ancestor GestureClick before its release signal can run.
+        let controller = gtk::EventControllerLegacy::new();
+        controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        controller.connect_event(move |_, event| {
+            if matches!(
+                event.event_type(),
+                gdk::EventType::ButtonPress | gdk::EventType::ButtonRelease
+            ) && let Some(this) = weak.upgrade()
+            {
+                this.generation.set(this.generation.get().wrapping_add(1));
+                if let Some(callback) = this.user_scrolled.borrow().as_ref() {
+                    callback();
+                }
+                let weak = Rc::downgrade(&this);
+                glib::idle_add_local_once(move || {
+                    if let Some(this) = weak.upgrade()
+                        && let Some(callback) = this.user_scrolled.borrow().as_ref()
+                    {
+                        callback();
+                    }
+                });
+            }
+            glib::Propagation::Proceed
+        });
+        bar.add_controller(controller);
+    }
     fn scroll(&self, delta: f64, unit: gdk::ScrollUnit) {
         if let Some(terminal) = self.terminal.upgrade() {
             self.adjustment.set_value(
@@ -186,6 +220,31 @@ impl PreviewScroll {
                     viewport
                         .hadjustment()
                         .clamp_page(x, x + terminal.char_width() as f64 * this.scale.get());
+                    // GTK owns the inline caret and any horizontal scrolling
+                    // inside the Entry. Convert its real insertion rectangle
+                    // into the unscaled scroll content's coordinate system.
+                    if let Some(entry) = this.input.upgrade().filter(|e| e.is_mapped())
+                        && let Some(text) = entry.delegate().and_downcast::<gtk::Text>()
+                        && let Some(content) = viewport
+                            .child()
+                            .and_downcast::<gtk::Viewport>()
+                            .and_then(|v| v.child())
+                    {
+                        let (caret, _) =
+                            text.compute_cursor_extents(entry.position().max(0) as usize);
+                        if let Some(point) = text.compute_point(
+                            &content,
+                            &gtk::graphene::Point::new(caret.x(), caret.y()),
+                        ) {
+                            canvas.clamp_page(
+                                point.y() as f64,
+                                (point.y() + caret.height().max(1.0)) as f64,
+                            );
+                            viewport
+                                .hadjustment()
+                                .clamp_page(point.x() as f64, (point.x() + 2.0) as f64);
+                        }
+                    }
                     this.sync();
                 }
             }
