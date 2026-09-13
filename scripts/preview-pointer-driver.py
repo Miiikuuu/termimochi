@@ -12,7 +12,7 @@ import time
 title = b"TermiMochi point-to-edit test"
 if os.environ.get("TERMIMOCHI_TEST_WINDOW_TITLE"):
     assert os.environ.get("DISPLAY") not in (None, ":0", ":1"), "Title override requires an isolated test display"
-    assert os.environ["TERMIMOCHI_TEST_WINDOW_TITLE"] in ("TermiMochi Image Trial", "TermiMochi point-to-edit test (Failed)", "TermiMochi · Daily Launcher Native")
+    assert os.environ["TERMIMOCHI_TEST_WINDOW_TITLE"] in ("TermiMochi Image Trial", "TermiMochi point-to-edit test (Failed)", "TermiMochi · Daily Launcher Native", "TermiMochi · Compact Kitty Apply")
     title = os.environ["TERMIMOCHI_TEST_WINDOW_TITLE"].encode()
 x11 = c.CDLL("libX11.so.6")
 xtst = c.CDLL("libXtst.so.6")
@@ -81,6 +81,14 @@ def button(down):
 
 
 move(px, py)
+if mode == "close_test_shell":
+    assert title == "TermiMochi · Compact Kitty Apply".encode(), "Only the private apply-flow shell may be closed"
+    control = x11.XKeysymToKeycode(d, 0xFFE3)
+    key = x11.XKeysymToKeycode(d, ord('d'))
+    for code, pressed in ((control, 1), (key, 1), (key, 0), (control, 0)):
+        xtst.XTestFakeKeyEvent(d, code, pressed, 0)
+    x11.XFlush(d)
+    sys.exit(0)
 if mode in ("key_y", "key_n", "key_q", "key_t"):
     assert os.environ.get("DISPLAY") not in (None, ":0", ":1"), "Trial approvals are test-display-only"
     keycode = x11.XKeysymToKeycode(d, ord(mode[-1]))

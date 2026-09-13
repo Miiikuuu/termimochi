@@ -120,6 +120,9 @@ pub(crate) struct Report {
     version: u8,
     pub target: String,
     pub profile_uuid: Option<String>,
+    /// Frozen adapter identity, not the currently open editor's target.
+    #[serde(default)]
+    pub terminal: Option<crate::design_document::TargetHint>,
     pub items: Vec<ResultItem>,
 }
 
@@ -127,6 +130,7 @@ pub(crate) struct Plan {
     pub directory: PathBuf,
     pub target: String,
     pub profile_uuid: Option<String>,
+    pub terminal: Option<crate::design_document::TargetHint>,
     pub items: Vec<Item>,
 }
 
@@ -142,6 +146,7 @@ impl Plan {
                 .join(format!("{stamp}-{}", NEXT.fetch_add(1, Ordering::Relaxed))),
             target,
             profile_uuid,
+            terminal: None,
             items: Vec::new(),
         }
     }
@@ -172,6 +177,7 @@ impl Plan {
             version: 1,
             target: self.target,
             profile_uuid: self.profile_uuid,
+            terminal: self.terminal,
             items: self
                 .items
                 .iter()

@@ -838,6 +838,10 @@ fn present_with_mode(
     // this shell, independently of document identity (including Save As/copies).
     let terminal_css_scope = format!("terminal-instance-{}", glib::uuid_string_random());
     preview.terminal_shell.add_css_class(&terminal_css_scope);
+    greeting
+        .presentation
+        .canvas
+        .add_css_class(&terminal_css_scope);
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,

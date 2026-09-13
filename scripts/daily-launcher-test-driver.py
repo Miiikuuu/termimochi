@@ -13,7 +13,10 @@ r = json.loads(sys.argv[1])
 assert os.environ['GSETTINGS_BACKEND'] == 'memory'
 assert os.environ['DISPLAY'].split('.')[0] not in (':0', ':1')
 root = Path(os.environ['XDG_CACHE_HOME']) / 'daily-launcher-evidence'
-root.mkdir(exist_ok=True)
+if r.get('phase'):
+    assert r['phase'] in ('updated', 'restored')
+    root = root / r['phase']
+root.mkdir(parents=True, exist_ok=True)
 
 
 def remote(socket, *args):

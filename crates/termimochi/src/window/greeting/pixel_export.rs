@@ -762,7 +762,7 @@ mod tests {
                 .unwrap();
             assert!(check.is_sensitive());
             check.set_active(true);
-            super::super::tests::respond("Back Up & Apply Selected");
+            super::super::tests::respond("Apply Changes");
             settle();
             let (_, applied) =
                 crate::scheme_apply::Report::latest(&typography_preset::state_directory()).unwrap();

@@ -644,13 +644,13 @@ mod tests {
         this.request_fastfetch_apply();
         std::fs::write(&target, "// external\n{}").unwrap();
         super::super::tests::select_scheme_greeting();
-        respond("Back Up & Apply Selected");
+        respond("Apply Changes");
         respond("Close");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "// external\n{}");
         std::fs::write(&target, &source).unwrap();
         this.request_fastfetch_apply();
         super::super::tests::select_scheme_greeting();
-        respond("Back Up & Apply Selected");
+        respond("Apply Changes");
         respond("Close");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), edited);
         assert!(!sentinel.exists());

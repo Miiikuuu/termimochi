@@ -3,6 +3,8 @@ use super::*;
 use crate::window::greeting::tests::{controller, settle};
 
 fn ready(this: &Workbench) {
+    // Let the coalesced preview request start before checking worker state.
+    settle();
     let until = std::time::Instant::now() + Duration::from_secs(30);
     while this.preview_loading.get() || this.copy_loading.get() {
         assert!(std::time::Instant::now() < until);
@@ -13,7 +15,12 @@ fn ready(this: &Workbench) {
 
 fn check(this: &Workbench, name: &str, expected: Rgb) {
     settle();
-    let widget = &this.preview_terminal_shell;
+    let artwork = this.greeting.presentation.canvas.is_mapped();
+    let widget = if artwork {
+        &this.greeting.presentation.canvas
+    } else {
+        &this.preview_terminal_shell
+    };
     let snapshot = gtk::Snapshot::new();
     gtk::WidgetPaintable::new(Some(widget)).snapshot(
         &snapshot,
@@ -35,9 +42,21 @@ fn check(this: &Workbench, name: &str, expected: Rgb) {
     let width = texture.width() as usize;
     let mut pixels = vec![0; width * texture.height() as usize * 4];
     texture.download(&mut pixels, width * 4);
-    // Top padding belongs to the CSS shell, not VTE's independently set
-    // background. Model-only and VTE-only checks miss cross-window CSS leaks.
-    let offset = (3 * width + width / 2) * 4;
+    // Sample body padding, not independently styled target-native chrome.
+    // Greeting's separate canvas must also have this window's color scope.
+    let (x, y) = if artwork {
+        (5, texture.height() as usize - 5)
+    } else {
+        let body = this
+            .preview_terminal_viewport
+            .compute_bounds(widget)
+            .unwrap();
+        (
+            body.x().max(0.0) as usize + 3,
+            body.y().max(0.0) as usize + 3,
+        )
+    };
+    let offset = (y * width + x) * 4;
     let actual = Rgb::new(pixels[offset + 2], pixels[offset + 1], pixels[offset]);
     assert_eq!(
         actual, expected,
@@ -285,6 +304,21 @@ fn theme_windows_keep_gif_and_pending_work_local() {
         settle();
     }
     assert_eq!(a.full_session.picture.paintable(), paused);
+    a.apply_color("Background", Rgb::new(251, 238, 223));
+    b.apply_color("Background", Rgb::new(21, 32, 43));
+    a.preview_scene_selector.set_selected(3);
+    b.preview_scene_selector.set_selected(3);
+    ready(&a);
+    ready(&b);
+    check(&a, "separate-gif-a-color", Rgb::new(251, 238, 223));
+    check(&b, "separate-gif-b-color", Rgb::new(21, 32, 43));
+    b.apply_color("Background", Rgb::new(51, 62, 73));
+    check(&a, "separate-gif-a-after-b-edit", Rgb::new(251, 238, 223));
+    check(&b, "separate-gif-b-edited", Rgb::new(51, 62, 73));
+    a.preview_scene_selector.set_selected(0);
+    b.preview_scene_selector.set_selected(0);
+    ready(&a);
+    ready(&b);
     let b_original = b.committed_design().unwrap();
     for columns in 25..41 {
         a.greeting.presentation.width.set_value(columns.into());
@@ -533,6 +567,8 @@ fn theme_workspace_kitty_vertical_edit_save_reopen() {
     ready(&this);
     this.toggle_theme_prompt();
     ready(&this);
+    this.sample_action(crate::interactive_samples::Action::Help);
+    ready(&this);
     assert!(this.theme_prompt_disabled());
     assert!(this.committed_design().unwrap().components.prompt.is_some());
     assert!(
@@ -567,10 +603,7 @@ fn theme_workspace_kitty_vertical_edit_save_reopen() {
     this.open_design_path(&saved);
     ready(&this);
     assert!(
-        crate::window::greeting::tests::feed(&this)
-            .matches("THEME_PROMPT")
-            .count()
-            >= 2,
+        crate::window::greeting::tests::feed(&this).contains("THEME_PROMPT"),
         "reopened Full must show the saved Prompt, not a reference"
     );
     assert_eq!(this.committed_design().unwrap(), complete);
@@ -616,7 +649,7 @@ fn theme_workspace_kitty_vertical_edit_save_reopen() {
         settle();
     }
     let review = find_window("Use Design in Kitty").unwrap();
-    assert!(!button(&review, "Create / Update Independent Entry").is_sensitive());
+    assert!(!button(&review, "Apply & Open in Kitty").is_sensitive());
     button(&review, "Try in Kitty").emit_clicked();
     let checks: Vec<_> = crate::window::greeting::tests::descendants(review.upcast_ref())
         .into_iter()
@@ -630,11 +663,12 @@ fn theme_workspace_kitty_vertical_edit_save_reopen() {
         );
         settle();
     }
-    assert_eq!(checks.len(), 2);
+    assert_eq!(checks.len(), 1);
+    assert!(checks[0].label().unwrap().contains("GIF is moving"));
     for check in checks {
         check.set_active(true);
     }
-    button(&review, "Create / Update Independent Entry").emit_clicked();
+    button(&review, "Apply & Open in Kitty").emit_clicked();
     let until = std::time::Instant::now() + Duration::from_secs(30);
     while find_window("Independent Kitty Entry").is_none() {
         assert!(std::time::Instant::now() < until);

@@ -4,6 +4,17 @@ const BEFORE: &str = "# personal comment\n[rust]\nsymbol = 'rs '\n";
 const AFTER: &str = "# personal comment\n[rust]\nsymbol = 'rust '\n";
 const FETCH: &str = "{\"logo\":{\"type\":\"none\"},\"modules\":[]}";
 
+#[test]
+fn application_record_retains_target_and_reads_legacy_without_guessing() {
+    let old = r#"{"version":1,"target":"Reviewed files","profile_uuid":null,"items":[]}"#;
+    let legacy: Report = serde_json::from_str(old).unwrap();
+    assert_eq!(legacy.terminal, None);
+    let mut report = legacy;
+    report.terminal = Some(crate::design_document::TargetHint::Ptyxis);
+    let reopened: Report = serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
+    assert_eq!(reopened.terminal, report.terminal);
+}
+
 fn item(id: &'static str, action: Action) -> Item {
     Item {
         id,

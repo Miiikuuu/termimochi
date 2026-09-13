@@ -2154,25 +2154,19 @@ mod tests {
         settle();
         crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow_mut().clear());
         let review_applied_greeting = || {
-            // The applied native file has no implicit terminal. Select the
-            // explicit Ptyxis destination, then review execution separately.
+            // The record retains the reviewed Ptyxis target; execution still
+            // needs its separate review, not another terminal choice.
             let report = gtk::Window::list_toplevels()
                 .into_iter()
                 .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
                 .find(|window| window.title().as_deref() == Some("Scheme Application Results"))
                 .unwrap();
-            let target = descendants(report.upcast_ref())
-                .into_iter()
-                .filter_map(|widget| widget.downcast::<gtk::DropDown>().ok())
-                .find(|dropdown| {
-                    dropdown
-                        .model()
-                        .and_then(|model| model.item(0))
-                        .and_then(|item| item.downcast::<gtk::StringObject>().ok())
-                        .is_some_and(|item| item.string() == "Choose terminal…")
-                })
-                .unwrap();
-            target.set_selected(2);
+            assert!(
+                descendants(report.upcast_ref())
+                    .into_iter()
+                    .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
+                    .any(|label| label.text().contains("Target: Ptyxis · retained"))
+            );
             respond("Review & Run Applied Greeting…");
         };
         respond("Review & Apply…");
@@ -2183,7 +2177,7 @@ mod tests {
         this.save_greeting_preset();
         respond("Review & Apply…");
         super::super::tests::select_scheme_greeting();
-        respond("Back Up & Apply Selected");
+        respond("Apply Changes");
         assert!(crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().is_empty()));
         review_applied_greeting();
         respond("Cancel");
@@ -2197,7 +2191,7 @@ mod tests {
         respond("Close");
         this.request_fastfetch_apply();
         super::super::tests::select_scheme_greeting();
-        respond("Back Up & Apply Selected");
+        respond("Apply Changes");
         assert_eq!(
             crate::fastfetch_run::LAUNCHES.with(|runs| runs.borrow().len()),
             1
@@ -2205,7 +2199,7 @@ mod tests {
         respond("Close");
         this.request_fastfetch_apply();
         super::super::tests::select_scheme_greeting();
-        respond("Back Up & Apply Selected");
+        respond("Apply Changes");
         review_applied_greeting();
         respond("Run This Configuration Once");
         assert_eq!(

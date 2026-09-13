@@ -383,7 +383,7 @@ impl DesignDocument {
             rows.extend([
                 (Trial, Needs("Use Design → Try in Kitty. The adapter checks Kitty/Bash and owned Starship/Fastfetch dependencies, prepares temporary files, and requires separate visual and GIF-motion confirmation. Personal shell startup is not loaded.".into())),
                 (Write, Needs("Complete the real controlled trial, review exact generated files and mapping limits, then confirm publication. Only owned components enter this independent Kitty directory.".into())),
-                (Enable, Needs("After successful visual review, Create / Update Independent Entry prepares a versioned local entry. It does not change the default terminal or add a daily shell hook.".into())),
+                (Enable, Needs("After successful visual review, Apply & Open in Kitty publishes a versioned local entry and opens it. It does not change the default terminal or add a daily shell hook.".into())),
                 (Open, Needs("Publish an independent entry, then use Open in Kitty or Open Independent Kitty Scheme. The adapter rechecks local files and dependencies; process launch is not visual verification.".into())),
                 (Restore, Needs("Choose a published entry and Restore / Deactivate Entry. Its version pointer and retained assets are checked; external changes block restoration.".into())),
             ]);

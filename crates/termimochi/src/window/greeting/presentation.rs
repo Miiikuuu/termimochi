@@ -808,18 +808,32 @@ mod tests {
             this.apply_color("Background", rgb);
             settle();
             let canvas = &this.greeting.presentation.canvas;
-            let snapshot = gtk::Snapshot::new();
-            gtk::WidgetPaintable::new(Some(canvas)).snapshot(
-                &snapshot,
-                f64::from(canvas.width()),
-                f64::from(canvas.height()),
-            );
+            // An animation tick/style invalidation can briefly leave a
+            // WidgetPaintable without a render node. Await an actual frame,
+            // not just a mapped widget, and keep a bounded failure deadline.
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let node = loop {
+                let snapshot = gtk::Snapshot::new();
+                gtk::WidgetPaintable::new(Some(canvas)).snapshot(
+                    &snapshot,
+                    f64::from(canvas.width()),
+                    f64::from(canvas.height()),
+                );
+                if let Some(node) = snapshot.to_node() {
+                    break node;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "Greeting canvas never produced a frame"
+                );
+                settle();
+            };
             let texture = canvas
                 .native()
                 .unwrap()
                 .renderer()
                 .unwrap()
-                .render_texture(snapshot.to_node().unwrap(), None);
+                .render_texture(&node, None);
             let width = texture.width() as usize;
             let mut bytes = vec![0; width * texture.height() as usize * 4];
             texture.download(&mut bytes, width * 4);

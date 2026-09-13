@@ -40,6 +40,48 @@ pub(super) fn versions(before: &str, after: &str) -> gtk::Expander {
         .build()
 }
 
+fn effect(item: &Item) -> &str {
+    match item.action.as_ref() {
+        Some(Action::Palette { .. }) => {
+            "Install this palette. Existing users of the same file see its new colors."
+        }
+        Some(Action::Activate(_)) => {
+            "Enable for the reviewed profile; Light/Dark affects all Ptyxis windows."
+        }
+        Some(Action::Typography(_)) => {
+            "Update owned font settings; Ptyxis font settings are global."
+        }
+        Some(Action::Layout(_)) => {
+            "Update supported owned layout settings; new-window defaults may affect all profiles."
+        }
+        Some(Action::Starship { .. }) => {
+            "Update the reviewed Starship file. Only shells already using it are affected; no startup hook."
+        }
+        Some(Action::ExportStarship(_)) => {
+            "Export only. This Prompt will NOT be enabled in your terminal."
+        }
+        Some(Action::Fastfetch { .. }) => {
+            "Update the reviewed Fastfetch file. Shared readers are affected; no startup hook."
+        }
+        Some(Action::ImageGreeting {
+            independent: true, ..
+        }) => "Install an independent image configuration; NOT automatically enabled.",
+        Some(Action::ImageGreeting {
+            independent: false, ..
+        }) => "Replace shared Fastfetch image output; other terminals can be affected.",
+        None => &item.detail,
+    }
+}
+
+fn opens_profile(items: &[Item], selected: &[bool], has_profile: bool) -> bool {
+    has_profile
+        && items.iter().zip(selected).any(|(item, selected)| {
+            *selected
+                && item.action.is_some()
+                && matches!(item.id, "activate" | "typography" | "layout")
+        })
+}
+
 pub(super) fn dialog(
     parent: &adw::ApplicationWindow,
     title: &str,
@@ -115,6 +157,7 @@ impl Workbench {
                 .then(|| profile.as_ref().ok().map(|p| p.0.clone()))
                 .flatten(),
         );
+        plan.terminal = self.typed.target.get();
         let palette = (|| {
             scope.require(crate::design_document::Action::Palette)?;
             if theme.is_some()
@@ -383,7 +426,12 @@ impl Workbench {
         body.append(&label(
             &plan.target.lines().skip(2).collect::<Vec<_>>().join("\n"),
         ));
-        body.append(&label("Choose the parts to apply. Nothing changes until you confirm. Save never changes external settings. Successful changes have independent backups; a failed item does not undo the others."));
+        body.append(&label("Review this theme's changes. Only explicitly included settings are selected; preview references stay out. Nothing changes until you confirm. Save never applies settings."));
+        let summary = label("");
+        summary.set_widget_name("scheme-summary");
+        body.append(&summary);
+        let advanced = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        advanced.append(&label("Change the selected components or inspect exact destinations and file diffs. Each successful change has its own backup; a failed item does not undo the others."));
         let checks: Vec<_> = plan
             .items
             .iter()
@@ -397,10 +445,16 @@ impl Workbench {
                 if let Some((before, after)) = &item.versions {
                     row.append(&versions(before, after));
                 }
-                body.append(&row);
+                advanced.append(&row);
                 check
             })
             .collect();
+        body.append(
+            &gtk::Expander::builder()
+                .label("Advanced · components & files")
+                .child(&advanced)
+                .build(),
+        );
         if let (Some(palette_index), Some(activate_index)) = (
             plan.items.iter().position(|i| i.id == "palette"),
             plan.items.iter().position(|i| i.id == "activate"),
@@ -419,24 +473,69 @@ impl Workbench {
             });
         }
         let cancel = gtk::Button::with_label("Cancel");
-        let confirm = gtk::Button::with_label("Back Up & Apply Selected");
+        let confirm = gtk::Button::with_label("Apply Changes");
         confirm.set_sensitive(false);
         confirm.add_css_class("suggested-action");
         confirm.set_widget_name("scheme-confirm");
-        for check in &checks {
-            let all: Vec<_> = checks.iter().map(|c| c.downgrade()).collect();
-            let button = confirm.downgrade();
-            check.connect_toggled(move |_| {
-                if let Some(button) = button.upgrade() {
-                    button.set_sensitive(
-                        all.iter()
-                            .filter_map(|c| c.upgrade())
-                            .any(|c| c.is_sensitive() && c.is_active()),
-                    );
+        let all: Vec<_> = checks.iter().map(|c| c.downgrade()).collect();
+        let rows: Vec<_> = plan
+            .items
+            .iter()
+            .map(|i| {
+                let mut detail = effect(i).to_owned();
+                if i.action.is_some() && matches!(i.id, "starship" | "fastfetch") {
+                    detail.push('\n');
+                    detail.push_str(i.detail.lines().next().unwrap_or(""));
                 }
-            });
+                (i.title.clone(), detail, i.id, i.action.is_some())
+            })
+            .collect();
+        let has_profile = plan.profile_uuid.is_some();
+        let button = confirm.downgrade();
+        let refresh: Rc<dyn Fn()> = Rc::new(move || {
+            let selected: Vec<_> = all
+                .iter()
+                .map(|c| {
+                    c.upgrade()
+                        .is_some_and(|c| c.is_sensitive() && c.is_active())
+                })
+                .collect();
+            let opening = has_profile
+                && rows.iter().zip(&selected).any(|((_, _, id, _), selected)| {
+                    *selected && matches!(*id, "activate" | "typography" | "layout")
+                });
+            let mut text = rows
+                .iter()
+                .zip(&selected)
+                .map(|((title, detail, _, available), selected)| {
+                    if *selected {
+                        format!("{title}\n{detail}")
+                    } else if !available {
+                        format!("{title} · Not applied\n{detail}")
+                    } else {
+                        format!("{title} · Not selected")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if opening {
+                text.push_str("\n\nAfter applying, open this exact Ptyxis profile with its normal shell. Existing startup commands may run. This is not a full-scheme isolated trial.");
+            }
+            summary.set_label(&text);
+            if let Some(button) = button.upgrade() {
+                button.set_sensitive(selected.iter().any(|s| *s));
+                button.set_label(if opening {
+                    "Apply & Open Profile"
+                } else {
+                    "Apply Changes"
+                });
+            }
+        });
+        for check in &checks {
+            let refresh = refresh.clone();
+            check.connect_toggled(move |_| refresh());
         }
-        if self.typed.kind.get() == crate::design_document::Kind::Palette {
+        if self.is_theme() || self.typed.kind.get() == crate::design_document::Kind::Palette {
             // The ordinary palette path includes installation and activation;
             // either can still be explicitly unchecked for advanced install-only.
             for check in &checks {
@@ -445,6 +544,7 @@ impl Workbench {
                 }
             }
         }
+        refresh();
         buttons.append(&cancel);
         buttons.append(&confirm);
         let weak = window.downgrade();
@@ -481,6 +581,7 @@ impl Workbench {
                 return;
             }
             let selected: Vec<_> = checks.iter().map(|c| c.is_sensitive() && c.is_active()).collect();
+            let open_after = opens_profile(&plan.items, &selected, plan.profile_uuid.is_some());
             let document = this.starship_editor.document();
             let binding = plan.items.iter().find_map(|item| match item.action.as_ref() { Some(Action::Starship { file, contents }) => Some((file.path.clone(), contents.clone())), _ => None });
             let fastfetch = plan.items.iter().find_map(|item| match item.action.as_ref() {
@@ -507,7 +608,13 @@ impl Workbench {
                     }
                     this.refresh_deployment();
                     this.refresh_output_bar();
+                    let open_uuid = open_after.then(|| report.profile_uuid.clone()).flatten().filter(|_| {
+                        !report.items.iter().any(|r| matches!(r.status, Status::Failed | Status::Pending))
+                    });
                     this.show_scheme_report(directory, report);
+                    if let Some(uuid) = open_uuid && let Err(error) = open_profile(&uuid) {
+                        this.toast(&format!("Changes applied, but opening failed: {error}. Use Open Profile Tab to retry; recovery is still available."));
+                    }
                 }
                 Err(error) => { gtk::AlertDialog::builder().message("Scheme application needs attention").detail(&error).buttons(["Close"]).modal(true).build().choose(Some(&this.window()), gio::Cancellable::NONE, |_| {}); },
             }
@@ -564,22 +671,53 @@ impl Workbench {
             let Ok(target) = crate::fastfetch_apply::Target::open(path.clone()) else {
                 continue;
             };
+            let terminal = report
+                .terminal
+                .map(|target| match target {
+                    crate::design_document::TargetHint::Kitty => {
+                        crate::pixel_trial::Terminal::Kitty
+                    }
+                    crate::design_document::TargetHint::Ptyxis => {
+                        crate::pixel_trial::Terminal::Ptyxis
+                    }
+                })
+                .or_else(|| {
+                    report
+                        .profile_uuid
+                        .as_ref()
+                        .map(|_| crate::pixel_trial::Terminal::Ptyxis)
+                });
+            let advanced = gtk::Box::new(gtk::Orientation::Vertical, 8);
             let selection =
                 gtk::DropDown::from_strings(&["Choose terminal…", "Kitty", "Ptyxis", "Xterm"]);
             selection
                 .update_property(&[gtk::accessible::Property::Label("Open applied Greeting in")]);
-            body.append(&selection);
+            if let Some(terminal) = terminal {
+                advanced.append(&label(&format!(
+                    "Target: {} · retained from this application record",
+                    terminal.label()
+                )));
+            } else {
+                // Legacy target-less records still require an explicit choice.
+                advanced.append(&selection);
+            }
             let run = gtk::Button::with_label("Review & Run Applied Greeting…");
-            body.append(&run);
+            advanced.append(&run);
+            body.append(
+                &gtk::Expander::builder()
+                    .label("Advanced · run exact Greeting configuration")
+                    .child(&advanced)
+                    .build(),
+            );
             let weak = Rc::downgrade(self);
             run.connect_clicked(move |_| {
                 let Some(this) = weak.upgrade() else { return; };
-                let terminal = match selection.selected() {
+                let terminal = match terminal { Some(t) => t, None => match selection.selected() {
                     1 => crate::pixel_trial::Terminal::Kitty,
                     2 => crate::pixel_trial::Terminal::Ptyxis,
                     3 => crate::pixel_trial::Terminal::Xterm,
                     _ => { this.toast("Choose the real target terminal first. A configuration path does not select a terminal."); return; }
-                };
+                }};
                 let source = match target.check().and_then(|()| target.source()) { Ok(s) => s, Err(e) => { this.toast(&e); return; } };
                 let (review, body, buttons) = dialog(&this.window(), "Run Applied Native Configuration", &format!("Target: {}\n{}", terminal.label(), target.path.display()));
                 body.append(&label("This executes the exact full configuration below, including its command/network modules and preRun. It is NOT the safe trial projection. Original shell startup is not loaded; it runs once in a new terminal."));
@@ -957,7 +1095,7 @@ mod tests {
         this.request_scheme_apply();
         settle();
         let review = top("Apply This Scheme");
-        assert!(!button(&review, "Back Up & Apply Selected").is_sensitive());
+        assert!(!button(&review, "Apply Changes").is_sensitive());
         assert!(!check(&review, "activate").is_sensitive());
         assert!(!check(&review, "preview-only").is_sensitive());
         assert!(!state.join("scheme-applies").exists());
@@ -983,7 +1121,7 @@ mod tests {
         }
         settle();
         capture(&review, "scheme-review.png");
-        let confirm = button(&review, "Back Up & Apply Selected");
+        let confirm = button(&review, "Apply & Open Profile");
         let bounds = confirm.compute_bounds(&review).unwrap();
         assert!(bounds.y() + bounds.height() <= review.height() as f32);
         confirm.emit_clicked();
@@ -1054,6 +1192,91 @@ mod tests {
         let review = top("Apply This Scheme");
         assert!(check(&review, "fastfetch").is_sensitive());
         button(&review, "Cancel").emit_clicked();
+        main.destroy();
+        settle();
+    }
+
+    #[test]
+    #[ignore = "isolated GTK: theme-owned defaults, compact review, no reference writes, cancel/apply/recovery"]
+    fn scheme_theme_compact_review_selects_only_owned_settings() {
+        adw::init().unwrap();
+        gio::resources_register_include!("termimochi.gresource").unwrap();
+        let (global, profile) = memory_profile();
+        global
+            .set_string("font-name", "Liberation Mono 12")
+            .unwrap();
+        let old_font = global.user_value("font-name");
+        let old_columns = global.user_value("default-columns");
+        let old_palette = profile.user_value("palette");
+        let app = adw::Application::builder()
+            .application_id("io.github.miiikuuu.termimochi.CompactReviewTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        present_advanced_with_preset(&app, None, temp.path().join(typography_preset::PRESET_NAME));
+        let main = app.active_window().unwrap();
+        let this = controller(&main);
+        let mut design = crate::design_document::DesignDocument::new_theme(
+            crate::design_document::TargetHint::Ptyxis,
+            "Font-only theme",
+            true,
+        );
+        design
+            .theme
+            .as_mut()
+            .unwrap()
+            .typography
+            .insert("size".into(), 18.0.into());
+        this.load_design(design);
+        settle();
+        let before = this.committed_design().unwrap();
+        this.request_scheme_apply();
+        settle();
+        let review = top("Apply This Scheme");
+        let font = check(&review, "typography");
+        assert!(font.is_active() && font.is_sensitive());
+        let controls: Vec<_> = descendants(review.upcast_ref())
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::CheckButton>().ok())
+            .collect();
+        assert_eq!(
+            controls.len(),
+            1,
+            "unowned reference modules must not be selected or offered"
+        );
+        assert!(
+            !font.is_mapped(),
+            "module choices belong to collapsed Advanced"
+        );
+        assert!(button(&review, "Apply & Open Profile").is_sensitive());
+        font.set_active(false);
+        assert!(!button(&review, "Apply Changes").is_sensitive());
+        font.set_active(true);
+        settle();
+        capture(&review, "theme-compact-review.png");
+        button(&review, "Cancel").emit_clicked();
+        settle();
+        assert_eq!(global.user_value("font-name"), old_font);
+        assert_eq!(this.committed_design().unwrap(), before);
+        this.request_scheme_apply();
+        settle();
+        button(&top("Apply This Scheme"), "Apply & Open Profile").emit_clicked();
+        settle();
+        let (directory, mut report) =
+            Report::latest(&typography_preset::state_directory()).unwrap();
+        assert_eq!(
+            report.terminal,
+            Some(crate::design_document::TargetHint::Ptyxis)
+        );
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(report.items[0].status, Status::Applied);
+        assert_eq!(profile.user_value("palette"), old_palette);
+        assert_eq!(global.user_value("default-columns"), old_columns);
+        assert_eq!(this.committed_design().unwrap(), before);
+        report.restore(&directory).unwrap();
+        assert_eq!(global.user_value("font-name"), old_font);
+        top("Scheme Application Results").destroy();
         main.destroy();
         settle();
     }

@@ -448,9 +448,10 @@ fn render_sandbox(
             "--tmpfs",
             "/run",
         ]);
-    // A selected /tmp project must remain readable after hiding the host's
-    // temporary files. It is still mounted read-only.
-    if directory.starts_with("/tmp") && directory != Path::new("/tmp") {
+    // A synthetic language sample always has a fixed /tmp destination, even
+    // when TMPDIR stores its source elsewhere. Selected /tmp projects also
+    // need re-binding after hiding the host's temporary files. Both are read-only.
+    if sample_path.is_some() || (directory.starts_with("/tmp") && directory != Path::new("/tmp")) {
         command
             .arg("--ro-bind")
             .arg(directory)
@@ -610,6 +611,33 @@ pub(crate) fn terminal_safe_ansi(output: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn language_sample_outside_tmp_keeps_read_only_sandbox_alias() {
+        let sample = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        if super::trusted_program("starship", sample.path()).is_none()
+            || super::trusted_program("bwrap", sample.path()).is_none()
+        {
+            return;
+        }
+        let manifest = "[package]\nname='sample'\nversion='0.1.0'\nedition='2024'\n";
+        std::fs::write(sample.path().join("Cargo.toml"), manifest).unwrap();
+        let (config, _) = super::prepare_config(
+            "format='$rust'\n[rust]\nformat='[$symbol]($style)'\nsymbol='SAFE_SAMPLE '\n",
+        )
+        .unwrap();
+        let rendered = super::render_at(
+            &config,
+            sample.path(),
+            80,
+            Some(std::path::Path::new("/tmp/termimochi-language-preview")),
+        )
+        .unwrap();
+        assert!(rendered.contains("SAFE_SAMPLE"));
+        assert_eq!(
+            std::fs::read_to_string(sample.path().join("Cargo.toml")).unwrap(),
+            manifest
+        );
+    }
     use super::*;
 
     #[test]

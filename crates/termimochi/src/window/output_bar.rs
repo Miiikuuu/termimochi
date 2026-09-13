@@ -92,7 +92,9 @@ impl Workbench {
         if presentation.target_bar.parent().is_none() {
             self.output_bar.root.prepend(&presentation.target_bar);
         }
-        let binding = presentation.binding.borrow();
+        // Mapping the stack can realize VTE and synchronously refresh the
+        // theme target. Do not retain a RefCell borrow across GTK callbacks.
+        let binding = presentation.binding.borrow().clone();
         let settings = self.greeting.settings();
         let resolved = settings.presentation.resolve(&settings, binding.terminal);
         presentation.cells.set([
@@ -169,7 +171,7 @@ impl Workbench {
         let applied = match deployment.as_ref() {
             Some((design, target, _, independent))
                 if *design == settings
-                    && *target == *binding
+                    && *target == binding
                     && checked.as_ref().is_some_and(|c| c.deployment_matches) =>
             {
                 if *independent {

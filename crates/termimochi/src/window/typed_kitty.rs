@@ -152,56 +152,87 @@ impl Workbench {
         let (window, body, buttons) = super::scheme::dialog(
             &self.window(),
             "Use Design in Kitty",
-            "Independent Kitty + controlled Bash\nNo Ptyxis, default terminal, shared configuration or shell startup files are modified.",
+            &format!(
+                "{} · Kitty\nIndependent session · no daily configuration or startup changes",
+                plan.name
+            ),
         );
+        let scope = design.scope();
+        let included = [
+            (scope.palette, "Palette"),
+            (scope.typography, "Typography"),
+            (scope.layout, "Supported layout"),
+            (
+                scope.prompt && design.theme.as_ref().is_none_or(|t| t.prompt_enabled),
+                "Prompt",
+            ),
+            (
+                design.greeting_output().is_some_and(|g| g.enabled),
+                "Greeting",
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(included, name)| included.then_some(name))
+        .collect::<Vec<_>>()
+        .join(" · ");
+        body.append(&super::scheme::label(&format!("Included: {included}\nOnly settings owned by this theme are used. Unspecified settings inherit controlled Kitty defaults.")));
         body.append(&super::scheme::label(&plan.notes.join("\n")));
-        body.append(&super::scheme::versions(
+        let advanced = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        advanced.append(&super::scheme::versions(
             "New independent version; daily files unchanged",
             &plan.review_text(),
         ));
-        body.append(&super::scheme::label("Trial and publication use the same supported safe projection. Imported executable instructions are not authorized here. Original source is retained as inert source files. This is a real shell, not a filesystem sandbox."));
+        advanced.append(&super::scheme::label("Trial and publication use the same supported safe projection. Imported executable instructions are not authorized here. Original source is retained as inert source files. This is a real shell, not a filesystem sandbox."));
+        body.append(
+            &gtk::Expander::builder()
+                .label("Advanced · files & session details")
+                .child(&advanced)
+                .build(),
+        );
         let state = gtk::Label::builder()
             .label("First open the real target trial, then confirm what you actually see.")
             .wrap(true)
             .xalign(0.0)
             .build();
         body.append(&state);
-        let visual = gtk::CheckButton::with_label(
-            "The colors, font, current prompt and Greeting look correct for the included components",
-        );
+        let visual = gtk::CheckButton::with_label(if plan.animated {
+            "The included settings look correct and the GIF is moving in the Kitty trial"
+        } else {
+            "The included settings look correct in the Kitty trial"
+        });
+        visual.set_widget_name("kitty-trial-confirmed");
+        if let Some(label) = visual.child().and_downcast::<gtk::Label>() {
+            label.set_wrap(true);
+        }
         visual.set_sensitive(false);
         body.append(&visual);
-        let animation = gtk::CheckButton::with_label(
-            "I can see the GIF moving in the Kitty trial (not just in the App preview)",
-        );
-        animation.set_visible(plan.animated);
-        animation.set_sensitive(false);
-        body.append(&animation);
         let trial = gtk::Button::with_label("Try in Kitty");
-        let publish = gtk::Button::with_label("Create / Update Independent Entry");
+        let publish = gtk::Button::with_label("Apply & Open in Kitty");
+        publish.add_css_class("suggested-action");
         publish.set_sensitive(false);
+        let cancel = gtk::Button::with_label("Cancel");
+        let win = window.downgrade();
+        cancel.connect_clicked(move |_| {
+            if let Some(window) = win.upgrade() {
+                window.close();
+            }
+        });
+        buttons.append(&cancel);
         buttons.append(&trial);
         buttons.append(&publish);
         let held_trial = Rc::new(RefCell::new(None::<kitty_session::PreparedSession>));
         let running = Rc::new(Cell::new(false));
-        for check in [&visual, &animation] {
+        {
             let visual = visual.clone();
-            let animation = animation.clone();
             let publish = publish.clone();
-            let animated = plan.animated;
-            check.connect_toggled(move |_| {
-                publish.set_sensitive(
-                    visual.is_sensitive()
-                        && visual.is_active()
-                        && (!animated || animation.is_active()),
-                )
+            visual.connect_toggled(move |visual| {
+                publish.set_sensitive(visual.is_sensitive() && visual.is_active())
             });
         }
         let weak = Rc::downgrade(self);
         let weak_window = window.downgrade();
         let plan_trial = plan.clone();
         let v = visual.clone();
-        let a = animation.clone();
         let st = state.clone();
         let held = held_trial.clone();
         let active = running.clone();
@@ -213,10 +244,10 @@ impl Workbench {
                 return;
             }
             if active.replace(true) { return; }
-            v.set_active(false); a.set_active(false); v.set_sensitive(false); a.set_sensitive(false); button.set_sensitive(false);
+            v.set_active(false); v.set_sensitive(false); button.set_sensitive(false);
             let plan = plan_trial.clone(); let (send, receive) = mpsc::channel(); let parent = glib::user_cache_dir().join("termimochi/controlled-trials");
             thread::spawn(move || { let _ = send.send(plan.temporary_trial(&parent)); });
-            let (weak, weak_window, v, a, st, held, active, button) = (weak.clone(), weak_window.clone(), v.clone(), a.clone(), st.clone(), held.clone(), active.clone(), button.clone());
+            let (weak, weak_window, v, st, held, active, button) = (weak.clone(), weak_window.clone(), v.clone(), st.clone(), held.clone(), active.clone(), button.clone());
             let expected_design = trial_design.clone();
             let expected_identity = plan_trial.revision;
             glib::timeout_add_local(Duration::from_millis(50), move || {
@@ -229,7 +260,7 @@ impl Workbench {
                 let result = match receive.try_recv() { Ok(r) => r, Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue, Err(_) => Err("Trial preparation stopped.".into()) };
                 active.set(false); button.set_sensitive(true);
                 match result.and_then(|trial| { trial.launch()?; Ok(trial) }) {
-                    Ok(trial) => { *held.borrow_mut() = Some(trial); v.set_sensitive(true); a.set_sensitive(true); st.set_text("Kitty process started. Confirm the actual window above; process launch alone does not verify appearance or animation."); }
+                    Ok(trial) => { *held.borrow_mut() = Some(trial); v.set_sensitive(true); st.set_text("Check the real Kitty window, then confirm above and apply. Process launch alone does not verify appearance or animation."); }
                     Err(e) => st.set_text(&format!("Trial failed: {e}. Retry after resolving the requirement.")),
                 }
                 glib::ControlFlow::Break
@@ -243,13 +274,16 @@ impl Workbench {
             if this.committed_design().ok().as_ref() != Some(&design) || this.typed.identity.get() != plan.revision {
                 state.set_text("Document or target changed. Close and use the design again to review the new version."); button.set_sensitive(false); return;
             }
-            if !visual.is_active() || (plan.animated && !animation.is_active()) || held_trial.borrow().is_none() { return; }
+            if !visual.is_sensitive() || !visual.is_active() || held_trial.borrow().is_none() { return; }
             if publishing.replace(true) { return; }
             button.set_sensitive(false);
+            visual.set_sensitive(false);
+            trial.set_sensitive(false);
             state.set_text("Publishing the confirmed snapshot… Versioned file writes are running in the background.");
             let (send, receive) = mpsc::channel();
             let plan = plan.clone();
             let expected_identity = plan.revision;
+            let expected_design = design.clone();
             thread::spawn(move || { let _ = send.send(plan.publish()); });
             let (weak, win, state, publishing) = (weak.clone(), win.clone(), state.clone(), publishing.clone());
             glib::timeout_add_local(Duration::from_millis(50), move || {
@@ -257,9 +291,10 @@ impl Workbench {
                 publishing.set(false);
                 match result {
                     Ok(deployment) => {
+                        let open_requested = win.upgrade().is_some_and(|w| w.is_visible());
                         if let Some(win) = win.upgrade() { win.close(); }
                         if let Some(this) = weak.upgrade() {
-                            if this.typed.identity.get() == expected_identity { this.show_kitty_deployment(deployment); }
+                            if this.typed.identity.get() == expected_identity && this.design_snapshot().ok().as_ref() == Some(&expected_design) { this.show_kitty_deployment_result(deployment, open_requested); }
                             else { this.toast("The previously confirmed snapshot was published. Open it from the independent Kitty scheme library; the current document was not changed."); }
                         }
                     }
@@ -272,6 +307,14 @@ impl Workbench {
     }
 
     fn show_kitty_deployment(self: &Rc<Self>, deployment: kitty_session::Deployment) {
+        self.show_kitty_deployment_result(deployment, false);
+    }
+
+    fn show_kitty_deployment_result(
+        self: &Rc<Self>,
+        deployment: kitty_session::Deployment,
+        open_now: bool,
+    ) {
         let (window, body, buttons) = super::scheme::dialog(
             &self.window(),
             "Independent Kitty Entry",
@@ -280,10 +323,13 @@ impl Workbench {
                 deployment.name, deployment.version
             ),
         );
-        body.append(&super::scheme::label("Open in Kitty uses isolated Bash. For everyday use without opening the editor, choose Add / Update App Launcher and explicitly select your Bash environment. The normal Kitty icon and default terminal stay unchanged."));
+        body.append(&super::scheme::label("This theme opens in Kitty with isolated Bash. It is saved in the independent scheme library for next time. The normal Kitty icon and default terminal stay unchanged."));
+        let advanced = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        advanced.append(&super::scheme::label("Optional: add an application-menu launcher, choose your Bash environment, or restore an earlier version. These are separate explicit actions."));
         let state = gtk::Label::builder().wrap(true).xalign(0.0).build();
         body.append(&state);
         let open = gtk::Button::with_label("Open in Kitty");
+        open.add_css_class("suggested-action");
         buttons.append(&open);
         let daily = gtk::Button::with_label("Add / Update App Launcher…");
         let weak = Rc::downgrade(self);
@@ -293,17 +339,40 @@ impl Workbench {
                 this.choose_daily_launcher(entry.clone());
             }
         });
-        buttons.append(&daily);
-        self.add_daily_launcher_actions(&body, &deployment.id);
+        advanced.append(&daily);
+        self.add_daily_launcher_actions(&advanced, &deployment.id);
         let restore = gtk::Button::with_label("Restore / Deactivate Entry…");
-        buttons.append(&restore);
+        advanced.append(&restore);
+        body.append(
+            &gtk::Expander::builder()
+                .label("Advanced · app launcher & recovery")
+                .child(&advanced)
+                .build(),
+        );
         let entry = deployment.clone();
         let status = state.clone();
-        open.connect_clicked(move |_| match entry.launch() {
-            Ok(()) => {
-                status.set_text("Kitty process started. Inspect its window to verify the result.")
-            }
-            Err(e) => status.set_text(&format!("Could not open: {e}")),
+        open.connect_clicked(move |button| {
+            if !button.is_sensitive() { return; }
+            button.set_sensitive(false);
+            status.set_text("Opening the applied theme in Kitty…");
+            let (send, receive) = mpsc::channel();
+            let entry = entry.clone();
+            thread::spawn(move || { let _ = send.send(entry.launch()); });
+            let status = status.clone();
+            let button = button.downgrade();
+            glib::timeout_add_local(Duration::from_millis(50), move || {
+                let result = match receive.try_recv() {
+                    Ok(r) => r,
+                    Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                    Err(_) => Err("Opening worker stopped; the applied entry is retained.".into()),
+                };
+                if let Some(button) = button.upgrade() { button.set_sensitive(true); }
+                match result {
+                    Ok(()) => status.set_text("Kitty process started with the applied theme. Check its window; the entry remains available after restarting the App."),
+                    Err(e) => status.set_text(&format!("Theme applied, but opening failed: {e}\nRetry Open in Kitty; no need to apply again.")),
+                }
+                glib::ControlFlow::Break
+            });
         });
         let weak = Rc::downgrade(self);
         restore.connect_clicked(move |_| {
@@ -323,6 +392,9 @@ impl Workbench {
             } });
         });
         window.present();
+        if open_now {
+            open.emit_clicked();
+        }
     }
 
     pub(super) fn show_kitty_library(self: &Rc<Self>) {

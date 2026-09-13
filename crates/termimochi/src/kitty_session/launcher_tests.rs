@@ -297,15 +297,16 @@ fn launcher_native_daily_gif_and_desktop_reopen() {
     .unwrap();
     // Only this isolated fixture enables remote control for evidence queries.
     // Production safe projection never enables these directives.
-    plan.files.get_mut("kitty.conf").unwrap().extend_from_slice(
-        format!(
-            "\nallow_remote_control yes\nlinux_display_server x11\nlisten_on unix:{}\n",
-            PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap())
-                .join("daily-kitty")
-                .display()
-        )
-        .as_bytes(),
+    let control = format!(
+        "\nallow_remote_control yes\nlinux_display_server x11\nlisten_on unix:{}\n",
+        PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap())
+            .join("daily-kitty")
+            .display()
     );
+    plan.files
+        .get_mut("kitty.conf")
+        .unwrap()
+        .extend_from_slice(control.as_bytes());
     let deployment = plan.publish().unwrap();
     let launcher = LauncherPlan::prepare(deployment.clone(), ShellMode::PersonalBash).unwrap();
     let installed = launcher.install().unwrap();
@@ -325,7 +326,7 @@ fn launcher_native_daily_gif_and_desktop_reopen() {
         "driver": Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/preview-pointer-driver.py"),
     });
     let result = Command::new("/usr/bin/python3")
-        .arg(script)
+        .arg(&script)
         .arg(args.to_string())
         .output()
         .unwrap();
@@ -336,6 +337,104 @@ fn launcher_native_daily_gif_and_desktop_reopen() {
         String::from_utf8_lossy(&result.stderr)
     );
     assert_eq!(fs::read(&rc).unwrap(), rc_bytes);
+    let original_desktop = fs::read(&desktop).unwrap();
+    let sessions = data.join("termimochi/kitty-sessions");
+    let current_path = sessions.join("native-daily/current.json");
+    let original_current = fs::read(&current_path).unwrap();
+    let original_config = fs::read(deployment.directory.join("kitty.conf")).unwrap();
+    let mut palette = design.palette().unwrap();
+    palette
+        .variant_mut(design.variant())
+        .unwrap()
+        .set("Background", termimochi_core::Rgb::new(219, 234, 240))
+        .unwrap();
+    design.palette = palette.to_palette_string();
+    let mut update = Plan::prepare(
+        &sessions,
+        "native-daily",
+        "Daily Launcher Native",
+        2,
+        &design,
+        Ownership {
+            palette: true,
+            typography: true,
+            layout: true,
+            prompt: true,
+            greeting: true,
+        },
+        None,
+        [10, 20],
+    )
+    .unwrap();
+    update
+        .files
+        .get_mut("kitty.conf")
+        .unwrap()
+        .extend_from_slice(control.as_bytes());
+    let updated = update.publish().unwrap();
+    assert_ne!(updated.version, deployment.version);
+    assert_eq!(
+        fs::read(&desktop).unwrap(),
+        original_desktop,
+        "scheme publication alone must not silently retarget the app launcher"
+    );
+    let newer = LauncherPlan::prepare(updated.clone(), ShellMode::PersonalBash)
+        .unwrap()
+        .install()
+        .unwrap();
+    assert_ne!(fs::read(&desktop).unwrap(), original_desktop);
+    assert!(
+        installed.restore().is_err(),
+        "stale launcher recovery must not clobber its update"
+    );
+    let mut phases = vec![serde_json::json!({"phase": "before-update",
+        "desktop_sha256": digest(&original_desktop), "entry_sha256": digest(&original_current),
+        "kitty_config_sha256": digest(&original_config), "startup_sha256": digest(rc_bytes)})];
+    for (phase, background) in [
+        ("updated", "#dbeaf0"),
+        ("restored", args["background"].as_str().unwrap()),
+    ] {
+        if phase == "restored" {
+            let recovered =
+                crate::kitty_session::restore(&sessions, "native-daily", &updated.version)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(recovered.version, deployment.version);
+            newer.restore().unwrap();
+            assert_eq!(fs::read(&desktop).unwrap(), original_desktop);
+            assert_eq!(fs::read(&current_path).unwrap(), original_current);
+            assert_eq!(
+                fs::read(deployment.directory.join("kitty.conf")).unwrap(),
+                original_config
+            );
+        }
+        let mut request = args.clone();
+        request["phase"] = phase.into();
+        request["background"] = background.into();
+        let output = Command::new("/usr/bin/python3")
+            .arg(&script)
+            .arg(request.to_string())
+            .output()
+            .unwrap();
+        println!("{}", String::from_utf8_lossy(&output.stdout));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        phases.push(serde_json::json!({"phase": phase, "background": background,
+            "desktop_sha256": digest(&fs::read(&desktop).unwrap()),
+            "entry_sha256": digest(&fs::read(&current_path).unwrap()),
+            "startup_sha256": digest(&fs::read(&rc).unwrap()),
+            "kitty_config_sha256": digest(&fs::read(if phase == "updated" { &updated.directory } else { &deployment.directory }.join("kitty.conf")).unwrap()),
+            "runtime_sha256": digest(&fs::read(installed.record().unwrap().runtime.path).unwrap())}));
+    }
+    assert_eq!(fs::read(&rc).unwrap(), rc_bytes);
+    fs::write(
+        glib::user_cache_dir().join("launcher-update-recovery.json"),
+        serde_json::to_vec_pretty(&phases).unwrap(),
+    )
+    .unwrap();
     let script = installed.path.parent().unwrap().join("startup.bash");
     let before = fs::read(&script).unwrap();
     fs::write(&script, "external modification").unwrap();

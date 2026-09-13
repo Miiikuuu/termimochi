@@ -2232,6 +2232,14 @@ pub(super) mod tests {
             result.extend(descendants(&current));
             child = current.next_sibling();
         }
+        // Collapsed GTK expanders retain their child without parenting it.
+        // Inspect advanced controls without changing the observed layout.
+        if let Some(expander) = widget.downcast_ref::<gtk::Expander>()
+            && let Some(child) = expander.child()
+            && !result.contains(&child)
+        {
+            result.extend(descendants(&child));
+        }
         result
     }
     pub(super) fn respond(label: &str) {

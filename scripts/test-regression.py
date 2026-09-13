@@ -20,6 +20,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--display", required=True, help="Dedicated Xvfb display, not your desktop")
     parser.add_argument("--scale", action="append", type=int, choices=[1, 2])
+    parser.add_argument("--release", action="store_true",
+                        help="Run optimized tests and pin the actual Release application/worker")
     parser.add_argument("--filter", action="append", default=[],
                         help="Test-name substring; repeat to match any of several names")
     args = parser.parse_args()
@@ -28,7 +30,8 @@ def main():
     repo = Path(__file__).resolve().parent.parent
     output = Path(tempfile.mkdtemp(prefix="termimochi-regression-"))
     print(f"Logs: {output}", flush=True)
-    build = subprocess.run(["cargo", "test", "-p", "termimochi", "--locked", "--no-run",
+    profile = ["--release"] if args.release else []
+    build = subprocess.run(["cargo", "test", "-p", "termimochi", "--locked", *profile, "--no-run",
                             "--message-format=json"], cwd=repo, check=False,
                            stdout=subprocess.PIPE, text=True)
     artifacts = [json.loads(line) for line in build.stdout.splitlines()]
@@ -44,7 +47,7 @@ def main():
     pinned = output / "termimochi-tests"
     pinned.write_bytes(Path(binary).read_bytes())
     pinned.chmod(0o700)
-    worker_build = subprocess.run(["cargo", "build", "-p", "termimochi", "--locked",
+    worker_build = subprocess.run(["cargo", "build", "-p", "termimochi", "--locked", *profile,
                                    "--message-format=json"], cwd=repo, check=True,
                                   stdout=subprocess.PIPE, text=True)
     worker_binary = next(item["executable"] for item in map(json.loads, worker_build.stdout.splitlines())
@@ -53,8 +56,15 @@ def main():
     worker = output / "termimochi-worker"
     worker.write_bytes(Path(worker_binary).read_bytes())
     worker.chmod(0o700)
-    (output / "build.json").write_text(json.dumps({"sha256": hashlib.sha256(pinned.read_bytes()).hexdigest(),
-        "worker_sha256": hashlib.sha256(worker.read_bytes()).hexdigest()}, indent=2) + "\n")
+    (output / "build.json").write_text(json.dumps({
+        "profile": "release" if args.release else "dev",
+        "head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
+        "working_tree": subprocess.check_output(["git", "status", "--short"], cwd=repo, text=True),
+        "sha256": hashlib.sha256(pinned.read_bytes()).hexdigest(),
+        "worker_sha256": hashlib.sha256(worker.read_bytes()).hexdigest(),
+        "application_source": worker_binary,
+        "note": "Test harness and production application are separate executables; worker is the unmodified application."
+    }, indent=2) + "\n")
     listing = subprocess.run([str(pinned), "--ignored", "--list"], cwd=repo,
                              check=True, capture_output=True, text=True).stdout
     tests = [line.removesuffix(": test") for line in listing.splitlines()

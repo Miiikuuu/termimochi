@@ -152,7 +152,7 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     this.request_fastfetch_apply();
     std::fs::write(&external, "// external conflict\n{}").unwrap();
     super::super::tests::select_scheme_greeting();
-    respond("Back Up & Apply Selected");
+    respond("Apply Changes");
     respond("Close");
     assert_eq!(saved(&greeting_path), loaded);
     assert_eq!(
@@ -163,7 +163,7 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     std::fs::write(&external, &source).unwrap();
     this.request_fastfetch_apply();
     super::super::tests::select_scheme_greeting();
-    respond("Back Up & Apply Selected");
+    respond("Apply Changes");
     respond("Close");
     wait_sync(&this);
     assert_eq!(saved(&greeting_path), transparent);
@@ -183,7 +183,7 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     std::fs::set_permissions(&greeting_path, std::fs::Permissions::from_mode(0o400)).unwrap();
     this.request_fastfetch_apply();
     super::super::tests::select_scheme_greeting();
-    respond("Back Up & Apply Selected");
+    respond("Apply Changes");
     respond("Close");
     wait_sync(&this);
     assert!(this.greeting.sync.save_failure.is_visible());
@@ -207,7 +207,7 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     std::fs::write(&greeting_path, &other).unwrap();
     this.request_fastfetch_apply();
     super::super::tests::select_scheme_greeting();
-    respond("Back Up & Apply Selected");
+    respond("Apply Changes");
     respond("Close");
     assert!(this.greeting.sync.save_failure.is_visible());
     assert_eq!(std::fs::read(&greeting_path).unwrap(), other);
@@ -227,7 +227,7 @@ fn greeting_sync_load_apply_restart_conflicts_and_draft_protection() {
     this.greeting.replace(last.clone(), true);
     this.request_fastfetch_apply();
     super::super::tests::select_scheme_greeting();
-    respond("Back Up & Apply Selected");
+    respond("Apply Changes");
     respond("Close");
     assert_eq!(std::fs::read(&external).unwrap(), before);
     assert_eq!(saved(&greeting_path), last);

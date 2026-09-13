@@ -1,6 +1,5 @@
-//! GUI gate coverage only. This test deliberately never authorizes a successful
-//! terminal launch, and is not evidence that a user saw correct colors or GIF
-//! motion. Real protocol/session rendering has separate native backend tests.
+//! Separate stale/unverified gates and a private native apply/open lifecycle.
+//! Automated UI confirmation is not a human appearance/GIF approval receipt.
 use super::*;
 use crate::design_document::{DesignDocument, Kind, Scope};
 use crate::window::greeting::tests::{controller, descendants, settle};
@@ -38,11 +37,7 @@ fn visual_check(window: &gtk::Window) -> gtk::CheckButton {
     descendants(window.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk::CheckButton>().ok())
-        .find(|check| {
-            check
-                .label()
-                .is_some_and(|text| text.starts_with("The colors, font"))
-        })
+        .find(|check| check.widget_name() == "kitty-trial-confirmed")
         .unwrap()
 }
 
@@ -127,7 +122,20 @@ fn typed_kitty_main_use_review_and_stale_trial_guards() {
     );
     let review = review_window().unwrap();
     let visual = visual_check(&review);
-    let publish = button(&review, "Create / Update Independent Entry");
+    let publish = button(&review, "Apply & Open in Kitty");
+    assert_eq!(
+        descendants(review.upcast_ref())
+            .into_iter()
+            .filter(|w| w.is::<gtk::CheckButton>())
+            .count(),
+        1
+    );
+    assert!(
+        descendants(review.upcast_ref())
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Expander>().ok())
+            .any(|e| e.label().is_some_and(|l| l.starts_with("Advanced")) && !e.is_expanded())
+    );
     assert!(!visual.is_sensitive());
     assert!(!publish.is_sensitive());
     assert!(contains_label(
@@ -171,7 +179,7 @@ fn typed_kitty_main_use_review_and_stale_trial_guards() {
         "stale preparation rejection",
     );
     assert!(!visual_check(&review).is_sensitive());
-    assert!(!button(&review, "Create / Update Independent Entry").is_sensitive());
+    assert!(!button(&review, "Apply & Open in Kitty").is_sensitive());
     assert_no_entries();
 
     review.set_title(Some("TermiMochi point-to-edit test"));
@@ -195,6 +203,162 @@ fn typed_kitty_main_use_review_and_stale_trial_guards() {
         screenshot.display()
     );
     review.destroy();
+    main.destroy();
+    settle();
+}
+
+#[test]
+#[ignore = "isolated GTK + real Kitty: compact main flow publishes/opens, retries failed opening without republishing"]
+fn typed_kitty_compact_apply_opens_real_target_and_retries() {
+    assert_eq!(std::env::var("GSETTINGS_BACKEND").as_deref(), Ok("memory"));
+    assert!(!matches!(
+        std::env::var("DISPLAY").unwrap().split('.').next(),
+        Some(":0" | ":1")
+    ));
+    adw::init().unwrap();
+    gio::resources_register_include!("termimochi.gresource").unwrap();
+    let app = adw::Application::builder()
+        .application_id("io.github.miiikuuu.termimochi.CompactKittyTest")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    crate::window::present_advanced_with_preset(
+        &app,
+        None,
+        temp.path().join(typography_preset::PRESET_NAME),
+    );
+    let main = app.active_window().unwrap();
+    let this = controller(&main);
+    let mut design = DesignDocument::from_kitty_source(
+        "background #dbeaf0\nforeground #202020\nfont_family Liberation Mono\nfont_size 15\n"
+            .into(),
+    )
+    .unwrap();
+    design = design
+        .into_theme(TargetHint::Kitty, "Compact Kitty Apply")
+        .unwrap();
+    this.load_design(design);
+    settle();
+    let original = this.committed_design().unwrap();
+    let rc = glib::home_dir().join(".bashrc");
+    std::fs::write(&rc, "# private untouched sentinel\n").unwrap();
+    let native_windows = || {
+        let out = std::process::Command::new("xwininfo")
+            .args(["-root", "-tree"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|line| {
+                line.contains("Compact Kitty Apply") && line.contains("(\"kitty\" \"kitty\")")
+            })
+            .count()
+    };
+    let pointer = |mode: &str, name: &str| {
+        let result = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../scripts/preview-pointer-driver.py"
+            ))
+            .args([mode, "0", "0"])
+            .env(
+                "TERMIMOCHI_TEST_WINDOW_TITLE",
+                "TermiMochi · Compact Kitty Apply",
+            )
+            .env(
+                "TERMIMOCHI_INSPECT_SCREENSHOT",
+                glib::user_cache_dir().join(name),
+            )
+            .status()
+            .unwrap();
+        assert!(result.success());
+    };
+    assert_eq!(native_windows(), 0);
+    button(&main, "Use Theme…").emit_clicked();
+    wait_until(|| review_window().is_some(), "theme review");
+    let review = review_window().unwrap();
+    settle();
+    crate::window::typed_tests::capture(&review, "compact-kitty-review");
+    button(&review, "Try in Kitty").emit_clicked();
+    wait_until(
+        || visual_check(&review).is_sensitive() && native_windows() == 1,
+        "actual Kitty trial window",
+    );
+    pointer("capture", "compact-kitty-trial.png");
+    pointer("close_test_shell", "unused.png");
+    wait_until(
+        || native_windows() == 0,
+        "close the inspected trial before publication",
+    );
+    visual_check(&review).set_active(true);
+    button(&review, "Apply & Open in Kitty").emit_clicked();
+    wait_until(
+        || native_windows() == 1,
+        "publication automatically opens the applied Kitty window",
+    );
+    let result = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Window>().ok())
+        .find(|w| w.is_visible() && w.title().as_deref() == Some("Independent Kitty Entry"))
+        .unwrap();
+    wait_until(
+        || button(&result, "Open in Kitty").is_sensitive(),
+        "open result callback",
+    );
+    pointer("capture", "compact-kitty-applied.png");
+    let pixels = image::open(glib::user_cache_dir().join("compact-kitty-applied.png"))
+        .unwrap()
+        .to_rgb8();
+    assert!(
+        pixels.pixels().filter(|p| p.0 == [219, 234, 240]).count()
+            > (pixels.width() * pixels.height()) as usize / 3,
+        "the actually opened window must use the reviewed palette, not Kitty's black defaults"
+    );
+    assert_eq!(this.committed_design().unwrap(), original);
+    assert_eq!(
+        std::fs::read_to_string(&rc).unwrap(),
+        "# private untouched sentinel\n"
+    );
+    assert!(
+        !glib::user_data_dir().join("applications").exists(),
+        "apply must not install an app-menu launcher"
+    );
+    let entries = kitty_session::list_with_issues(&root()).unwrap().0;
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    let config = root()
+        .join(&entry.id)
+        .join("versions")
+        .join(&entry.version)
+        .join("kitty.conf");
+    let bytes = std::fs::read(&config).unwrap();
+    std::fs::write(&config, "# external edit\n").unwrap();
+    button(&result, "Open in Kitty").emit_clicked();
+    wait_until(
+        || contains_label(&result, "opening failed"),
+        "tamper blocked and retry available",
+    );
+    assert_eq!(native_windows(), 1);
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "# external edit\n"
+    );
+    std::fs::write(&config, bytes).unwrap(); // restore only this test's deliberate damage
+    button(&result, "Open in Kitty").emit_clicked();
+    wait_until(
+        || native_windows() == 2,
+        "retry opens without applying again",
+    );
+    assert_eq!(
+        kitty_session::list_with_issues(&root()).unwrap().0[0].version,
+        entry.version
+    );
+    for remaining in [1, 0] {
+        pointer("close_test_shell", "unused.png");
+        wait_until(|| native_windows() == remaining, "private shell exit");
+    }
+    result.destroy();
     main.destroy();
     settle();
 }
