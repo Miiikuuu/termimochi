@@ -535,6 +535,18 @@ importing preserves symbols but does not silently change your font.
 
 ## Install for the current user
 
+An installable binary preview can be built locally with
+`python3 scripts/package-preview.py`. The archive includes a checksum verifier
+and the existing user installer; it does not install or publish itself.
+See [preview installation and platform limits](docs/prerelease-install.md),
+[launcher repair / field recovery](docs/prerelease-qa.md), and the separate
+[real-desktop validation task](docs/desktop-environment-validation.md).
+
+**Repair This Launcher…** in the independent Kitty library re-tests and updates
+one managed entry without overwriting theme artifacts or daily configuration.
+Ptyxis recovery keeps conflicting external edits per field and records completed
+fields so retries do not undo later edits to them.
+
 For the separate experimental build with actual embedded Kitty and Ptyxis,
 see [Native interactive preview](docs/native-preview.md) and its explicit
 [validation limits](docs/native-preview-qa.md). The ordinary build and installer

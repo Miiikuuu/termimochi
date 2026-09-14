@@ -1142,7 +1142,7 @@ dependencies = [
 
 [[package]]
 name = "termimochi"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "color_quant",
  "gif",
@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "termimochi-cli"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "serde_json",
  "termimochi-core",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "termimochi-core"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 
 [[package]]
 name = "tiny-skia"

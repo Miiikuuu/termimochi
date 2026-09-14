@@ -61,6 +61,11 @@ jobs:
       - name: Test the isolated user installer
         run: ./scripts/test-install.sh
 
+      - name: Build and test the installable preview archive (no publication)
+        run: |
+          python3 scripts/package-preview.py --no-build --label ci-preview
+          python3 scripts/test-preview-package.py target/preview-packages/termimochi-ci-preview-linux-$(uname -m).tar.gz
+
       - name: Smoke-test the release GUI under Xvfb
         shell: bash
         run: |

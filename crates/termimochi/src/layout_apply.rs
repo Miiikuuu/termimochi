@@ -212,6 +212,8 @@ fn write(settings: &gio::Settings, values: &Values) -> Result<(), String> {
 #[serde(deny_unknown_fields)]
 struct Receipt {
     version: u8,
+    #[serde(default)]
+    application_id: Option<String>,
     before: Snapshot,
     after: Values,
 }
@@ -225,19 +227,6 @@ impl Receipt {
         validate(&self.before.effective, false)?;
         validate(&self.after, self.version == 2)
     }
-}
-
-fn compatible(settings: &gio::Settings, receipt: &Receipt) -> Result<(), String> {
-    let current = snapshot(settings)?.user;
-    if KEYS.iter().any(|key| {
-        current[*key] != receipt.before.user[*key] && current[*key] != receipt.after[*key]
-    }) {
-        return Err(
-            "Layout changed outside TermiMochi. Restore is blocked to protect those changes."
-                .into(),
-        );
-    }
-    Ok(())
 }
 
 pub(crate) struct ApplyRequest {
@@ -288,6 +277,7 @@ impl ApplyRequest {
         layout.validate()?;
         let receipt = Receipt {
             version: 1,
+            application_id: Some(glib::uuid_string_random().into()),
             before: snapshot(&settings)?,
             after: requested(layout),
         };
@@ -332,8 +322,11 @@ impl ApplyRequest {
             return Err("Ptyxis layout changed before applying. Nothing was overwritten.".into());
         }
         if let Err(error) = write(&self.settings, &self.receipt.after) {
-            let recovery = compatible(&self.settings, &self.receipt)
-                .and_then(|_| write(&self.settings, &self.receipt.before.user));
+            let recovery = RestoreRequest::prepare(self.settings.clone(), self.receipt.clone())
+                .and_then(|mut request| {
+                    request.directory = Some(directory.into());
+                    request.restore()
+                });
             return Err(format!(
                 "{error}\nRecovery: {}\nBackup: {}",
                 recovery
@@ -350,6 +343,7 @@ pub(crate) struct RestoreRequest {
     settings: gio::Settings,
     receipt: Receipt,
     current: Snapshot,
+    directory: Option<PathBuf>,
 }
 
 impl RestoreRequest {
@@ -359,32 +353,116 @@ impl RestoreRequest {
         let receipt: Receipt = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         let settings =
             find_settings("org.gnome.Ptyxis", None).ok_or("Ptyxis settings are unavailable.")?;
-        Self::prepare(settings, receipt)
+        let mut request = Self::prepare(settings, receipt)?;
+        request.directory = Some(directory.into());
+        Ok(request)
     }
     fn prepare(settings: gio::Settings, receipt: Receipt) -> Result<Self, String> {
         receipt.validate()?;
-        compatible(&settings, &receipt)?;
-        let current = snapshot(&settings)?;
+        let mut user = Values::new();
+        for key in KEYS {
+            let value = if settings.settings_schema().is_some_and(|s| s.has_key(key)) {
+                settings
+                    .user_value(key)
+                    .as_ref()
+                    .map(Value::read)
+                    .transpose()?
+            } else {
+                None
+            };
+            user.insert(key.into(), value);
+        }
+        let current = Snapshot {
+            effective: user.clone(),
+            user,
+        };
         Ok(Self {
             settings,
             receipt,
             current,
+            directory: None,
         })
     }
     pub fn restore(self) -> Result<(), String> {
-        if snapshot(&self.settings)? != self.current {
-            return Err(
-                "Ptyxis layout changed during confirmation. Nothing was overwritten.".into(),
-            );
-        }
-        compatible(&self.settings, &self.receipt)?;
-        write(&self.settings, &self.receipt.before.user)
+        let fields = KEYS
+            .into_iter()
+            .map(|key| crate::ptyxis_restore::Field {
+                settings: self.settings.clone(),
+                key,
+                before: self.receipt.before.user[key].as_ref().map(Value::variant),
+                after: self.receipt.after[key].as_ref().map(Value::variant),
+                reviewed: self.current.user[key].as_ref().map(Value::variant),
+            })
+            .collect();
+        crate::ptyxis_restore::restore(self.directory.as_deref(), "layout", &self.receipt, fields)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_layout_application_has_independent_restore_progress() {
+        let settings = settings();
+        let directory = tempfile::tempdir().unwrap();
+        let baseline = snapshot(&settings).unwrap();
+        for _ in 0..2 {
+            let apply =
+                ApplyRequest::prepare(settings.clone(), &LayoutSettings::default()).unwrap();
+            let receipt = apply.receipt.clone();
+            apply.apply(directory.path()).unwrap();
+            let mut restore = RestoreRequest::prepare(settings.clone(), receipt).unwrap();
+            restore.directory = Some(directory.path().into());
+            restore.restore().unwrap();
+            assert_eq!(snapshot(&settings).unwrap(), baseline);
+        }
+    }
+
+    #[test]
+    fn per_field_restore_keeps_external_and_unowned_values_across_retries() {
+        let settings = settings();
+        let directory = tempfile::tempdir().unwrap();
+        let layout = LayoutSettings {
+            columns: 101,
+            rows: 31,
+            ..Default::default()
+        };
+        let fields = [
+            ("columns".into(), serde_json::json!(101)),
+            ("rows".into(), serde_json::json!(31)),
+        ]
+        .into_iter()
+        .collect();
+        let request = ApplyRequest::prepare(settings.clone(), &layout)
+            .unwrap()
+            .with_theme_fields(&fields)
+            .unwrap();
+        let receipt = request.receipt.clone();
+        request.apply(directory.path()).unwrap();
+        settings.set_uint("default-columns", 119).unwrap();
+        settings.set_string("cursor-shape", "underline").unwrap();
+        settings.apply();
+        let restore = || {
+            let mut request = RestoreRequest::prepare(settings.clone(), receipt.clone()).unwrap();
+            request.directory = Some(directory.path().into());
+            request.restore()
+        };
+        let error = restore().unwrap_err();
+        assert!(
+            error.contains("default-columns: kept") && error.contains("default-rows: restored")
+        );
+        assert_eq!(settings.user_value("default-rows"), None);
+        assert_eq!(settings.uint("default-columns"), 119);
+        assert_eq!(settings.string("cursor-shape"), "underline");
+        settings.set_uint("default-rows", 31).unwrap();
+        settings.set_uint("default-columns", 101).unwrap();
+        settings.apply();
+        restore().unwrap();
+        assert_eq!(settings.user_value("default-columns"), None);
+        assert_eq!(settings.uint("default-rows"), 31);
+        assert_eq!(settings.string("cursor-shape"), "underline");
+    }
     #[test]
     fn sparse_theme_cursor_preserves_unset_grid_and_other_values() {
         let settings = settings();

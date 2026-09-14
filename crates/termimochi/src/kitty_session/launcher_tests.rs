@@ -45,6 +45,7 @@ fn fixture(data: &Path, revision: u64) -> LauncherPlan {
         mode: ShellMode::Controlled,
         binary: b"#!/bin/sh\nexit 0\n".to_vec(),
         sources: vec![],
+        repair: None,
     }
 }
 
@@ -70,6 +71,85 @@ fn launcher_publication_update_undo_keeps_files_and_references() {
     assert!(first.path.exists() && second.path.exists());
     assert!(first.record().unwrap().runtime.path.exists());
     assert!(first.restore().is_err());
+}
+
+#[test]
+fn targeted_repair_rebuilds_runtime_and_startup_but_protects_theme_and_other_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let plan = fixture(temp.path(), 1);
+    let theme = plan.deployment.directory.clone();
+    let manifest = fs::read(theme.join(MANIFEST)).unwrap();
+    let original = plan.install().unwrap();
+    let runtime = original.record().unwrap().runtime.path;
+    let startup = original.path.parent().unwrap().join("startup.bash");
+    fs::remove_file(&runtime).unwrap();
+    fs::write(&startup, "do not execute this external startup").unwrap();
+    let unrelated = temp.path().join("applications/unrelated.desktop");
+    fs::write(&unrelated, "untouched").unwrap();
+    let mut repair = original.prepare_repair_at(temp.path()).unwrap();
+    repair.binary = plan.binary.clone();
+    assert!(repair.review().contains("Targeted repair"));
+    let fixed = repair.install().unwrap();
+    assert_ne!(fixed.path, original.path);
+    let record = fixed.record().unwrap();
+    record.runtime.check().unwrap();
+    record.deployment.check().unwrap();
+    assert_ne!(record.deployment.directory, theme);
+    assert_eq!(fs::read(theme.join(MANIFEST)).unwrap(), manifest);
+    assert_eq!(
+        fs::read_to_string(&startup).unwrap(),
+        "do not execute this external startup"
+    );
+    assert_eq!(fs::read_to_string(&unrelated).unwrap(), "untouched");
+    // Corrupt runtime is kept as evidence, repaired into another managed copy.
+    fs::write(&record.runtime.path, "external runtime").unwrap();
+    let mut again = fixed.prepare_repair_at(temp.path()).unwrap();
+    again.binary = plan.binary.clone();
+    let clean = again.install().unwrap();
+    assert_ne!(clean.record().unwrap().runtime.path, record.runtime.path);
+    clean.record().unwrap().runtime.check().unwrap();
+    assert_eq!(
+        fs::read_to_string(&record.runtime.path).unwrap(),
+        "external runtime"
+    );
+    clean.restore().unwrap();
+    // A changed source is never legitimized by recreating a launcher.
+    fs::write(theme.join("kitty.conf"), "background red").unwrap();
+    assert!(fixed.prepare_repair_at(temp.path()).is_err());
+    assert_eq!(
+        fs::read_to_string(theme.join("kitty.conf")).unwrap(),
+        "background red"
+    );
+    fixed.restore().unwrap();
+    assert_eq!(
+        Installed::discover_at(temp.path(), "launcher-a")
+            .unwrap()
+            .unwrap()
+            .path,
+        original.path
+    );
+}
+
+#[test]
+fn repair_review_is_pinned_and_refuses_manifest_or_desktop_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let original = fixture(temp.path(), 1).install().unwrap();
+    let repair = original.prepare_repair_at(temp.path()).unwrap();
+    fixture(temp.path(), 2);
+    assert!(repair.install().is_err());
+    let mut repair = original.prepare_repair_at(temp.path()).unwrap();
+    repair.binary = b"#!/bin/sh\nexit 0\n".to_vec();
+    assert!(repair.review().contains("active theme"));
+    let manifest = repair.deployment.directory.join(MANIFEST);
+    let bytes = fs::read(&manifest).unwrap();
+    let mut altered = bytes.clone();
+    altered.push(b' ');
+    fs::write(&manifest, &altered).unwrap();
+    assert!(repair.install().is_err());
+    fs::write(&manifest, bytes).unwrap();
+    fs::write(desktop_path(temp.path(), "launcher-a"), "external").unwrap();
+    assert!(repair.install().is_err());
+    assert!(original.prepare_repair_at(temp.path()).is_err());
 }
 
 #[test]
@@ -338,6 +418,36 @@ fn launcher_native_daily_gif_and_desktop_reopen() {
         String::from_utf8_lossy(&result.stderr)
     );
     assert_eq!(fs::read(&rc).unwrap(), rc_bytes);
+    let broken_desktop = fs::read(&desktop).unwrap();
+    let original_manifest = fs::read(deployment.directory.join(MANIFEST)).unwrap();
+    let missing_runtime = installed.record().unwrap().runtime.path;
+    fs::remove_file(&missing_runtime).unwrap();
+    assert!(installed.open().is_err());
+    let repair = installed.prepare_repair().unwrap();
+    let repaired = repair.install().unwrap();
+    let mut repaired_args = args.clone();
+    repaired_args["phase"] = "repaired".into();
+    let result = Command::new("/usr/bin/python3")
+        .arg(&script)
+        .arg(repaired_args.to_string())
+        .output()
+        .unwrap();
+    println!("{}", String::from_utf8_lossy(&result.stdout));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        fs::read(deployment.directory.join(MANIFEST)).unwrap(),
+        original_manifest
+    );
+    assert_eq!(fs::read(&rc).unwrap(), rc_bytes);
+    // Continue update/recovery against the working repaired entry. Undoing
+    // repair itself returns the intentionally broken original receipt; it does
+    // not revive the deleted runtime's inode/identity.
+    let broken = installed;
+    let installed = repaired;
     let original_desktop = fs::read(&desktop).unwrap();
     let sessions = data.join("termimochi/kitty-sessions");
     let current_path = sessions.join("native-daily/current.json");
@@ -440,6 +550,27 @@ fn launcher_native_daily_gif_and_desktop_reopen() {
     let before = fs::read(&script).unwrap();
     fs::write(&script, "external modification").unwrap();
     assert!(installed.open().unwrap_err().contains("startup changed"));
+    let route = Command::new("/usr/bin/python3")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../scripts/launcher-repair-route-probe.py"),
+        )
+        .arg(&installed.record().unwrap().runtime.path)
+        .arg(&installed.path)
+        .arg(&installed.checksum)
+        .output()
+        .unwrap();
+    assert!(
+        route.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&route.stdout),
+        String::from_utf8_lossy(&route.stderr)
+    );
+    assert_eq!(
+        fs::read(&desktop).unwrap(),
+        original_desktop,
+        "opening repair must not publish it"
+    );
     fs::write(&script, before).unwrap();
     crate::kitty_session::restore(
         &data.join("termimochi/kitty-sessions"),
@@ -450,6 +581,8 @@ fn launcher_native_daily_gif_and_desktop_reopen() {
     assert!(installed.open().unwrap_err().contains("deactivated"));
     assert_eq!(Installed::list().unwrap().len(), 1);
     installed.restore().unwrap();
+    assert_eq!(fs::read(&desktop).unwrap(), broken_desktop);
+    broken.restore().unwrap();
     assert!(!desktop.exists());
     println!(
         "Evidence: {}",

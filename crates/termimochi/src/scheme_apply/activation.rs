@@ -17,6 +17,8 @@ struct Values {
 #[serde(deny_unknown_fields)]
 struct Receipt {
     version: u8,
+    #[serde(default)]
+    application_id: Option<String>,
     uuid: String,
     before: Values,
     effective: Values,
@@ -51,6 +53,10 @@ pub(crate) fn profile() -> Result<(String, String), String> {
 }
 
 fn settings(uuid: &str) -> Result<(gio::Settings, gio::Settings), String> {
+    settings_mode(uuid, false)
+}
+
+fn settings_mode(uuid: &str, restoring: bool) -> Result<(gio::Settings, gio::Settings), String> {
     if !ptyxis::valid_profile_uuid(uuid) {
         return Err("Invalid Ptyxis profile UUID.".into());
     }
@@ -61,7 +67,17 @@ fn settings(uuid: &str) -> Result<(gio::Settings, gio::Settings), String> {
         Some(&format!("/org/gnome/Ptyxis/Profiles/{uuid}/")),
     )
     .ok_or("Ptyxis profile settings are unavailable.")?;
-    check(&global, &profile, uuid)?;
+    if restoring {
+        if !global
+            .settings_schema()
+            .is_some_and(|s| s.has_key("profile-uuids"))
+            || !global.strv("profile-uuids").iter().any(|id| id == uuid)
+        {
+            return Err("The reviewed Ptyxis profile no longer exists.".into());
+        }
+    } else {
+        check(&global, &profile, uuid)?;
+    }
     Ok((global, profile))
 }
 
@@ -84,6 +100,9 @@ fn check(global: &gio::Settings, profile: &gio::Settings, uuid: &str) -> Result<
 
 fn values(global: &gio::Settings, profile: &gio::Settings, user: bool) -> Values {
     let get = |settings: &gio::Settings, key| {
+        if !settings.settings_schema().is_some_and(|s| s.has_key(key)) {
+            return None;
+        }
         if user {
             settings.user_value(key).and_then(|v| v.get::<String>())
         } else {
@@ -136,6 +155,7 @@ impl Activation {
         }
         let receipt = Receipt {
             version: 1,
+            application_id: Some(gtk::glib::uuid_string_random().into()),
             uuid: uuid.into(),
             before: values(&global, &profile, true),
             effective: values(&global, &profile, false),
@@ -193,28 +213,36 @@ pub(crate) fn restore(directory: &Path) -> Result<(), String> {
     if receipt.version != 1 {
         return Err("Unsupported activation receipt.".into());
     }
-    let (global, profile) = settings(&receipt.uuid)?;
+    let (global, profile) = settings_mode(&receipt.uuid, true)?;
     let current = values(&global, &profile, true);
-    if (current.palette != receipt.after.palette && current.palette != receipt.before.palette)
-        || (current.style != receipt.after.style && current.style != receipt.before.style)
-    {
-        return Err("Palette selection changed outside TermiMochi. Restore is blocked.".into());
-    }
-    for (settings, key, value) in [
-        (&global, "interface-style", &receipt.before.style),
-        (&profile, "palette", &receipt.before.palette),
-    ] {
-        if value.as_ref().is_some_and(|v| {
-            !settings
-                .settings_schema()
-                .unwrap()
-                .key(key)
-                .range_check(&v.to_variant())
-        }) {
-            return Err("Invalid activation backup.".into());
-        }
-    }
-    write(&global, &profile, &receipt.before)
+    let fields = [
+        (
+            global,
+            "interface-style",
+            &receipt.before.style,
+            &receipt.after.style,
+            &current.style,
+        ),
+        (
+            profile,
+            "palette",
+            &receipt.before.palette,
+            &receipt.after.palette,
+            &current.palette,
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(settings, key, before, after, reviewed)| crate::ptyxis_restore::Field {
+            settings,
+            key,
+            before: before.as_ref().map(|v| v.to_variant()),
+            after: after.as_ref().map(|v| v.to_variant()),
+            reviewed: reviewed.as_ref().map(|v| v.to_variant()),
+        },
+    )
+    .collect();
+    crate::ptyxis_restore::restore(Some(directory), "activation", &receipt, fields)
 }
 
 /// Do not remove a newly installed palette if another profile has since selected it.

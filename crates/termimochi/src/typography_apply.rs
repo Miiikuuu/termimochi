@@ -64,6 +64,8 @@ struct Snapshot {
 #[serde(deny_unknown_fields)]
 struct Receipt {
     version: u8,
+    #[serde(default)]
+    application_id: Option<String>,
     profile_uuid: String,
     profile_label: String,
     before: Snapshot,
@@ -109,6 +111,10 @@ impl TypographyTarget {
     }
 
     pub(crate) fn for_uuid(uuid: &str) -> Result<Self, String> {
+        Self::for_uuid_mode(uuid, false)
+    }
+
+    fn for_uuid_mode(uuid: &str, restoring: bool) -> Result<Self, String> {
         if !valid_profile_uuid(uuid) {
             return Err("Invalid Ptyxis profile identifier.".into());
         }
@@ -128,7 +134,9 @@ impl TypographyTarget {
             uuid: uuid.into(),
             label,
         };
-        target.check()?;
+        if !restoring {
+            target.check()?;
+        }
         Ok(target)
     }
 
@@ -163,6 +171,9 @@ impl TypographyTarget {
             key: &str,
             user: bool,
         ) -> Result<Option<T>, String> {
+            if !settings.settings_schema().is_some_and(|s| s.has_key(key)) {
+                return Ok(None);
+            }
             let value = if user {
                 settings.user_value(key)
             } else {
@@ -262,6 +273,7 @@ impl TypographyTarget {
             target: self.clone(),
             receipt: Receipt {
                 version: 1,
+                application_id: Some(glib::uuid_string_random().into()),
                 profile_uuid: self.uuid.clone(),
                 profile_label: self.label.clone(),
                 before: self.snapshot()?,
@@ -374,8 +386,11 @@ impl ApplyRequest {
             return Err("Ptyxis settings changed before applying. Nothing was overwritten; backup retained.".into());
         }
         if let Err(error) = self.target.write(&self.receipt.after) {
-            let recovery = restore_compatible(&self.target, &self.receipt)
-                .and_then(|_| self.target.write(&self.receipt.before.user));
+            let recovery = RestoreRequest::prepare(self.target.clone(), self.receipt.clone())
+                .and_then(|mut request| {
+                    request.directory = Some(directory.into());
+                    request.restore()
+                });
             return Err(format!(
                 "{error}\nRecovery: {}\nBackup: {}",
                 recovery
@@ -388,25 +403,11 @@ impl ApplyRequest {
     }
 }
 
-fn restore_compatible(target: &TypographyTarget, receipt: &Receipt) -> Result<(), String> {
-    let current = target.values(true)?;
-    let before = &receipt.before.user;
-    let after = &receipt.after;
-    if !(current.use_system_font == before.use_system_font
-        || current.use_system_font == after.use_system_font)
-        || !(current.font_name == before.font_name || current.font_name == after.font_name)
-        || !(current.line_height == before.line_height || current.line_height == after.line_height)
-        || !(current.cell_width == before.cell_width || current.cell_width == after.cell_width)
-    {
-        return Err("Typography changed outside TermiMochi after applying. Restore is blocked to protect those changes.".into());
-    }
-    Ok(())
-}
-
 pub(crate) struct RestoreRequest {
     target: TypographyTarget,
     receipt: Receipt,
     current: Snapshot,
+    directory: Option<PathBuf>,
 }
 
 impl RestoreRequest {
@@ -415,36 +416,79 @@ impl RestoreRequest {
             read_private(&directory.join(RECEIPT))?.ok_or("No typography backup exists yet.")?;
         let receipt: Receipt = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         receipt.validate()?;
-        let target = TypographyTarget::for_uuid(&receipt.profile_uuid)?;
-        Self::prepare(target, receipt)
+        let target = TypographyTarget::for_uuid_mode(&receipt.profile_uuid, true)?;
+        let mut request = Self::prepare(target, receipt)?;
+        request.directory = Some(directory.into());
+        Ok(request)
     }
 
     fn prepare(target: TypographyTarget, receipt: Receipt) -> Result<Self, String> {
-        restore_compatible(&target, &receipt)?;
-        let current = target.snapshot()?;
+        receipt.validate()?;
+        let current = Snapshot {
+            user: target.values(true)?,
+            effective: target.values(false)?,
+        };
         Ok(Self {
             target,
             receipt,
             current,
+            directory: None,
         })
     }
 
     pub fn detail(&self) -> String {
         format!(
-            "Restore the previous Ptyxis-wide font and spacing for profile {} ({})?\n\nUnset values are restored as unset, preserving system-font inheritance. Your saved TermiMochi preset is kept. External changes block restoration.",
+            "Restore recorded font and spacing changes for profile {} ({})?\n\nFont settings affect all Ptyxis profiles. Only fields changed by this application are restored; external edits are kept per field. Unset inheritance and your saved preset are preserved. Completed fields are not touched again on retry.",
             self.receipt.profile_label, self.receipt.profile_uuid
         )
     }
 
     pub fn restore(self) -> Result<(), String> {
-        if self.target.snapshot()? != self.current {
-            return Err(
-                "Ptyxis settings changed while confirmation was open. Nothing was overwritten."
-                    .into(),
-            );
+        let variants = |v: &Values| {
+            [
+                v.use_system_font.map(|v| v.to_variant()),
+                v.font_name.as_ref().map(|v| v.to_variant()),
+                v.line_height.map(|v| v.to_variant()),
+                v.cell_width.map(|v| v.to_variant()),
+            ]
+        };
+        let fields = GLOBAL_KEYS
+            .into_iter()
+            .chain(PROFILE_KEYS)
+            .zip(variants(&self.receipt.before.user))
+            .zip(variants(&self.receipt.after))
+            .zip(variants(&self.current.user))
+            .enumerate()
+            .map(
+                |(index, (((key, before), after), reviewed))| crate::ptyxis_restore::Field {
+                    settings: if index < 2 {
+                        self.target.global.clone()
+                    } else {
+                        self.target.profile.clone()
+                    },
+                    key,
+                    before,
+                    after,
+                    reviewed,
+                },
+            )
+            .collect();
+        // Still refuse a removed profile; never redirect recovery to a default.
+        if !self
+            .target
+            .global
+            .strv("profile-uuids")
+            .iter()
+            .any(|id| id == &self.target.uuid)
+        {
+            return Err("The reviewed Ptyxis profile was removed.".into());
         }
-        restore_compatible(&self.target, &self.receipt)?;
-        self.target.write(&self.receipt.before.user)
+        crate::ptyxis_restore::restore(
+            self.directory.as_deref(),
+            "typography",
+            &self.receipt,
+            fields,
+        )
     }
 }
 
@@ -452,6 +496,105 @@ impl RestoreRequest {
 mod tests {
     use super::*;
     use crate::typography::PreviewFontWeight;
+
+    #[test]
+    fn repeated_identical_application_is_a_new_recoverable_transaction() {
+        let target = target();
+        let directory = tempfile::tempdir().unwrap();
+        let baseline = target.snapshot().unwrap();
+        let mut ids = std::collections::BTreeSet::new();
+        for _ in 0..2 {
+            let apply = target.prepare(&desired()).unwrap();
+            let receipt = apply.receipt.clone();
+            assert!(ids.insert(receipt.application_id.clone().unwrap()));
+            apply.apply(directory.path()).unwrap();
+            let mut restore = RestoreRequest::prepare(target.clone(), receipt).unwrap();
+            restore.directory = Some(directory.path().into());
+            restore.restore().unwrap();
+            assert_eq!(target.snapshot().unwrap(), baseline);
+        }
+    }
+
+    #[test]
+    fn unavailable_field_does_not_block_an_available_field() {
+        let target = target();
+        target.global.set_boolean("use-system-font", false).unwrap();
+        let error = crate::ptyxis_restore::restore(
+            None,
+            "test",
+            &"test receipt",
+            vec![
+                crate::ptyxis_restore::Field {
+                    settings: target.profile,
+                    key: "font-name",
+                    before: None,
+                    after: Some("not in profile schema".to_variant()),
+                    reviewed: None,
+                },
+                crate::ptyxis_restore::Field {
+                    settings: target.global.clone(),
+                    key: "use-system-font",
+                    before: None,
+                    after: Some(false.to_variant()),
+                    reviewed: Some(false.to_variant()),
+                },
+            ],
+        )
+        .unwrap_err();
+        assert!(error.contains("font-name: kept — setting unavailable"));
+        assert!(error.contains("use-system-font: restored"));
+        assert_eq!(target.global.user_value("use-system-font"), None);
+    }
+
+    #[test]
+    fn partial_restore_is_durable_and_does_not_rewrite_completed_or_unowned_fields() {
+        let target = target();
+        let directory = tempfile::tempdir().unwrap();
+        let before = target.snapshot().unwrap();
+        let request = target.prepare(&desired()).unwrap();
+        let receipt = request.receipt.clone();
+        request.apply(directory.path()).unwrap();
+        target.profile.set_double("cell-width-scale", 1.9).unwrap();
+        target.profile.apply();
+        let restore = || {
+            let mut request = RestoreRequest::prepare(target.clone(), receipt.clone()).unwrap();
+            request.directory = Some(directory.path().into());
+            request.restore()
+        };
+        let error = restore().unwrap_err();
+        assert!(error.contains("cell-width-scale: kept") && error.contains("font-name: restored"));
+        assert_eq!(
+            target.global.user_value("font-name"),
+            before.user.font_name.as_ref().map(|v| v.to_variant())
+        );
+        assert_eq!(target.profile.double("cell-width-scale"), 1.9);
+        // A new user choice happens to equal the old applied value. A retry
+        // must not use that coincidence to undo a field already completed.
+        target
+            .global
+            .set_string("font-name", receipt.after.font_name.as_ref().unwrap())
+            .unwrap();
+        target.global.apply();
+        target
+            .profile
+            .set_double("cell-width-scale", receipt.after.cell_width.unwrap())
+            .unwrap();
+        target.profile.apply();
+        restore().unwrap();
+        assert_eq!(
+            target.global.string("font-name").as_str(),
+            receipt.after.font_name.as_ref().unwrap()
+        );
+        assert_eq!(
+            target.profile.user_value("cell-width-scale"),
+            before.user.cell_width.map(|v| v.to_variant())
+        );
+        restore().unwrap();
+        assert_eq!(
+            target.global.string("font-name").as_str(),
+            receipt.after.font_name.as_ref().unwrap()
+        );
+    }
 
     #[test]
     fn sparse_theme_size_keeps_target_family_weight_and_unset_spacing() {
@@ -586,7 +729,12 @@ mod tests {
             .set_string("font-name", "External Mono 16")
             .unwrap();
         target.global.apply();
-        assert!(RestoreRequest::prepare(target.clone(), receipt).is_err());
+        assert!(
+            RestoreRequest::prepare(target.clone(), receipt)
+                .unwrap()
+                .restore()
+                .is_err()
+        );
         assert_eq!(target.global.string("font-name"), "External Mono 16");
     }
 

@@ -21,6 +21,11 @@
     <binary>termimochi</binary>
   </provides>
   <releases>
+    <release version="0.2.0-rc.1" date="2026-09-14" type="development">
+      <description>
+        <p>Installable preview with targeted Kitty launcher repair and per-field Ptyxis recovery.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-09-04">
       <description>
         <p>Initial public preview.</p>

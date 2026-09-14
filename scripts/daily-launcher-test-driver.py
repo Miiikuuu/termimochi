@@ -14,7 +14,7 @@ assert os.environ['GSETTINGS_BACKEND'] == 'memory'
 assert os.environ['DISPLAY'].split('.')[0] not in (':0', ':1')
 root = Path(os.environ['XDG_CACHE_HOME']) / 'daily-launcher-evidence'
 if r.get('phase'):
-    assert r['phase'] in ('updated', 'restored')
+    assert r['phase'] in ('updated', 'restored', 'repaired')
     root = root / r['phase']
 root.mkdir(parents=True, exist_ok=True)
 
@@ -53,6 +53,8 @@ for phase in ('first', 'reopen'):
         assert any(line.split() == ['background', r['background']] for line in colors.lower().splitlines()), colors
         (root / (phase + '-colors.txt')).write_text(colors)
         evidence = Path(os.environ['HOME']) / (phase + '-shell.txt')
+        # A later update/repair phase must not consume the previous shell's file.
+        evidence.unlink(missing_ok=True)
         # Only the private test shell receives keystrokes. Alias, function, PATH,
         # history and prompt are inspected after real interactive initialization.
         command = ("{ alias daily_alias; declare -f daily_function; printf '%s\\n' \"$PATH\" \"$HISTFILE\" \"$STARSHIP_CONFIG\"; "

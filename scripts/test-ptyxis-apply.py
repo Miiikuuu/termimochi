@@ -6,6 +6,7 @@ namespace masks systemd-run only in this test (no private user manager).
 No terminal replacement, fake launch, Rust controller or daily config writes.
 """
 import argparse
+import configparser
 import ctypes as C
 import hashlib
 import json
@@ -65,7 +66,11 @@ def inside(root):
     x11 = C.CDLL('libX11.so.6')
     x11.XOpenDisplay.argtypes, x11.XOpenDisplay.restype = [C.c_char_p], C.c_void_p
     x11.XRaiseWindow.argtypes = [C.c_void_p, C.c_ulong]
+    x11.XSetInputFocus.argtypes = [C.c_void_p, C.c_ulong, C.c_int, C.c_ulong]
     x11.XFlush.argtypes = [C.c_void_p]
+    xtest = C.CDLL('libXtst.so.6')
+    xtest.XTestFakeMotionEvent.argtypes = [C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_ulong]
+    xtest.XTestFakeButtonEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
     display = x11.XOpenDisplay(b':96')
     assert display
 
@@ -95,8 +100,8 @@ def inside(root):
             except Exception:
                 continue
 
-    def click(name):
-        node = wait(lambda: find(name), f'Missing GUI control: {name}')
+    def click(name, node=None):
+        node = node or wait(lambda: find(name), f'Missing GUI control: {name}')
         # Xvfb has no window manager/Alt+Tab. Bring only this private editor's
         # known windows forward so screenshots also show the reviewed controls.
         listing = sp.check_output(['xwininfo', '-root', '-tree'], text=True)
@@ -106,7 +111,24 @@ def inside(root):
                 if caption == title:
                     x11.XRaiseWindow(display, int(xid, 16))
         x11.XFlush(display)
-        assert node.get_action_iface().do_action(0), name
+        # Prefer the actual toggle child over GtkMenuButton's proxy container.
+        actionable = next((n for n in tree(node) if n.get_action_iface().get_n_actions()), node)
+        action = actionable.get_action_iface()
+        if action.get_n_actions():
+            assert action.do_action(0), name
+        else:
+            # GtkMenuButton's labelled container has no AT-SPI action. Click
+            # its real screen bounds; do not invoke a hidden controller action.
+            bounds = node.get_component_iface().get_extents(Atspi.CoordType.SCREEN)
+            assert bounds.width > 0 and bounds.height > 0
+            for xid, caption in windows:
+                if 'Ptyxis Apply QA' in caption:
+                    x11.XRaiseWindow(display, int(xid, 16))
+                    x11.XSetInputFocus(display, int(xid, 16), 1, 0)
+            xtest.XTestFakeMotionEvent(display, -1, bounds.x + bounds.width // 2, bounds.y + bounds.height // 2, 0)
+            xtest.XTestFakeButtonEvent(display, 1, 1, 0)
+            xtest.XTestFakeButtonEvent(display, 1, 0, 0)
+            x11.XFlush(display)
         time.sleep(.4)
 
     def shot(name):
@@ -141,7 +163,8 @@ def inside(root):
             return None
         ink = []
         for y in range(top, top + 65):
-            xs = [x for x in range(left + 6, min(right - 6, left + 700)) if max(pixels[x, y]) < 110]
+            xs = [x for x in range(left + 6, min(right - 6, left + 700))
+                  if (min(pixels[x, y]) > 150 if max(bg) < 110 else max(pixels[x, y]) < 110)]
             if xs:
                 ink.extend((x, y) for x in xs)
             elif ink:
@@ -189,6 +212,7 @@ def inside(root):
     log = (root / 'app.log').open('w')
     editor = sp.Popen([str(root / 'termimochi-release'), str(root / 'theme.termimochi-design.json')], stdout=log, stderr=sp.STDOUT)
     measurements = {}
+    partial = (root / 'partial-restore').exists()
     try:
         wait(lambda: find('Use Theme…'), 'Release theme did not open')
         with (root / 'baseline.log').open('w') as native_log:
@@ -227,10 +251,69 @@ def inside(root):
         (root / 'settings-applied.json').write_text(json.dumps(snapshot(), indent=2))
         shot('03-applied')
         close_terminal()
+        if partial:
+            gs('cell-width-scale', '1.5', TARGET)
+            gs('interface-style', repr('dark'))  # unchanged by this theme: not owned
         click('Restore This Application…')
         shot('04-restore-review')
         click('Restore Changes')
         wait(lambda: gs('font-name') == "'Liberation Mono 12'", 'Restore did not restore font')
+        if partial:
+            partial_report = json.loads(reports[0].read_text())
+            row = next(i for i in partial_report['items'] if i['id'] == 'typography')
+            assert row['status'] == 'RestoreBlocked' and 'cell-width-scale: kept' in row['detail']
+            assert 'font-name: restored' in row['detail']
+            assert gs('cell-width-scale', uuid=TARGET) == '1.5'
+            assert gs('cell-height-scale', uuid=TARGET) == '1.0'
+            assert gs('interface-style') == "'dark'", 'Unowned setting overwritten'
+            assert gs('palette', uuid=TARGET) == "'qa-baseline'"
+            shot('07-partial-restore')
+            (root / 'partial-report.json').write_text(json.dumps(partial_report, indent=2))
+            # Returning a conflicted field to its recorded applied value permits
+            # its recovery. A later edit to a completed field remains untouched.
+            gs('cell-width-scale', '1.2', TARGET)
+            gs('font-name', repr('Liberation Mono 20'))
+            editor.terminate()
+            editor.wait(timeout=10)
+            editor = sp.Popen([str(root / 'termimochi-release'), str(root / 'theme.termimochi-design.json')], stdout=log, stderr=sp.STDOUT)
+            wait(lambda: find('Use Theme…'), 'Release app did not reopen for recovery')
+            click('Import, export and recovery')
+            shot('07b-recovery-menu-after-restart')
+            recovery = find('Last Application & Recovery…')
+            if recovery is None:
+                # GTK's stock GMenu bridge exposes anonymous menu items here.
+                # This fixture's Palette menu has 16 visible rows; the screenshot
+                # records the actual twelfth row. Fail on menu-structure drift.
+                items = [n for n in nodes() if n.get_role_name() == 'menu item'
+                         and n.get_state_set().contains(Atspi.StateType.SHOWING)]
+                assert len(items) == 16 and all(not n.get_name() for n in items), len(items)
+                recovery = items[11]
+            click('Last Application & Recovery…', recovery)
+            click('Restore This Application…')
+            click('Restore Changes')
+            wait(lambda: gs('cell-width-scale', uuid=TARGET) == '1.0', 'Retry did not restore remaining spacing')
+            assert gs('font-name') == "'Liberation Mono 20'", 'Retry rewrote completed font'
+            assert gs('interface-style') == "'dark'"
+            click('Open Profile Tab')
+            wait(lambda: len(probes()) == 3, 'Partial recovery profile did not reopen')
+            assert probes()[-1]['profile'] == TARGET
+            # The user's unowned Dark choice was deliberately retained: the
+            # restored palette must use its Dark colors, not the Light baseline.
+            palette = configparser.ConfigParser(interpolation=None)
+            palette.read(root / 'data/org.gnome.Ptyxis/palettes/qa-baseline.palette')
+            color = palette['Dark']['Background'].lstrip('#')
+            expected_color = '/'.join(color[i:i+2].lower() * 2 for i in (0, 2, 4))
+            assert expected_color in probes()[-1]['background'].lower()
+            measurements['partial_reopened'] = dict(probe=probes()[-1], glyph=wait(geometry, 'Recovered native glyph geometry unavailable'))
+            assert measurements['partial_reopened']['glyph']['height'] > measurements['baseline']['glyph']['height'] * 1.4
+            assert snapshot()[settings(DECOY)] == before[settings(DECOY)]
+            assert sentinels() == protected
+            assert not (root / 'data/applications').exists()
+            shot('08-partial-retry-native')
+            (root / 'result.json').write_text(json.dumps(dict(passed=True, binary_sha256=digest(root / 'termimochi-release'),
+                scenario='partial recovery + persistent field progress + actual reviewed native profile',
+                measurements=measurements, pending=['daily desktop', 'Conda/custom Bash', 'Wayland', 'multi-monitor']), indent=2))
+            return
         assert snapshot() == before, 'Restoration changed the baseline or decoy profile'
         assert keyfile.read_bytes() == keyfile_before, 'Restore changed explicit/unset settings or original bytes'
         click('Open Profile Tab')
@@ -276,6 +359,7 @@ def inside(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=REPO / 'target/release/termimochi')
+    parser.add_argument('--partial-restore', action='store_true')
     parser.add_argument('--inside', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.inside:
@@ -303,6 +387,10 @@ def main():
         theme=dict(name='Ptyxis Apply QA', light=True, typography=dict(family='Liberation Mono', size=20.0),
                    layout={}, colors={}, dark_colors={}, inherit=[], prompt_enabled=False, sources=[]))
     (root / 'theme.termimochi-design.json').write_text(json.dumps(theme, indent=2))
+    if args.partial_restore:
+        (root / 'partial-restore').touch()
+        theme['theme']['typography'].update(line_height=1.3, cell_width=1.2)
+        (root / 'theme.termimochi-design.json').write_text(json.dumps(theme, indent=2))
     env = os.environ.copy()
     for key in ('DBUS_SESSION_BUS_ADDRESS', 'DBUS_STARTER_ADDRESS', 'DBUS_STARTER_BUS_TYPE', 'AT_SPI_BUS_ADDRESS', 'WAYLAND_DISPLAY', 'WAYLAND_SOCKET', 'SSH_AUTH_SOCK', 'BASH_ENV', 'ENV', 'LD_LIBRARY_PATH', 'TERMIMOCHI_PRIVATE_SESSION'):
         env.pop(key, None)

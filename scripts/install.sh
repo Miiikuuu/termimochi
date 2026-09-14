@@ -312,6 +312,15 @@ installed_gui="$binary_dir/termimochi"
 installed_cli="$binary_dir/termimochi-cli"
 
 cargo_target_dir="${CARGO_TARGET_DIR:-$REPOSITORY_DIR/target}"
+if [[ -f "$REPOSITORY_DIR/PREVIEW.json" ]]; then
+  # A binary preview is self-contained relative to its extracted directory.
+  # Never require Cargo or accidentally install a different local target build.
+  skip_build=true
+  cargo_target_dir="$REPOSITORY_DIR/target"
+  if [[ "$action" == install ]] && ! "$dry_run"; then
+    bash "$SCRIPT_DIR/check-preview.sh"
+  fi
+fi
 if [[ "$cargo_target_dir" != /* ]]; then
   cargo_target_dir="$REPOSITORY_DIR/$cargo_target_dir"
 fi

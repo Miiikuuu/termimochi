@@ -103,6 +103,63 @@ fn launcher_gui_review_install_and_deactivated_recovery() {
     assert!(Installed::discover("gui-daily").unwrap().is_some());
     crate::window::typed_tests::capture(&result, "daily-launcher-installed");
     result.close();
+    let original = Installed::discover("gui-daily").unwrap().unwrap();
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&original.path).unwrap()).unwrap();
+    let runtime = PathBuf::from(record["runtime"]["path"].as_str().unwrap());
+    assert!(runtime.starts_with(glib::user_data_dir().join("termimochi/launcher-runtimes")));
+    std::fs::remove_file(&runtime).unwrap();
+    assert!(original.open().is_err());
+    this.repair_daily_launcher(original.clone());
+    wait(|| dialog("Add to Application Menu").is_some());
+    let repair_review = dialog("Add to Application Menu").unwrap();
+    assert!(
+        descendants(repair_review.upcast_ref())
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::TextView>().ok())
+            .any(|view| {
+                let b = view.buffer();
+                b.text(&b.start_iter(), &b.end_iter(), false)
+                    .contains("Targeted repair")
+            })
+    );
+    crate::window::typed_tests::capture(&repair_review, "daily-launcher-targeted-repair");
+    let repair_confirm = descendants(repair_review.upcast_ref())
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::CheckButton>().ok())
+        .next()
+        .unwrap();
+    let repair_install = button(&repair_review, "Create / Update App Launcher");
+    assert!(!repair_install.is_sensitive() && !runtime.exists());
+    button(&repair_review, "Try Daily Session").emit_clicked();
+    wait(|| repair_confirm.is_sensitive());
+    assert!(
+        !runtime.exists(),
+        "trial must not reinstall the daily runtime"
+    );
+    repair_confirm.set_active(true);
+    repair_install.emit_clicked();
+    wait(|| dialog("Theme App Launcher").is_some());
+    assert!(runtime.exists());
+    let repaired = Installed::discover("gui-daily").unwrap().unwrap();
+    assert_ne!(repaired.path, original.path);
+    assert_eq!(
+        crate::kitty_session::current(&root, "gui-daily")
+            .unwrap()
+            .unwrap()
+            .version,
+        entry.version
+    );
+    crate::window::typed_tests::capture(
+        &dialog("Theme App Launcher").unwrap(),
+        "daily-launcher-repaired",
+    );
+    dialog("Theme App Launcher").unwrap().close();
+    repaired.restore().unwrap();
+    assert_eq!(
+        Installed::discover("gui-daily").unwrap().unwrap().path,
+        original.path
+    );
     assert!(
         crate::kitty_session::restore(&root, "gui-daily", &entry.version)
             .unwrap()

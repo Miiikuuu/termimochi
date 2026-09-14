@@ -80,7 +80,7 @@ impl Status {
             Self::Skipped => "Not selected",
             Self::Unchanged => "Already matches",
             Self::Restored => "Restored",
-            Self::RestoreBlocked => "Restore blocked · external changes kept",
+            Self::RestoreBlocked => "Recovery incomplete · see field results",
         }
     }
 }
@@ -523,16 +523,13 @@ impl Report {
     /// Reverse dependency order. Failure in one module does not discard recovery
     /// for others. Successfully restored rows are never restored a second time.
     pub fn restore(&mut self, directory: &Path) -> Result<(), String> {
-        let mut activation_blocked = false;
         for index in (0..self.items.len()).rev() {
             let Some(undo) = self.items[index].undo.clone() else {
                 continue;
             };
-            let result = if matches!(undo, Undo::Palette { .. }) && activation_blocked {
-                Err("Palette retained because its activation could not be restored.".into())
-            } else {
-                undo.restore(directory)
-            };
+            // Palette rollback checks actual profile use itself. An unrelated
+            // interface-style conflict must not block a restored selection.
+            let result = undo.restore(directory);
             let row = &mut self.items[index];
             match result {
                 Ok(()) => {
@@ -541,7 +538,6 @@ impl Report {
                     row.detail.push_str("\nPrevious external values restored. Workspace edits and exports are kept.");
                 }
                 Err(error) => {
-                    activation_blocked |= matches!(undo, Undo::Activate);
                     row.status = Status::RestoreBlocked;
                     row.detail.push_str(&format!("\nRestore blocked: {error}"));
                 }

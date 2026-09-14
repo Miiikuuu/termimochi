@@ -98,6 +98,7 @@ impl Dependencies {
 
 /// A frozen, local plan. It contains only explicitly owned Workspace components.
 /// `revision` is checked by the UI session before trial approval/publication.
+#[derive(Clone)]
 pub(crate) struct Plan {
     root: PathBuf,
     pub deployment_id: String,
@@ -660,13 +661,17 @@ pub(crate) fn clean_environment(command: &mut Command) {
 
 impl Deployment {
     fn check(&self) -> Result<(), String> {
+        self.dependencies.check()?;
+        self.check_artifacts()
+    }
+
+    fn check_artifacts(&self) -> Result<(), String> {
         if self.schema != 1 {
             return Err("Unsupported controlled-session manifest.".into());
         }
         identifier(&self.id)?;
         identifier(&self.version)?;
         safe_root(&self.directory)?;
-        self.dependencies.check()?;
         for (name, expected) in &self.hashes {
             if Path::new(name).file_name().and_then(|n| n.to_str()) != Some(name.as_str()) {
                 return Err("Invalid managed artifact name.".into());

@@ -660,7 +660,7 @@ fn assert_sample_caret_colors(this: &Workbench) {
         let mut pixels = vec![0; stride * texture.height() as usize];
         texture.download(&mut pixels, stride);
         assert!(
-            pixels.chunks_exact(4).any(|p| p == pixel),
+            pixels.as_chunks::<4>().0.iter().any(|p| p == &pixel),
             "GTK caret must use {name} Cursor, not Foreground"
         );
         texture

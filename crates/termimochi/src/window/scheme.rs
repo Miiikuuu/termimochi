@@ -831,7 +831,7 @@ impl Workbench {
             let Some(this) = weak.upgrade() else { return; };
             let Some(window) = weak_window.upgrade() else { return; };
             let confirm = gtk::AlertDialog::builder().message("Restore this application's external changes?")
-                .detail("Only this application's recorded changes will be restored. External edits block restoration for that item; other items can still be restored. Workspace edits and exported files are kept.")
+                .detail("Only this application's recorded changes will be restored. For Ptyxis settings, external edits are kept per field while other safe fields are restored. Completed fields are not touched again on retry. Workspace edits and exported files are kept.")
                 .buttons(["Cancel", "Restore Changes"]).cancel_button(0).default_button(0).modal(true).build();
             let weak = Rc::downgrade(&this);
             let directory = directory.clone();
@@ -1084,7 +1084,9 @@ mod tests {
         profile.set_string("palette", "external").unwrap();
         assert!(request.apply(&root.path().join("conflict")).is_err());
         assert!(!root.path().join("conflict").exists());
-        assert!(scheme_apply::activation::restore(root.path()).is_err());
+        // Durable completion means retrying this old receipt must not touch
+        // the palette selected after its successful restoration.
+        scheme_apply::activation::restore(root.path()).unwrap();
         assert_eq!(profile.string("palette"), "external");
 
         let typography = TypographyTarget::for_uuid("scheme-test")

@@ -39,6 +39,9 @@ impl OutputBar {
             .tooltip_text("Import, export and recovery")
             .css_classes(["tool-menu"])
             .build();
+        more.update_property(&[gtk::accessible::Property::Label(
+            "Import, export and recovery",
+        )]);
         let trial = gtk::Button::builder()
             .label("Try Greeting")
             .action_name("win.try-greeting")

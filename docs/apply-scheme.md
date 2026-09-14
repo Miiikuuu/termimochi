@@ -112,10 +112,14 @@ requires **Restore Changes** confirmation and works in reverse dependency order.
 
 - Only this run's recorded changes are eligible; unchanged and unselected items
   do not borrow another operation's backup.
-- External edits block that item and are preserved. Other eligible items can
-  still be restored; results say **Restored** or **Restore blocked**.
-- Palette activation is restored before its file. If activation is blocked, or
-  another profile still uses a newly installed palette, that file is retained.
+- Ptyxis settings recover per field: safe recorded changes are restored while
+  conflicting external edits remain. Results say **Restored** or
+  **Recovery incomplete · see field results**; incomplete details are expanded.
+  Completed fields are recorded and not rewritten on retry after an App restart.
+  Native configuration files retain their whole-file conflict checks.
+- Palette selection is restored before its file. A newly installed palette still
+  in use by a profile is retained. An unrelated interface-style conflict does
+  not prevent safe palette-file recovery.
 - Unset settings are restored as unset, preserving system defaults/inheritance.
 - Theme edits and exported artifacts are kept. Restoration does not undo
   commands that a user subsequently ran in their terminal.

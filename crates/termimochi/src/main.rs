@@ -25,6 +25,7 @@ mod preview_inspect;
 mod prompt;
 mod prompt_diagnostics;
 mod ptyxis;
+mod ptyxis_restore;
 mod scheme_apply;
 mod starship_draft;
 mod starship_editor;
@@ -48,6 +49,21 @@ pub(crate) const RESOURCE_BASE: &str = "/io/github/miiikuuu/termimochi";
 
 fn main() -> gtk::glib::ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
+    let repair = if args
+        .get(1)
+        .is_some_and(|s| s == kitty_session::launcher::REPAIR_ARG)
+    {
+        if args.len() != 4 {
+            eprintln!("Expected launcher receipt and checksum.");
+            return gtk::glib::ExitCode::FAILURE;
+        }
+        Some(kitty_session::launcher::Installed {
+            path: std::path::PathBuf::from(&args[2]),
+            checksum: args[3].to_string_lossy().into_owned(),
+        })
+    } else {
+        None
+    };
     if args
         .get(1)
         .is_some_and(|s| s == kitty_session::greeting_runtime::ARG)
@@ -96,7 +112,11 @@ fn main() -> gtk::glib::ExitCode {
 
     let application = adw::Application::builder()
         .application_id(APPLICATION_ID)
-        .flags(gio::ApplicationFlags::HANDLES_OPEN)
+        .flags(if repair.is_some() {
+            gio::ApplicationFlags::NON_UNIQUE
+        } else {
+            gio::ApplicationFlags::HANDLES_OPEN
+        })
         .build();
 
     application.connect_startup(|_| {
@@ -107,7 +127,12 @@ fn main() -> gtk::glib::ExitCode {
         gtk::Window::set_default_icon_name(APPLICATION_ID);
     });
 
-    application.connect_activate(|application| {
+    let repairing = repair.is_some();
+    application.connect_activate(move |application| {
+        if let Some(entry) = &repair {
+            window::present_launcher_repair(application, entry.clone());
+            return;
+        }
         if let Some(window) = application.active_window() {
             window.present();
         } else {
@@ -131,5 +156,9 @@ fn main() -> gtk::glib::ExitCode {
     application.set_accels_for_action("win.show-prompt", &["<Control>4"]);
     application.set_accels_for_action("win.show-greeting", &["<Control>5"]);
 
-    application.run()
+    if repairing {
+        application.run_with_args::<&str>(&[])
+    } else {
+        application.run()
+    }
 }

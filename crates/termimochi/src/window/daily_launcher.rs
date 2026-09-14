@@ -11,6 +11,40 @@ use std::{sync::Arc, thread};
 mod tests;
 
 impl Workbench {
+    pub(super) fn repair_daily_launcher(self: &Rc<Self>, entry: Installed) {
+        let (window, body, _) = scheme::dialog(
+            &self.window(),
+            "Repair This Launcher",
+            "Only the selected managed Kitty launcher will be repaired. The current theme version and refreshed dependencies must be tested and confirmed before replacing its entry.",
+        );
+        let status =
+            scheme::label("Checking this launcher, its theme artifacts and current dependencies…");
+        body.append(&status);
+        window.present();
+        let (send, receive) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = send.send(entry.prepare_repair());
+        });
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_millis(50), move || {
+            if !window.is_visible() {
+                return glib::ControlFlow::Break;
+            }
+            let result = match receive.try_recv() {
+                Ok(result) => result,
+                Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(_) => Err("Repair preparation stopped. No entry was replaced.".into()),
+            };
+            match result {
+                Ok(plan) => if let Some(this) = weak.upgrade() {
+                    window.close(); this.review_daily_launcher(Arc::new(plan));
+                },
+                Err(error) => status.set_text(&format!("Repair blocked: {error}\nNo files were overwritten. Missing programs must be made available; modified or missing theme artifacts must be re-published from the saved theme. A removed or externally edited entry is not automatically recreated.")),
+            }
+            glib::ControlFlow::Break
+        });
+    }
+
     pub(super) fn choose_daily_launcher(self: &Rc<Self>, deployment: Deployment) {
         let chooser = gtk::AlertDialog::builder()
             .message("Choose the launcher's Bash environment")
@@ -190,6 +224,14 @@ impl Workbench {
         let state = gtk::Label::builder().wrap(true).xalign(0.0).build();
         let open = gtk::Button::with_label("Open App Launcher");
         let restore = gtk::Button::with_label("Remove / Restore App Launcher…");
+        let repair = gtk::Button::with_label("Repair This Launcher…");
+        let weak = Rc::downgrade(self);
+        let repair_entry = installed.clone();
+        repair.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.repair_daily_launcher(repair_entry.clone());
+            }
+        });
         let entry = installed.clone();
         let status = state.clone();
         open.connect_clicked(move |_| {
@@ -227,6 +269,7 @@ impl Workbench {
             } });
         });
         body.append(&open);
+        body.append(&repair);
         body.append(&restore);
         body.append(&state);
     }

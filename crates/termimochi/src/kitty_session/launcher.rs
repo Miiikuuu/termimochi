@@ -5,6 +5,7 @@ use gtk::{gio, glib};
 use std::os::unix::fs::PermissionsExt;
 
 pub const ARG: &str = "--open-kitty-launcher";
+pub const REPAIR_ARG: &str = "--repair-kitty-launcher";
 const RECORD: &str = "launcher.json";
 const RUNTIME_LIMIT: u64 = 512 * 1024 * 1024;
 
@@ -82,14 +83,18 @@ fn desktop_path(data: &Path, id: &str) -> PathBuf {
         .join(format!("io.github.miiikuuu.termimochi.theme-{id}.desktop"))
 }
 
-fn runtime_bytes() -> Result<Vec<u8>, String> {
+fn runtime_executable() -> Result<PathBuf, String> {
     #[cfg(test)]
     let executable = std::env::var_os("TERMIMOCHI_SVG_WORKER_BIN")
         .map(PathBuf::from)
         .unwrap_or(std::env::current_exe().map_err(|e| e.to_string())?);
     #[cfg(not(test))]
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-    typography_preset::read_private_with_limit(&executable, RUNTIME_LIMIT)?
+    Ok(executable)
+}
+
+fn runtime_bytes() -> Result<Vec<u8>, String> {
+    typography_preset::read_private_with_limit(&runtime_executable()?, RUNTIME_LIMIT)?
         .ok_or("TermiMochi executable is missing.".into())
 }
 
@@ -175,6 +180,8 @@ struct Record {
     runtime: Executable,
     startup_hash: String,
     before: Option<Vec<u8>>,
+    #[serde(default)]
+    theme_manifest_hash: Option<String>,
 }
 
 #[derive(Clone)]
@@ -192,6 +199,7 @@ pub struct LauncherPlan {
     before: Option<Vec<u8>>,
     binary: Vec<u8>,
     sources: Vec<(PathBuf, Option<Vec<u8>>)>,
+    repair: Option<Plan>,
 }
 
 impl LauncherPlan {
@@ -220,6 +228,7 @@ impl LauncherPlan {
             before,
             binary: runtime_bytes()?,
             sources,
+            repair: None,
         };
         plan.check()?;
         Ok(plan)
@@ -231,6 +240,16 @@ impl LauncherPlan {
             .ok_or("Entry is deactivated. Publish it again before creating a launcher.")?;
         if active.version != self.deployment.version {
             return Err("The active theme version changed. Reopen its result and review the launcher again.".into());
+        }
+        if let Some(repair) = &self.repair {
+            if let Some((path, bytes)) = &repair.previous_manifest
+                && read(path)?.as_ref() != Some(bytes)
+            {
+                return Err(
+                    "Theme manifest changed during repair review. Nothing was replaced.".into(),
+                );
+            }
+            active.check_artifacts()?;
         }
         if read(&desktop_path(&self.data, &self.deployment.id))? != self.before {
             return Err(
@@ -259,12 +278,24 @@ impl LauncherPlan {
             } else {
                 "Isolated Bash does not load personal startup files, aliases or initialization."
             },
-            startup(&self.deployment, self.mode).unwrap_or_else(|e| e)
+            format_args!(
+                "{}\n{}",
+                startup(&self.deployment, self.mode).unwrap_or_else(|e| e),
+                self.repair
+                    .as_ref()
+                    .map(|p| p.notes.join("\n"))
+                    .unwrap_or_default()
+            )
         )
     }
     pub fn summary(&self) -> String {
         format!(
-            "{} — Kitty · {}",
+            "{}{} — Kitty · {}",
+            if self.repair.is_some() {
+                "Repair: "
+            } else {
+                ""
+            },
             self.deployment.name,
             match self.mode {
                 ShellMode::PersonalBash => "My Bash Environment",
@@ -282,11 +313,15 @@ impl LauncherPlan {
             .tempdir_in(parent)
             .map_err(|e| e.to_string())?;
         let path = owner.path().join("startup.bash");
-        write_new(&path, startup(&self.deployment, self.mode)?.as_bytes())?;
-        spawn_session(
-            session_command(&self.deployment, self.mode, &path)?,
-            Some(owner),
-        )
+        let deployment = if let Some(repair) = &self.repair {
+            let directory = owner.path().join("session");
+            fs::create_dir(&directory).map_err(|e| e.to_string())?;
+            repair.materialize(&directory, self.deployment.version.clone(), None)?
+        } else {
+            self.deployment.clone()
+        };
+        write_new(&path, startup(&deployment, self.mode)?.as_bytes())?;
+        spawn_session(session_command(&deployment, self.mode, &path)?, Some(owner))
     }
     pub fn install(&self) -> Result<Installed, String> {
         self.check()?;
@@ -305,8 +340,17 @@ impl LauncherPlan {
             .join("termimochi/launcher-runtimes")
             .join(digest(&self.binary));
         safe_root(&runtime_dir)?;
-        let executable = runtime_dir.join("termimochi");
-        let old = typography_preset::read_private_with_limit(&executable, RUNTIME_LIMIT)?;
+        let mut executable = runtime_dir.join("termimochi");
+        let mut old = typography_preset::read_private_with_limit(&executable, RUNTIME_LIMIT)?;
+        if self.repair.is_some() && old.as_ref().is_some_and(|bytes| bytes != &self.binary) {
+            // Explicit repair retains the changed runtime, never overwrites it.
+            let fresh = tempfile::Builder::new()
+                .prefix("repair-")
+                .tempdir_in(&runtime_dir)
+                .map_err(|e| e.to_string())?;
+            executable = fresh.keep().join("termimochi");
+            old = None;
+        }
         match old {
             Some(bytes) if bytes != self.binary => {
                 return Err("Managed launcher runtime changed; it was not overwritten.".into());
@@ -329,6 +373,13 @@ impl LauncherPlan {
         if deployment.dependencies.helper.is_some() {
             deployment.dependencies.helper = Some(runtime.clone());
         }
+        if let Some(repair) = &self.repair {
+            let mut repair = repair.clone();
+            repair.dependencies = deployment.dependencies.clone();
+            let directory = folder.path().join("session");
+            fs::create_dir(&directory).map_err(|e| e.to_string())?;
+            deployment = repair.materialize(&directory, deployment.version.clone(), None)?;
+        }
         let script = startup(&deployment, self.mode)?;
         write_new(&folder.path().join("startup.bash"), script.as_bytes())?;
         let record = Record {
@@ -339,6 +390,18 @@ impl LauncherPlan {
             runtime,
             startup_hash: digest(script.as_bytes()),
             before: self.before.clone(),
+            theme_manifest_hash: Some(digest(
+                &read(
+                    &current(
+                        &self.data.join("termimochi/kitty-sessions"),
+                        &self.deployment.id,
+                    )?
+                    .ok_or("Theme was deactivated during publication.")?
+                    .directory
+                    .join(MANIFEST),
+                )?
+                .ok_or("Theme manifest disappeared during publication.")?,
+            )),
         };
         let bytes = serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?;
         let installed = Installed {
@@ -361,6 +424,142 @@ impl LauncherPlan {
 }
 
 impl Installed {
+    /// Repair only this managed entry. Never execute a broken startup script or
+    /// accept edited configuration/assets as a new trusted baseline.
+    pub fn prepare_repair(&self) -> Result<LauncherPlan, String> {
+        let record = self.record()?;
+        if record.data != glib::user_data_dir() {
+            return Err("Launcher belongs to another user data directory.".into());
+        }
+        self.prepare_repair_at(&record.data)
+    }
+
+    fn prepare_repair_at(&self, data: &Path) -> Result<LauncherPlan, String> {
+        let record = self.record()?;
+        if Self::discover_at(data, &record.deployment.id)?
+            .as_ref()
+            .map(|v| &v.path)
+            != Some(&self.path)
+        {
+            return Err(
+                "The launcher changed or was removed. Reopen its current library entry.".into(),
+            );
+        }
+        let root = data.join("termimochi/kitty-sessions");
+        let mut deployment = current(&root, &record.deployment.id)?
+            .ok_or("This theme is deactivated. Re-publish it before repairing its launcher.")?;
+        deployment.check_artifacts()?;
+        let manifest_path = deployment.directory.join(MANIFEST);
+        let manifest = read(&manifest_path)?.ok_or("Missing theme manifest.")?;
+        if deployment.version == record.deployment.version {
+            let changed = record.theme_manifest_hash.as_ref().map_or_else(
+                || {
+                    record.deployment.directory == deployment.directory
+                        && record.deployment.hashes != deployment.hashes
+                },
+                |expected| expected != &digest(&manifest),
+            );
+            if changed {
+                return Err("The published theme manifest was modified. Re-publish from the saved theme; launcher repair will not trust edited artifacts.".into());
+            }
+        }
+        let mut notes = vec![format!(
+            "Targeted repair: {} — Kitty. Launcher version {} → active theme {}. Only this app-menu entry switches; theme source/version, other launchers and daily configuration are unchanged. The previous entry is retained for Undo Launcher Update.",
+            deployment.name, record.deployment.version, deployment.version
+        )];
+        notes.push("Startup is regenerated from verified theme artifacts. Missing runtime is restored; a changed runtime is kept and a separate clean copy is retained. Undo returns the previous entry, which may still be broken.".into());
+        for (name, executable) in [
+            ("kitty", Some(&mut deployment.dependencies.kitty)),
+            ("bash", Some(&mut deployment.dependencies.bash)),
+            ("starship", deployment.dependencies.starship.as_mut()),
+            ("fastfetch", deployment.dependencies.fastfetch.as_mut()),
+        ] {
+            if let Some(executable) = executable {
+                let refreshed = if executable.path.exists() {
+                    Executable::capture(executable.path.clone())?
+                } else {
+                    Executable::find(name)?
+                };
+                notes.push(format!(
+                    "Review {name}: {} {:?} → {} {:?}",
+                    executable.path.display(),
+                    executable.identity,
+                    refreshed.path.display(),
+                    refreshed.identity
+                ));
+                *executable = refreshed;
+            }
+        }
+        if deployment.dependencies.helper.is_some() {
+            deployment.dependencies.helper = Some(Executable::capture(runtime_executable()?)?);
+        }
+        let mut files = BTreeMap::new();
+        for name in deployment
+            .hashes
+            .keys()
+            .filter(|name| name.as_str() != "session.bash")
+        {
+            let bytes =
+                read(&deployment.directory.join(name))?.ok_or("Missing managed artifact.")?;
+            if hash(&bytes) != deployment.hashes[name] {
+                return Err("Theme artifact changed while preparing repair.".into());
+            }
+            files.insert(name.clone(), bytes);
+        }
+        let logo = files
+            .get("fastfetch.jsonc")
+            .map(|bytes| {
+                crate::fastfetch_document::value(
+                    std::str::from_utf8(bytes).map_err(|e| e.to_string())?,
+                )
+            })
+            .transpose()?
+            .and_then(|value| value["logo"]["source"].as_str().map(str::to_owned))
+            .and_then(|source| {
+                let path = Path::new(&source);
+                (path.parent() == Some(deployment.directory.as_path()))
+                    .then(|| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .flatten()
+            });
+        if logo.as_ref().is_some_and(|name| !files.contains_key(name)) {
+            return Err("Greeting references an unrecorded asset; repair is blocked.".into());
+        }
+        let repair = Plan {
+            root,
+            deployment_id: deployment.id.clone(),
+            name: deployment.name.clone(),
+            revision: deployment.revision,
+            notes,
+            animated: false,
+            pixel: logo.is_some(),
+            files,
+            dependencies: deployment.dependencies.clone(),
+            expected: None,
+            previous_manifest: Some((manifest_path, manifest)),
+            previous_summary: None,
+            logo,
+        };
+        let sources = if record.mode == ShellMode::PersonalBash {
+            bash_sources()
+                .into_iter()
+                .map(|p| source_snapshot(&p).map(|b| (p, b)))
+                .collect::<Result<_, _>>()?
+        } else {
+            vec![]
+        };
+        let plan = LauncherPlan {
+            before: read(&desktop_path(data, &deployment.id))?,
+            deployment,
+            data: data.into(),
+            mode: record.mode,
+            binary: runtime_bytes()?,
+            sources,
+            repair: Some(repair),
+        };
+        plan.check()?;
+        Ok(plan)
+    }
+
     pub fn name(&self) -> Result<String, String> {
         self.record()
             .map(|r| format!("{} — Kitty", r.deployment.name))
@@ -568,6 +767,7 @@ pub fn dispatch(args: &[std::ffi::OsString]) -> glib::ExitCode {
         .application_id("io.github.miiikuuu.termimochi.LauncherError")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
+    let args_for_repair: Vec<_> = args.iter().skip(2).cloned().collect();
     app.connect_activate(move |app| {
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -587,10 +787,11 @@ pub fn dispatch(args: &[std::ffi::OsString]) -> glib::ExitCode {
                 .selectable(true)
                 .build(),
         );
-        let open = gtk::Button::with_label("Open Theme Editor");
-        open.connect_clicked(|_| {
+        let open = gtk::Button::with_label("Repair This Launcher…");
+        let repair_args = args_for_repair.clone();
+        open.connect_clicked(move |_| {
             if let Ok(exe) = std::env::current_exe() {
-                let _ = Command::new(exe).spawn();
+                let _ = Command::new(exe).arg(REPAIR_ARG).args(&repair_args).spawn();
             }
         });
         body.append(&open);

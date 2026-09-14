@@ -538,6 +538,19 @@ pub fn present(application: &adw::Application, initial_path: Option<PathBuf>) {
     );
 }
 
+pub fn present_launcher_repair(
+    application: &adw::Application,
+    entry: crate::kitty_session::launcher::Installed,
+) {
+    let workbench = present_with_mode(
+        application,
+        None,
+        typography_preset::state_directory().join(typography_preset::PRESET_NAME),
+        false,
+    );
+    workbench.repair_daily_launcher(entry);
+}
+
 fn present_with_preset(
     application: &adw::Application,
     initial_path: Option<PathBuf>,
@@ -560,7 +573,7 @@ fn present_with_mode(
     initial_path: Option<PathBuf>,
     preset_path: PathBuf,
     advanced: bool,
-) {
+) -> Rc<Workbench> {
     if let Some(display) = gdk::Display::default() {
         gtk::IconTheme::for_display(&display)
             .add_resource_path(&format!("{}/icons", crate::RESOURCE_BASE));
@@ -1080,9 +1093,10 @@ fn present_with_mode(
     // The window owns the controller. The controller only keeps a weak window
     // reference, so closing the window releases the complete object graph.
     unsafe {
-        window.set_data("termimochi-workbench", workbench);
+        window.set_data("termimochi-workbench", workbench.clone());
     }
     window.present();
+    workbench
 }
 
 struct PreviewWidgets {
