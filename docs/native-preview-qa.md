@@ -165,13 +165,21 @@ CPU utilization and long idle/animation soak remain unmeasured.
 
 ## Open implementation / environment items
 
-- **User-observed display defect, not yet reproduced/fixed:** a full-window
-  native Kitty preview with a multi-field Greeting showed truncated system
-  information despite abundant horizontal space. The existing simple Greeting
-  fixture did not cover this composition. Initial sizing, terminal reflow and
-  output geometry need investigation. The native controls/titlebar integration
-  also remains visually crowded. This snapshot preserves that known issue;
-  passing the smaller fixtures is not proof that this layout is correct.
+- **Reproduced, diagnosed and repaired for new controlled sessions (2026-09-13):** the user's complex
+  Greeting starts in a narrow native Kitty grid. Fastfetch 2.57.1 disables
+  automatic wrapping by default; long values are fully emitted but overwrite
+  the terminal's last column rather than leaving complete reflowable lines.
+  Expanding afterwards leaves those old truncated rows beside empty space.
+  Re-running at sufficient width restores them; enabling wrapping alone sends
+  continuations into the logo column. This is a native Greeting width/wrapping
+  policy gap, separate from the repaired Full projection. The controlled adapter
+  now wraps complete information to the real terminal width, stacks narrow
+  compositions and reserves the actual animation rows. See the
+  [original diagnosis](native-greeting-diagnosis.md) and
+  [repair, Release evidence and remaining scope](native-greeting-reflow-qa.md).
+  Existing terminal history is not rewritten; old published versions require
+  reviewed replacement. Plain Fastfetch exports/standalone Greeting trials and
+  controls/titlebar crowding remain outside this repair.
 
 - Primary selection and non-text clipboard formats: **not implemented**.
 - Complete Kitty runtime-setting drift inspection: **not implemented**; current

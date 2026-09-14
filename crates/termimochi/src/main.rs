@@ -50,6 +50,23 @@ fn main() -> gtk::glib::ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
     if args
         .get(1)
+        .is_some_and(|s| s == kitty_session::greeting_runtime::ARG)
+    {
+        return match args
+            .get(2)
+            .filter(|_| args.len() == 3)
+            .ok_or_else(|| "Expected one managed session directory.".to_owned())
+            .and_then(|p| kitty_session::greeting_runtime::run(std::path::Path::new(p)))
+        {
+            Ok(()) => gtk::glib::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("TermiMochi: {error}");
+                gtk::glib::ExitCode::FAILURE
+            }
+        };
+    }
+    if args
+        .get(1)
         .is_some_and(|s| s == kitty_session::launcher::ARG)
     {
         return kitty_session::launcher::dispatch(&args);

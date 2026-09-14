@@ -173,6 +173,7 @@ fn prepare(
             kitty: executable.clone(),
             bash: executable,
             helper: None,
+            adaptive_greeting: false,
             starship: None,
             fastfetch: None,
         }),

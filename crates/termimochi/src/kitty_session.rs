@@ -13,6 +13,7 @@ use std::{
 
 const LIMIT: u64 = 40 * 1024 * 1024;
 const MANIFEST: &str = "manifest.json";
+pub(crate) mod greeting_runtime;
 pub(crate) mod launcher;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -74,6 +75,8 @@ struct Dependencies {
     helper: Option<Executable>,
     starship: Option<Executable>,
     fastfetch: Option<Executable>,
+    #[serde(default)]
+    adaptive_greeting: bool,
 }
 impl Dependencies {
     fn check(&self) -> Result<(), String> {
@@ -340,6 +343,7 @@ impl Plan {
         let mut animated = false;
         let mut pixel = false;
         if active_greeting {
+            notes.push("Greeting adapts to the real terminal width: narrow sessions place artwork above wrapped information. Saved settings and image occupancy are unchanged.".into());
             let settings = &workspace.greeting;
             let source = settings.fastfetch_config()?;
             let (mut safe, skipped) = crate::fastfetch_document::preview_config_with_logo(
@@ -397,7 +401,7 @@ impl Plan {
             Dependencies {
                 kitty: Executable::find("kitty")?,
                 bash: Executable::capture(PathBuf::from("/usr/bin/bash"))?,
-                helper: if pixel {
+                helper: if active_greeting {
                     #[cfg(test)]
                     let path = std::env::var_os("TERMIMOCHI_SVG_WORKER_BIN")
                         .map(PathBuf::from)
@@ -415,6 +419,7 @@ impl Plan {
                 fastfetch: active_greeting
                     .then(|| Executable::find("fastfetch"))
                     .transpose()?,
+                adaptive_greeting: active_greeting,
             }
         };
         let expected = read(&root.join(deployment_id).join("current.json"))?;
@@ -607,7 +612,16 @@ fn theme_initialization(directory: &Path, deps: &Dependencies) -> Result<String,
         ));
     }
     if let Some(fetch) = &deps.fastfetch {
-        script.push_str(&format!("{} --config {} || printf '%s\\n' 'TermiMochi: Greeting failed; the shell remains usable.' >&2\n", path_quote(&fetch.path)?, path_quote(&directory.join("fastfetch.jsonc"))?));
+        if deps.adaptive_greeting {
+            let helper = deps
+                .helper
+                .as_ref()
+                .ok_or("Missing native Greeting helper.")?;
+            script.push_str(&format!("{} {} {} || printf '%s\\n' 'TermiMochi: Greeting failed; the shell remains usable.' >&2\n", path_quote(&helper.path)?, greeting_runtime::ARG, path_quote(directory)?));
+        } else {
+            // Existing published versions retain their reviewed legacy behavior.
+            script.push_str(&format!("{} --config {} || printf '%s\\n' 'TermiMochi: Greeting failed; the shell remains usable.' >&2\n", path_quote(&fetch.path)?, path_quote(&directory.join("fastfetch.jsonc"))?));
+        }
     }
     if let Some(starship) = &deps.starship {
         script.push_str(&format!("export STARSHIP_CONFIG={}\nexport STARSHIP_CACHE={}\neval \"$({} init bash --print-full-init)\"\nif declare -F starship_precmd >/dev/null; then starship_precmd; else printf '%s\\n' 'TermiMochi: Starship initialization failed.' >&2; fi\n", path_quote(&directory.join("starship.toml"))?, path_quote(&directory.join("cache"))?, path_quote(&starship.path)?));

@@ -868,8 +868,8 @@ pub(crate) fn clip_ansi(text: &str, width: usize) -> (String, usize) {
 }
 
 /// Wrap trusted text by grapheme cells, reopening SGR across line boundaries.
-/// This is a design-view projection, not a change to Fastfetch's native output.
-fn wrap_ansi(text: &str, width: usize) -> Vec<(String, usize)> {
+/// Shared by design projection and the controlled native Greeting adapter.
+pub(crate) fn wrap_ansi(text: &str, width: usize) -> Vec<(String, usize)> {
     let safe = crate::starship_import::terminal_safe_ansi(text);
     let width = width.max(2);
     let mut rest = safe.as_str();

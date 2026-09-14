@@ -18,7 +18,7 @@ enum Op {
 pub(crate) struct NativeOutput(Vec<Op>);
 
 impl NativeOutput {
-    pub(super) fn parse(raw: &str) -> Self {
+    pub(crate) fn parse(raw: &str) -> Self {
         let mut ops = Vec::new();
         let mut style = Style::default();
         let mut chars = raw.chars().peekable();
@@ -96,6 +96,38 @@ impl NativeOutput {
     /// `CSI 9999999 C` logo. Resizing needs no new process or stale-width cache.
     pub(crate) fn render(&self, columns: usize) -> String {
         let columns = columns.clamp(1, 240);
+        self.render_width(columns)
+    }
+
+    /// Information-only native output: determine its complete bounded extent
+    /// before wrapping, rather than discarding tails at a preview grid width.
+    pub(crate) fn information(&self) -> Result<String, String> {
+        let (mut row, mut col, mut width) = (0usize, 0usize, 1usize);
+        for op in &self.0 {
+            match op {
+                Op::Newline => {
+                    row += 1;
+                    col = 0;
+                }
+                Op::Move(c, n) => match c {
+                    'A' => row = row.saturating_sub(*n),
+                    'B' => row = row.saturating_add(*n),
+                    'C' => col = col.saturating_add(*n),
+                    'D' => col = col.saturating_sub(*n),
+                    'G' => col = n - 1,
+                    _ => unreachable!(),
+                },
+                Op::Text(text, _) => col = col.saturating_add(text.width()),
+            }
+            width = width.max(col);
+            if width > 4096 || row >= MAX_ROWS {
+                return Err("Greeting information exceeds the 4096-column / 256-row safety limit; no truncated output was substituted.".into());
+            }
+        }
+        Ok(self.render_width(width))
+    }
+
+    fn render_width(&self, columns: usize) -> String {
         let mut rows = vec![vec![Cell::Empty; columns]];
         let (mut row, mut col) = (0usize, 0usize);
         for op in &self.0 {

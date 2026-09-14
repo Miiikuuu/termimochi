@@ -14,14 +14,17 @@ parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--scale',type=int,action='append',choices=[1,2])
 parser.add_argument('--filter',action='append',default=[])
 parser.add_argument('--display',default=':98')
+parser.add_argument('--release',action='store_true',help='Pin optimized enabled tests and the actual Release helper')
 args=parser.parse_args()
+profile=['--release'] if args.release else []
 repo=Path(__file__).resolve().parent.parent
 prefix=repo/'target/native-preview/prefix'
 out=Path(tempfile.mkdtemp(prefix='termimochi-regression-native-',dir=repo/'target/qa/native-preview'))
 env=os.environ.copy()
 env.update(TERMIMOCHI_NATIVE_PREFIX=str(prefix),PKG_CONFIG_PATH=f'{prefix}/lib/pkgconfig:{prefix}/usr/lib/x86_64-linux-gnu/pkgconfig',LD_LIBRARY_PATH=f'{prefix}/lib:{prefix}/usr/lib/x86_64-linux-gnu',RUSTUP_HOME=str(repo/'target/qa/typed-toolchain/rustup'),RUSTUP_TOOLCHAIN='1.92.0',CARGO_INCREMENTAL='0',CARGO_PROFILE_DEV_DEBUG='0',CARGO_PROFILE_TEST_DEBUG='0')
 print('Evidence:',out,flush=True)
-build=sp.run(['cargo','test','-p','termimochi','--features','native-preview','--locked','--no-run','--message-format=json'],cwd=repo,env=env,stdout=sp.PIPE,text=True,check=False)
+(out/'profile.txt').write_text('release\n' if args.release else 'dev\n')
+build=sp.run(['cargo','test','-p','termimochi','--features','native-preview','--locked',*profile,'--no-run','--message-format=json'],cwd=repo,env=env,stdout=sp.PIPE,text=True,check=False)
 (out/'build.jsonl').write_text(build.stdout)
 if build.returncode:
     for item in map(json.loads,build.stdout.splitlines()):
@@ -29,7 +32,7 @@ if build.returncode:
     raise SystemExit(build.returncode)
 binary=next(Path(item['executable']) for item in map(json.loads,build.stdout.splitlines()) if item.get('reason')=='compiler-artifact' and item.get('executable') and item['profile']['test'] and item['target']['name']=='termimochi')
 pinned=out/'termimochi-tests'; pinned.write_bytes(binary.read_bytes()); pinned.chmod(0o700)
-worker_build=sp.run(['cargo','build','-p','termimochi','--features','native-preview','--locked','--message-format=json'],cwd=repo,env=env,stdout=sp.PIPE,text=True,check=True)
+worker_build=sp.run(['cargo','build','-p','termimochi','--features','native-preview','--locked',*profile,'--message-format=json'],cwd=repo,env=env,stdout=sp.PIPE,text=True,check=True)
 worker_binary=next(Path(item['executable']) for item in map(json.loads,worker_build.stdout.splitlines()) if item.get('reason')=='compiler-artifact' and item.get('executable') and item['target']['name']=='termimochi')
 worker=out/'termimochi-worker'; worker.write_bytes(worker_binary.read_bytes()); worker.chmod(0o700)
 env['TERMIMOCHI_SVG_WORKER_BIN']=str(worker)

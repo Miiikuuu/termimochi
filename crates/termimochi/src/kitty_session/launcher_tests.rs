@@ -27,6 +27,7 @@ fn fixture(data: &Path, revision: u64) -> LauncherPlan {
         None,
         [8, 16],
         Some(Dependencies {
+            adaptive_greeting: false,
             kitty: exe.clone(),
             bash: exe,
             helper: None,

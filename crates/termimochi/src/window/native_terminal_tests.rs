@@ -9,6 +9,260 @@ use std::{fs, process::Command, time::Instant};
 unsafe extern "C" {
     fn gdk_x11_surface_get_xid(surface: *mut gtk::gdk::ffi::GdkSurface) -> libc::c_ulong;
 }
+
+#[test]
+#[ignore = "diagnostic only: isolated native Kitty + private complex Greeting fixture"]
+fn native_complex_greeting_diagnosis() {
+    complex_native_greeting(false, false);
+}
+
+#[test]
+#[ignore = "isolated native Kitty + private complex Greeting fixture: real adaptive output"]
+fn native_complex_greeting_reflow() {
+    complex_native_greeting(true, false);
+}
+
+#[test]
+#[ignore = "isolated native Kitty + private fixture: static image top/side output"]
+fn native_complex_greeting_static_reflow() {
+    complex_native_greeting(true, true);
+}
+
+fn complex_native_greeting(adaptive: bool, static_image: bool) {
+    assert_eq!(std::env::var("GSETTINGS_BACKEND").as_deref(), Ok("memory"));
+    assert!(std::env::var("DISPLAY").is_ok_and(|d| !matches!(d.as_str(), ":0" | ":1")));
+    let file = PathBuf::from(std::env::var_os("TERMIMOCHI_REACHABILITY_THEME").unwrap());
+    let original = fs::read(&file).unwrap();
+    let mut design = crate::document_store::decode::<DesignDocument>(&original).unwrap();
+    if static_image {
+        let greeting = design.components.greeting.as_mut().unwrap();
+        greeting.presentation.visual = crate::greeting_output::Visual::Image;
+        greeting.presentation.protocol = None;
+    }
+    adw::init().unwrap();
+    gio::resources_register_include!("termimochi.gresource").unwrap();
+    let app = adw::Application::builder()
+        .application_id("io.github.miiikuuu.termimochi.NativeDiagnosis")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    present_with_preset(&app, None, temp.path().join("unused.json"));
+    let this = controller(&app.active_window().unwrap());
+    until(&this, || {
+        !this.preview_loading.get() && !this.copy_loading.get()
+    });
+    this.load_design(design);
+    this.window().set_default_size(1090, 790);
+    until(&this, || {
+        !this.preview_loading.get()
+            && !this.copy_loading.get()
+            && !this.greeting.presentation_pending()
+    });
+    this.native_terminal.mode.set_active(true);
+    this.native_terminal.accepted.set(true);
+    this.start_native_terminal();
+    until(&this, || this.native_terminal.running.borrow().is_some());
+    let (session, pid, host) = {
+        let running = this.native_terminal.running.borrow();
+        let running = running.as_ref().unwrap();
+        (running.session.clone(), running.pid, running.host.clone())
+    };
+    until(&this, || !shells(pid.0).is_empty());
+    let pause = || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            settle();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    pause();
+    let cache = glib::user_cache_dir();
+    let trial = fs::read_dir(session.root.path())
+        .unwrap()
+        .map(|p| p.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("kitty-trial-")
+        })
+        .unwrap();
+    for name in [
+        "fastfetch.jsonc",
+        "fastfetch.source.jsonc",
+        "bootstrap.bash",
+    ] {
+        if let Ok(bytes) = fs::read(trial.join(name)) {
+            fs::write(cache.join(name), bytes).unwrap();
+        }
+    }
+    fs::copy(
+        session.root.path().join("kitty.conf"),
+        cache.join("kitty.conf"),
+    )
+    .unwrap();
+    let run = |stage: &str, wrap: bool| {
+        let bounds = host.compute_bounds(&this.window()).unwrap();
+        let scale = this.window().scale_factor() as f32;
+        let xid =
+            unsafe { gdk_x11_surface_get_xid(this.window().surface().unwrap().to_glib_none().0) };
+        fs::write(
+            cache.join("diagnostic-input.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "xid":xid,"x":((bounds.x()+bounds.width()/2.0)*scale) as i32,
+                "y":((bounds.y()+bounds.height()/2.0)*scale) as i32,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // Only this test's isolated shell executes the fixed diagnostic command.
+        let option = if wrap {
+            " --disable-linewrap false"
+        } else {
+            ""
+        };
+        let invocation = if adaptive {
+            format!(
+                "'{}' {} '{}'",
+                std::env::var("TERMIMOCHI_SVG_WORKER_BIN").unwrap(),
+                crate::kitty_session::greeting_runtime::ARG,
+                trial.display()
+            )
+        } else {
+            format!(
+                "fastfetch --config '{}/fastfetch.jsonc'{option}",
+                trial.display()
+            )
+        };
+        let command = format!(
+            "stty size > '{0}/{stage}.grid'; clear; script -q -e -c \"{invocation}\" '{0}/{stage}.typescript'; touch '{0}/{stage}.done'",
+            cache.display(),
+        );
+        this.window().clipboard().set_text(&command);
+        settle();
+        let mut driver = Command::new("python3")
+            .arg("scripts/native-greeting-diagnostic-input.py")
+            .arg(cache.join("diagnostic-input.json"))
+            .spawn()
+            .unwrap();
+        until(&this, || cache.join(format!("{stage}.done")).exists());
+        assert!(driver.wait().unwrap().success());
+        pause();
+        native_capture(&this, stage, None);
+        crate::window::typed_tests::capture(this.window().upcast_ref(), &format!("{stage}-app"));
+        let output = fs::read(cache.join(format!("{stage}.typescript"))).unwrap();
+        assert_eq!(
+            output.windows(5).any(|w| w == b"\x1b[?7l"),
+            !wrap && !adaptive
+        );
+        assert!(String::from_utf8_lossy(&output).contains("COMMAND_EXIT_CODE=\"0\""));
+        if adaptive {
+            let text = String::from_utf8_lossy(&output);
+            let body = text
+                .split_once('\n')
+                .unwrap()
+                .1
+                .split("Script done on")
+                .next()
+                .unwrap();
+            let rows = crate::greeting_official::NativeOutput::parse(body)
+                .information()
+                .unwrap();
+            let grid: usize = fs::read_to_string(cache.join(format!("{stage}.grid")))
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .parse()
+                .unwrap();
+            for line in rows.split("\r\n") {
+                assert!(
+                    crate::greeting::clip_ansi(line, usize::MAX).1 < grid,
+                    "Native output exceeded {grid} cells: {line:?}"
+                );
+            }
+            assert!(rows.contains("GHz"), "complete CPU tail in real output");
+            assert!(
+                !rows.contains("termimochi-worker"),
+                "Fastfetch must detect the real shell, not our wrapper"
+            );
+            if grid < 56 {
+                let mut first_text = rows
+                    .split("\r\n")
+                    .position(|line| {
+                        !crate::greeting_art::Artwork::parse(line)
+                            .unwrap()
+                            .plain
+                            .trim()
+                            .is_empty()
+                    })
+                    .unwrap();
+                if static_image {
+                    // Unlike our C=1 animation, native static placement moves
+                    // the cursor down r-1 rows. The ANSI-only parser deliberately
+                    // does not interpret graphics. Account for that real command.
+                    assert!(body.contains("a=T,f=100,t=f,c=32,r=14;"));
+                    first_text += 13;
+                }
+                assert!(
+                    first_text >= 14,
+                    "top GIF's unchanged 14 rows must precede all information, got {first_text}"
+                );
+            }
+            let mut scroll = Command::new("python3")
+                .arg("scripts/native-greeting-diagnostic-input.py")
+                .arg(cache.join("diagnostic-input.json"))
+                .arg("scroll-up")
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                settle();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(scroll.wait().unwrap().success());
+            native_capture(&this, &format!("{stage}-history-top"), None);
+            let mut scroll = Command::new("python3")
+                .arg("scripts/native-greeting-diagnostic-input.py")
+                .arg(cache.join("diagnostic-input.json"))
+                .arg("scroll-down")
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                settle();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(scroll.wait().unwrap().success());
+            native_capture(&this, &format!("{stage}-history-middle"), None);
+        }
+    };
+    native_capture(&this, "startup-narrow", None);
+    run("rerun-narrow", false);
+    this.native_terminal.expand.set_active(true);
+    pause();
+    native_capture(&this, "expanded-without-rerun", None);
+    run("rerun-expanded", false);
+    this.window().set_default_size(1900, 1100);
+    pause();
+    run("rerun-wide", false);
+    this.window().set_default_size(1090, 790);
+    this.native_terminal.expand.set_active(false);
+    pause();
+    if !adaptive {
+        run("narrow-wrap-enabled", true);
+    }
+    assert_eq!(fs::read(&file).unwrap(), original);
+    unsafe {
+        libc::kill(pid.0, libc::SIGTERM);
+    }
+    until(&this, || !this.native_is_running());
+    this.window().destroy();
+    settle();
+    println!("DIAGNOSTIC CAPTURE COMPLETE — not an assertion of rendering correctness");
+}
+
 fn until(this: &Rc<Workbench>, condition: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(45);
     while !condition() {
