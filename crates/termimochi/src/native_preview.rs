@@ -32,6 +32,7 @@ impl Snapshot {
     fn owned(&self) -> Ownership {
         let scope = self.design.scope();
         Ownership {
+            background: false, // embedded native preview does not reload image resources
             palette: scope.palette,
             typography: scope.typography,
             layout: scope.layout,

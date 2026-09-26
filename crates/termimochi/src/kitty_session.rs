@@ -18,6 +18,7 @@ pub(crate) mod launcher;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Ownership {
+    pub background: bool,
     pub palette: bool,
     pub typography: bool,
     pub layout: bool,
@@ -27,12 +28,12 @@ pub(crate) struct Ownership {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Executable {
-    path: PathBuf,
+pub(crate) struct Executable {
+    pub(crate) path: PathBuf,
     identity: [u64; 5],
 }
 impl Executable {
-    fn capture(path: PathBuf) -> Result<Self, String> {
+    pub(crate) fn capture(path: PathBuf) -> Result<Self, String> {
         let m = fs::metadata(&path)
             .map_err(|e| format!("Required executable {}: {e}", path.display()))?;
         if !path.is_absolute() || !m.is_file() || m.mode() & 0o111 == 0 {
@@ -56,7 +57,7 @@ impl Executable {
             })?,
         )
     }
-    fn check(&self) -> Result<(), String> {
+    pub(crate) fn check(&self) -> Result<(), String> {
         if Self::capture(self.path.clone())?.identity != self.identity {
             return Err(format!(
                 "{} changed or moved; prepare and review the session again.",
@@ -140,7 +141,7 @@ fn hash(bytes: &[u8]) -> u64 {
         (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
     })
 }
-fn identifier(value: &str) -> Result<(), String> {
+pub(crate) fn identifier(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 96
         || !value
@@ -167,7 +168,7 @@ fn path_quote(path: &Path) -> Result<String, String> {
         .ok_or("Unsupported path encoding in session launcher.")?;
     Ok(quote(value))
 }
-fn safe_root(root: &Path) -> Result<(), String> {
+pub(crate) fn safe_root(root: &Path) -> Result<(), String> {
     if !root.is_absolute() || root == Path::new("/") {
         return Err("Managed session root must be an explicit absolute directory.".into());
     }
@@ -324,6 +325,32 @@ impl Plan {
         }
         // Never load a user/system Kitty file. Overrides are parsed as data.
         config.push_str("shell_integration disabled\nallow_remote_control no\n");
+        if owned.background {
+            let background = workspace
+                .background
+                .as_ref()
+                .ok_or("Missing owned background image.")?;
+            // Resolve the actual output, not an unowned preview palette.
+            let appearance = crate::kitty_document::KittyDocument::parse(&config)?;
+            let color = appearance
+                .properties()
+                .get("background")
+                .and_then(|value| value.parse::<termimochi_core::Rgb>().ok())
+                .unwrap_or(termimochi_core::Rgb::new(0, 0, 0));
+            if !appearance.properties().contains_key("background") {
+                notes.push("Background overlay/gaps inherit controlled Kitty's black default because the theme does not specify Background. The App's reference palette is not applied.".into());
+            }
+            let png = background.canvas(
+                [
+                    (workspace.layout.columns as u32).saturating_mul(cells[0].max(1)),
+                    (workspace.layout.rows as u32).saturating_mul(cells[1].max(1)),
+                ],
+                [color.red(), color.green(), color.blue()],
+            )?;
+            files.insert("background.png".into(), png);
+            config.push_str("background_image_layout scaled\nbackground_image_linear yes\nbackground_tint 0\nbackground_opacity 1\n");
+            notes.push("Background: embedded image and framing included. The prepared theme-grid canvas scales with Kitty's window; changing the native aspect ratio may stretch it. Overlay is baked with the theme background. No source path or daily configuration is used.".into());
+        }
         files.insert("kitty.conf".into(), config.into_bytes());
         if owned.prompt {
             let source = if workspace.use_designer {
@@ -513,6 +540,15 @@ impl Plan {
     ) -> Result<Deployment, String> {
         self.dependencies.check()?;
         let mut files = self.files.clone();
+        if files.contains_key("background.png") {
+            let path = directory.join("background.png");
+            let path = path.to_str().filter(|s| !s.chars().any(char::is_control) && !s.contains(['$', '*', '?', '[', ']']))
+                .ok_or("Unsupported managed background path; use a path without control characters, glob patterns or dollar signs.")?;
+            files
+                .get_mut("kitty.conf")
+                .expect("prepared Kitty config")
+                .extend_from_slice(format!("background_image {path}\n").as_bytes());
+        }
         if let Some(asset) = &self.logo {
             let config =
                 String::from_utf8(files["fastfetch.jsonc"].clone()).map_err(|e| e.to_string())?;

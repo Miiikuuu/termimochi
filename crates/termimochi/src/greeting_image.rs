@@ -175,6 +175,30 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<DecodedImage, String> {
     }
 }
 
+/// Trusted, bounded static PNG for the optional background runtime. The
+/// original file is never handed to GDK in the patched terminal.
+pub(crate) fn background_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    if !matches!(
+        image::guess_format(bytes),
+        Ok(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP)
+    ) {
+        return Err("Choose a static PNG, JPG or WebP. Animated backgrounds and SVG are not supported in this trial.".into());
+    }
+    let mut pixels = DynamicImage::ImageRgba8(decode(bytes)?.pixels)
+        .thumbnail(1920, 1080)
+        .into_rgba8();
+    for pixel in pixels.pixels_mut() {
+        let rgb = straight_color(pixel).unwrap_or([0; 3]);
+        pixel.0[..3].copy_from_slice(&rgb);
+    }
+    let image = DynamicImage::ImageRgba8(pixels);
+    let mut output = Cursor::new(Vec::new());
+    image
+        .write_to(&mut output, ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(output.into_inner())
+}
+
 fn decode_pixels(
     mut decoder: impl ImageDecoder,
     format: &'static str,

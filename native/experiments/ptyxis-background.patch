@@ -1,0 +1,103 @@
+diff --git a/src/ptyxis-tab.c b/src/ptyxis-tab.c
+index b19c212..28b92a6 100644
+--- a/src/ptyxis-tab.c
++++ b/src/ptyxis-tab.c
+@@ -65,6 +65,11 @@ struct _PtyxisTab
+   char                   **command;
+   char                    *initial_title;
+   GdkTexture              *cached_texture;
++  /* Research prototype only: trusted local fixture, one decode per tab.
++   * Not a production settings/import API. See the experiment report. */
++  GdkTexture              *research_background;
++  double                   research_tint;
++  gboolean                 research_contain;
+   AdwBanner               *banner;
+   GtkScrolledWindow       *scrolled_window;
+   PtyxisTerminal          *terminal;
+@@ -887,6 +892,22 @@ ptyxis_tab_constructed (GObject *object)
+
+   G_OBJECT_CLASS (ptyxis_tab_parent_class)->constructed (object);
+
++  if (g_strcmp0 (g_getenv ("TERMIMOCHI_PRIVATE_SESSION"), "1") == 0)
++    {
++      const char *path = g_getenv ("TERMIMOCHI_RESEARCH_BACKGROUND");
++      const char *tint = g_getenv ("TERMIMOCHI_RESEARCH_TINT");
++      g_autoptr(GError) error = NULL;
++
++      self->research_tint = tint ? CLAMP (g_ascii_strtod (tint, NULL), 0.0, 1.0) : 0.35;
++      self->research_contain = g_strcmp0 (g_getenv ("TERMIMOCHI_RESEARCH_LAYOUT"), "contain") == 0;
++      if (path != NULL && *path != 0)
++        {
++          self->research_background = gdk_texture_new_from_filename (path, &error);
++          if (self->research_background == NULL)
++            g_message ("Background experiment: %s; using ordinary background", error->message);
++        }
++    }
++
+   settings = ptyxis_application_get_settings (PTYXIS_APPLICATION_DEFAULT);
+   g_object_bind_property (settings, "audible-bell",
+                           self->terminal, "audible-bell",
+@@ -996,6 +1017,35 @@ ptyxis_tab_profile_signals_bind_cb (PtyxisTab     *self,
+   ptyxis_tab_update_custom_links (self);
+ }
+
++/* Paint in tab coordinates, not terminal scroll coordinates. Explicit ANSI
++ * cell backgrounds are subsequently painted by VTE and remain opaque. */
++static void
++research_background_snapshot (PtyxisTab *self,
++                              GtkSnapshot *snapshot,
++                              const GdkRGBA *background,
++                              int width,
++                              int height)
++{
++  GdkRGBA tint = *background;
++  double image_width = gdk_texture_get_width (self->research_background);
++  double image_height = gdk_texture_get_height (self->research_background);
++  double sx = width / image_width;
++  double sy = height / image_height;
++  double scale = self->research_contain ? MIN (sx, sy) : MAX (sx, sy);
++  gboolean canvas = g_strcmp0 (g_getenv ("TERMIMOCHI_RESEARCH_CANVAS"), "1") == 0;
++  float w = canvas ? width : image_width * scale;
++  float h = canvas ? height : image_height * scale;
++
++  tint.alpha = 1.0;
++  gtk_snapshot_push_clip (snapshot, &GRAPHENE_RECT_INIT (0, 0, width, height));
++  gtk_snapshot_append_color (snapshot, &tint, &GRAPHENE_RECT_INIT (0, 0, width, height));
++  gtk_snapshot_append_texture (snapshot, self->research_background,
++                               &GRAPHENE_RECT_INIT ((width - w) / 2, (height - h) / 2, w, h));
++  tint.alpha = self->research_tint;
++  gtk_snapshot_append_color (snapshot, &tint, &GRAPHENE_RECT_INIT (0, 0, width, height));
++  gtk_snapshot_pop (snapshot);
++}
++
+ static void
+ ptyxis_tab_snapshot (GtkWidget   *widget,
+                      GtkSnapshot *snapshot)
+@@ -1037,6 +1086,9 @@ ptyxis_tab_snapshot (GtkWidget   *widget,
+                                      &bg,
+                                      &GRAPHENE_RECT_INIT (0, 0, width, height));
+
++          if (self->research_background != NULL)
++            research_background_snapshot (self, sub_snapshot, &bg, width, height);
++
+           if (gtk_widget_compute_transform (GTK_WIDGET (self->terminal),
+                                             GTK_WIDGET (self),
+                                             &matrix))
+@@ -1069,6 +1121,9 @@ ptyxis_tab_snapshot (GtkWidget   *widget,
+                                    &bg,
+                                    &GRAPHENE_RECT_INIT (0, 0, width, height));
+
++      if (self->research_background != NULL)
++        research_background_snapshot (self, snapshot, &bg, width, height);
++
+       GTK_WIDGET_CLASS (ptyxis_tab_parent_class)->snapshot (widget, snapshot);
+     }
+ }
+@@ -1189,6 +1244,7 @@ ptyxis_tab_dispose (GObject *object)
+     gtk_widget_unparent (child);
+
+   g_clear_object (&self->cached_texture);
++  g_clear_object (&self->research_background);
+   g_clear_object (&self->profile);
+   g_clear_object (&self->profile_signals);
+   g_clear_object (&self->process);

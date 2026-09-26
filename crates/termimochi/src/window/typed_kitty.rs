@@ -34,6 +34,10 @@ impl Workbench {
             snapshot.greeting = greeting;
         }
         let owned = Ownership {
+            background: design
+                .theme
+                .as_ref()
+                .is_some_and(|t| t.background.is_some()),
             palette: scope.palette,
             typography: scope.typography,
             layout: scope.layout,
@@ -159,6 +163,13 @@ impl Workbench {
         );
         let scope = design.scope();
         let included = [
+            (
+                design
+                    .theme
+                    .as_ref()
+                    .is_some_and(|t| t.background.is_some()),
+                "Background image",
+            ),
             (scope.palette, "Palette"),
             (scope.typography, "Typography"),
             (scope.layout, "Supported layout"),

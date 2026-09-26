@@ -77,6 +77,8 @@ impl Workbench {
             EditorModule::Prompt
         } else if self.layout_module_button.is_active() {
             EditorModule::Layout
+        } else if self.background_module_button.is_active() {
+            EditorModule::Background
         } else if self.typography_module_button.is_active() {
             EditorModule::Typography
         } else {
@@ -250,6 +252,12 @@ impl Workbench {
                 "win.apply-layout",
                 "Review supported Ptyxis settings. Exact padding, tab bar and window spacing remain preview-only.",
             ),
+            EditorModule::Background => (
+                "Save Design",
+                "Preview only",
+                "win.show-background",
+                "Background belongs to themes. Save embeds the image; Kitty uses it in its independent entry. System Ptyxis cannot apply image backgrounds.",
+            ),
             EditorModule::Greeting => (
                 "Save Greeting Preset",
                 "Apply…",
@@ -271,7 +279,7 @@ impl Workbench {
         };
         // Prompt's main action already owns writing/exporting Starship. Save in
         // that module instead offers a workspace snapshot, without a duplicate.
-        if module != EditorModule::Prompt {
+        if !matches!(module, EditorModule::Prompt | EditorModule::Background) {
             let item = gio::MenuItem::new(
                 Some(save_label),
                 Some(match module {
@@ -349,13 +357,19 @@ impl Workbench {
             Some("win.kitty-library"),
         );
         more.append(
+            Some("Enhanced Ptyxis — Saved Entries…"),
+            Some("win.enhanced-ptyxis-library"),
+        );
+        more.append(
             Some("Last Application & Recovery…"),
             Some("win.last-scheme-application"),
         );
-        more.append(
-            Some(&format!("{} — {apply_label}", module.label())),
-            Some(apply_action),
-        );
+        if module != EditorModule::Background {
+            more.append(
+                Some(&format!("{} — {apply_label}", module.label())),
+                Some(apply_action),
+            );
+        }
         match module {
             EditorModule::Palette => {
                 more.append(Some("Save Theme As…"), Some("win.export-theme"));
@@ -388,6 +402,7 @@ impl Workbench {
                 more.append(Some("Reload Saved Layout…"), Some("win.reload-layout"));
                 more.append(Some("Restore Previous Layout…"), Some("win.restore-layout"));
             }
+            EditorModule::Background => {}
             EditorModule::Prompt => {
                 more.append(Some("Save Starship As…"), Some("win.export-starship"));
                 more.append(Some("Reload from Disk…"), Some("win.reload-starship"));
@@ -439,9 +454,11 @@ impl Workbench {
             "Use Design…"
         });
         bar.primary.set_action_name(Some("win.apply-scheme"));
-        bar.primary.set_tooltip_text(Some(
-            "Use only this document's content in its explicit target. Review before any writes.",
-        ));
+        bar.primary.set_tooltip_text(Some(if module == EditorModule::Background {
+            "Kitty includes the background in its independent entry. System Ptyxis cannot apply it; review offers the experimental enhanced runtime."
+        } else {
+            "Use only this document's content in its explicit target. Review before any writes."
+        }));
         bar.more.set_tooltip_text(Some(detail));
         bar.primary
             .update_property(&[gtk::accessible::Property::Label(&format!(
@@ -449,8 +466,13 @@ impl Workbench {
                 module.label()
             ))]);
         self.save_button.set_menu_model(Some(&save));
-        self.save_button
-            .set_tooltip_text(Some("Save the current design document · Ctrl+S"));
+        self.save_button.set_tooltip_text(Some(
+            if module == EditorModule::Background && self.is_theme() {
+                "Save the whole theme including its background image and framing · Ctrl+S"
+            } else {
+                "Save the current design document · Ctrl+S"
+            },
+        ));
         bar.more.set_menu_model(Some(&more));
     }
 }

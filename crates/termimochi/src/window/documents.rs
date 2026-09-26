@@ -288,6 +288,8 @@ impl Workbench {
             ("Open Greeting Preset", "Open a greeting preset  Ctrl+O")
         } else if self.layout_module_button.is_active() {
             ("Open Layout Preset", "Open a layout preset  Ctrl+O")
+        } else if self.background_module_button.is_active() {
+            ("Open Theme", "Open a theme  Ctrl+O")
         } else if self.typography_module_button.is_active() {
             ("Open Typography Preset", "Open a typography preset  Ctrl+O")
         } else if self.prompt_module_button.is_active() {
@@ -322,6 +324,7 @@ impl Workbench {
             self.preview_prompt_source.get() == 1,
         );
         snapshot.greeting = self.greeting.settings();
+        snapshot.background = self.preview_background.settings();
         snapshot
     }
 

@@ -374,6 +374,13 @@ impl Workbench {
             "fastfetch" => scope.greeting,
             _ => false,
         });
+        if theme.is_some_and(|t| t.background.is_some()) {
+            plan.items.push(Item {
+                id: "background", title: "Background · not applied to system Ptyxis".into(),
+                detail: "Saved in the theme. System Ptyxis cannot apply image backgrounds; Open in Enhanced Ptyxis is a separate experimental session, not a complete theme application.".into(),
+                versions: None, action: None,
+            });
+        }
         if self.typed.target.get() == Some(crate::design_document::TargetHint::Kitty) {
             // The legacy Ptyxis executor is never a Kitty adapter.
             plan.items.clear();
@@ -478,6 +485,34 @@ impl Workbench {
         body.append(&label(
             "Review this theme's changes. Save does not apply settings.",
         ));
+        if design
+            .theme
+            .as_ref()
+            .is_some_and(|t| t.background.is_some())
+        {
+            let open = gtk::Button::with_label("Open in Enhanced Ptyxis…");
+            let weak = Rc::downgrade(self);
+            let review = window.downgrade();
+            open.connect_clicked(move |_| {
+                if let Some(this) = weak
+                    .upgrade()
+                    .filter(|w| w.typed.identity.get() == document_identity)
+                {
+                    // This is navigation, not Apply. Release the modal review
+                    // before presenting a trial transient for the workbench;
+                    // otherwise GTK blocks pointer/keyboard events to it.
+                    if let Some(review) = review.upgrade() {
+                        review.close();
+                    }
+                    gio::prelude::ActionGroupExt::activate_action(
+                        &this.window(),
+                        "background-trial",
+                        None,
+                    );
+                }
+            });
+            body.append(&open);
+        }
         let summary = label("");
         summary.set_widget_name("scheme-summary");
         body.append(&summary);

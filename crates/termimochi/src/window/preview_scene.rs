@@ -180,6 +180,7 @@ mod tests {
                 &this.palette_module_button,
                 &this.typography_module_button,
                 &this.layout_module_button,
+                &this.background_module_button,
                 &this.prompt_module_button,
                 &this.greeting_module_button,
             ] {

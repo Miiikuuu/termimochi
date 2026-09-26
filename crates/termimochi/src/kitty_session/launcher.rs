@@ -60,7 +60,7 @@ fn digest(bytes: &[u8]) -> String {
 
 /// Desktop Exec quoting is not shell quoting; KeyFile performs the outer
 /// string escaping. Literal percent signs must survive field-code expansion.
-fn exec_arg(text: &str) -> Result<String, String> {
+pub(crate) fn exec_arg(text: &str) -> Result<String, String> {
     if text.chars().any(char::is_control) {
         return Err("Launcher arguments cannot contain control characters.".into());
     }

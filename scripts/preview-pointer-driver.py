@@ -96,18 +96,18 @@ if mode in ("key_y", "key_n", "key_q", "key_t"):
     xtst.XTestFakeKeyEvent(d, keycode, 0, 0)
     x11.XFlush(d)
     sys.exit(0)
-if mode in ("scroll_up", "scroll_down", "scroll_left", "scroll_right", "shift_scroll_down"):
-    shift = mode == "shift_scroll_down"
-    keycode = x11.XKeysymToKeycode(d, 0xFFE1)
-    if shift:
+if mode in ("scroll_up", "scroll_down", "scroll_left", "scroll_right", "shift_scroll_down", "ctrl_scroll_up", "ctrl_scroll_down"):
+    modified = mode.startswith(("shift_", "ctrl_"))
+    keycode = x11.XKeysymToKeycode(d, 0xFFE3 if mode.startswith("ctrl_") else 0xFFE1)
+    if modified:
         xtst.XTestFakeKeyEvent(d, keycode, 1, 0)
-    wheel = {"scroll_up": 4, "scroll_down": 5, "scroll_left": 6, "scroll_right": 7, "shift_scroll_down": 5}[mode]
+    wheel = {"scroll_up": 4, "scroll_down": 5, "scroll_left": 6, "scroll_right": 7, "shift_scroll_down": 5, "ctrl_scroll_up": 4, "ctrl_scroll_down": 5}[mode]
     for _ in range(min(100, max(1, int(sys.argv[4]) if len(sys.argv) > 4 else 6))):
         xtst.XTestFakeButtonEvent(d, wheel, 1, 0)
         xtst.XTestFakeButtonEvent(d, wheel, 0, 0)
         x11.XFlush(d)
         time.sleep(0.015)
-    if shift:
+    if modified:
         xtst.XTestFakeKeyEvent(d, keycode, 0, 0)
     x11.XFlush(d)
     sys.exit(0)

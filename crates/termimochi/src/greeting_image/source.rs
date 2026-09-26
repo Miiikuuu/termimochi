@@ -70,7 +70,7 @@ impl SourceImage {
     pub fn is_gif(&self) -> bool {
         matches!(image::guess_format(&self.0), Ok(ImageFormat::Gif))
     }
-    pub(super) fn bytes(&self) -> &[u8] {
+    pub(crate) fn bytes(&self) -> &[u8] {
         &self.0
     }
 }

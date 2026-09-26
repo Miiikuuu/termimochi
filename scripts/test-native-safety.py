@@ -9,10 +9,25 @@ import unittest
 
 repo=Path(__file__).resolve().parent.parent
 prefix=repo/'target/native-preview/prefix'
+supervisor=repo/'crates/termimochi/resources/native/session-supervisor.py'
 spec=importlib.util.spec_from_file_location('policy',repo/'crates/termimochi/src/native_rc_auth.py')
 policy=importlib.util.module_from_spec(spec); spec.loader.exec_module(policy)
 
 class NativeSafety(unittest.TestCase):
+    def test_supervisor_embedded_requires_wayland_fd(self):
+        with tempfile.TemporaryDirectory(prefix='tm-supervisor-test-') as folder:
+            run=sp.run(['/usr/bin/python3',str(supervisor),folder,'/usr/bin/true'],
+                       env={'PATH':'/usr/bin:/bin','HOME':folder},capture_output=True,timeout=8)
+            self.assertNotEqual(run.returncode,0)
+            self.assertIn(b'WAYLAND_SOCKET',run.stderr)
+            self.assertNotIn(b'NATIVE_CLIENT_PID=',run.stdout)
+    def test_supervisor_bus_failure_is_not_success(self):
+        with tempfile.TemporaryDirectory(prefix='tm-supervisor-test-') as folder:
+            run=sp.run(['/usr/bin/python3',str(supervisor),folder,'/usr/bin/true'],
+                       env={'PATH':'/usr/bin:/bin','HOME':folder,'TERMIMOCHI_EXTERNAL_TRIAL':'1'},
+                       capture_output=True,timeout=8)
+            self.assertNotEqual(run.returncode,0)
+            self.assertNotIn(b'NATIVE_CLIENT_PID=',run.stdout)
     def allowed(self,cmd,payload,socket=True):
         return policy.is_cmd_allowed({'cmd':cmd,'payload':payload},None,socket,None)
     def test_owned_config_only(self):

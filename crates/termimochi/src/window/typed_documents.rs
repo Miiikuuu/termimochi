@@ -60,7 +60,10 @@ impl Workbench {
             // fields remain absent in the source-only saved document.
             return matches!(
                 module,
-                EditorModule::Palette | EditorModule::Typography | EditorModule::Layout
+                EditorModule::Palette
+                    | EditorModule::Typography
+                    | EditorModule::Layout
+                    | EditorModule::Background
             );
         }
         use crate::design_document::Action;
@@ -69,6 +72,7 @@ impl Workbench {
             EditorModule::Palette => Action::Palette,
             EditorModule::Typography => Action::Typography,
             EditorModule::Layout => Action::Layout,
+            EditorModule::Background => Action::Layout,
             EditorModule::Prompt => Action::Prompt,
             EditorModule::Greeting => Action::Artwork,
         })
@@ -76,6 +80,10 @@ impl Workbench {
 
     /// Called at action boundaries as well as to project menu sensitivity.
     pub(super) fn allows_document_action(&self, name: &str) -> bool {
+        if name == "background-trial" {
+            return self.typed.target.get() == Some(TargetHint::Ptyxis)
+                && self.owns_module(EditorModule::Background);
+        }
         if self.is_theme() {
             if matches!(
                 name,
@@ -124,7 +132,10 @@ impl Workbench {
             return false;
         }
         if self.typed.kind.get() == Kind::KittyAppearance {
-            if matches!(name, "show-palette" | "show-typography" | "show-layout") {
+            if matches!(
+                name,
+                "show-palette" | "show-typography" | "show-layout" | "show-background"
+            ) {
                 return true;
             }
             if (name.starts_with("export-") && name != "export-native")
@@ -153,7 +164,8 @@ impl Workbench {
             "save-theme" | "export-theme" | "show-palette" => s.palette,
             "show-typography" | "save-typography" | "save-font-preset" | "export-typography"
             | "reload-typography" => s.typography,
-            "show-layout" | "save-layout" | "export-layout" | "reload-layout" => s.layout,
+            "show-layout" | "show-background" | "save-layout" | "export-layout"
+            | "reload-layout" => s.layout,
             "show-prompt" | "export-starship" | "reload-starship" | "diagnostic-module" => s.prompt,
             "save-greeting"
             | "export-greeting"
@@ -221,6 +233,9 @@ impl Workbench {
     }
 
     pub(super) fn design_clean(&self) -> bool {
+        if self.preview_background.pending() {
+            return false;
+        }
         let s = self.editable_document_scope();
         !(s.palette && self.has_draft()
             || s.prompt && self.starship_editor.invalid()
@@ -234,6 +249,9 @@ impl Workbench {
     }
 
     pub(super) fn committed_design(&self) -> Result<DesignDocument, String> {
+        if self.preview_background.pending() {
+            return Err("Wait for background image preparation to finish.".into());
+        }
         let s = self.editable_document_scope();
         self.settle_active_edit();
         if s.typography {
@@ -256,6 +274,9 @@ impl Workbench {
     }
 
     pub(super) fn document_inputs_valid(&self) -> bool {
+        if self.preview_background.pending() {
+            return false;
+        }
         let scope = self.editable_document_scope();
         !(scope.palette && self.has_draft()
             || scope.prompt && self.starship_editor.invalid()
@@ -314,6 +335,7 @@ impl Workbench {
             (EditorModule::Palette, &self.palette_module_button),
             (EditorModule::Typography, &self.typography_module_button),
             (EditorModule::Layout, &self.layout_module_button),
+            (EditorModule::Background, &self.background_module_button),
             (EditorModule::Prompt, &self.prompt_module_button),
             (EditorModule::Greeting, &self.greeting_module_button),
         ];
@@ -688,6 +710,8 @@ impl Workbench {
         self.greeting.invalidate_output_checks();
         self.detach_greeting_target();
         let updating = self.updating.replace(true);
+        self.preview_background
+            .restore(snapshot.background.as_ref());
         *self.typed.theme_origin.borrow_mut() = design.theme.as_ref().map(|_| design.clone());
         *self.typed.theme_history.borrow_mut() = Default::default();
         self.workspace_prompt_loaded.set(true);

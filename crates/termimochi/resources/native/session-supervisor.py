@@ -48,7 +48,10 @@ def main():
     if os.getppid() != parent or parent == 1:
         return 1
     root = Path(sys.argv[1]).resolve(strict=True)
-    fd = int(os.environ['WAYLAND_SOCKET'])
+    # Explicit standalone trials use the desktop display but still own a
+    # private configuration/bus. Embedded clients retain the mandatory FD.
+    external = os.environ.get('TERMIMOCHI_EXTERNAL_TRIAL') == '1'
+    fd = None if external else int(os.environ['WAYLAND_SOCKET'])
     env = os.environ.copy()
     # A dedicated bus config has no activation directories: no daily services
     # or user manager can be reached through an accidental activation fallback.
@@ -63,13 +66,17 @@ def main():
         time.sleep(.02)
     client = None
     handles = {}
-    result = 0
+    # Never report a successful trial when the bus could not start and no
+    # terminal was launched. Explicit stopping of a running client stays clean.
+    result = 1 if stopping else 0
     try:
         if not stopping:
             env['DBUS_SESSION_BUS_ADDRESS'] = address
-            client = subprocess.Popen(sys.argv[2:], env=env, pass_fds=(fd,))
+            client = subprocess.Popen(sys.argv[2:], env=env,
+                                      pass_fds=() if fd is None else (fd,))
             print(f'NATIVE_CLIENT_PID={client.pid}', flush=True)
-        os.close(fd)
+        if fd is not None:
+            os.close(fd)
         while not stopping and client is not None and client.poll() is None:
             if bus.poll() is not None:
                 result = 1

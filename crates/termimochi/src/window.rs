@@ -25,6 +25,7 @@ mod interactive_samples;
 #[cfg(feature = "native-preview")]
 mod native_terminal;
 mod output_bar;
+mod preview_background;
 mod preview_frame;
 #[cfg(test)]
 mod preview_geometry_tests;
@@ -361,6 +362,7 @@ struct Workbench {
     palette_module_button: gtk::ToggleButton,
     typography_module_button: gtk::ToggleButton,
     layout_module_button: gtk::ToggleButton,
+    background_module_button: gtk::ToggleButton,
     prompt_module_button: gtk::ToggleButton,
     install_action: gio::SimpleAction,
     rollback_action: gio::SimpleAction,
@@ -391,6 +393,7 @@ struct Workbench {
     preview_selector: gtk::DropDown,
     preview_scene_selector: gtk::DropDown,
     full_session: full_session::FullSession,
+    preview_background: preview_background::Background,
     prompt_preview_selector: gtk::DropDown,
     prompt_compare_selector: gtk::DropDown,
     appearance_source: gtk::Label,
@@ -823,6 +826,7 @@ fn present_with_mode(
     let editor = build_editor();
     let typography = build_typography_editor(&preview.terminal, &initial_typography);
     let layout = build_layout_editor(&initial_layout);
+    let background = build_background_editor(&preview.background.root);
     let initial_prompt = PromptSettings::default();
     let prompt = build_prompt_editor(&initial_prompt);
     let greeting = greeting::GreetingEditor::new(greeting_path);
@@ -830,6 +834,7 @@ fn present_with_mode(
         &editor.root,
         &typography.root,
         &layout.root,
+        &background,
         &prompt.root,
         &greeting.root,
     );
@@ -903,6 +908,7 @@ fn present_with_mode(
         palette_module_button: editor_workspace.palette_button.clone(),
         typography_module_button: editor_workspace.typography_button.clone(),
         layout_module_button: editor_workspace.layout_button.clone(),
+        background_module_button: editor_workspace.background_button.clone(),
         prompt_module_button: editor_workspace.prompt_button.clone(),
         install_action,
         rollback_action,
@@ -936,6 +942,7 @@ fn present_with_mode(
         preview_selector: preview.selector,
         preview_scene_selector: preview.scene_selector,
         full_session: preview.full_session,
+        preview_background: preview.background,
         prompt_preview_selector: preview.prompt_selector,
         prompt_compare_selector: preview.compare_selector,
         appearance_source: preview.appearance_source,
@@ -1100,6 +1107,7 @@ fn present_with_mode(
 }
 
 struct PreviewWidgets {
+    background: preview_background::Background,
     #[cfg(feature = "native-preview")]
     native_terminal: native_terminal::NativePane,
     top_preview: window_top::TopPreview,
@@ -1220,6 +1228,7 @@ struct EditorWorkspaceWidgets {
     palette_button: gtk::ToggleButton,
     typography_button: gtk::ToggleButton,
     layout_button: gtk::ToggleButton,
+    background_button: gtk::ToggleButton,
     prompt_button: gtk::ToggleButton,
     greeting_button: gtk::ToggleButton,
 }
@@ -1229,15 +1238,17 @@ enum EditorModule {
     Palette,
     Typography,
     Layout,
+    Background,
     Prompt,
     Greeting,
 }
 
 impl EditorModule {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Palette,
         Self::Typography,
         Self::Layout,
+        Self::Background,
         Self::Prompt,
         Self::Greeting,
     ];
@@ -1247,6 +1258,7 @@ impl EditorModule {
             Self::Palette => "palette",
             Self::Typography => "typography",
             Self::Layout => "layout",
+            Self::Background => "background",
             Self::Prompt => "prompt",
             Self::Greeting => "greeting",
         }
@@ -1257,6 +1269,7 @@ impl EditorModule {
             Self::Palette => "Palette",
             Self::Typography => "Typography",
             Self::Layout => "Layout",
+            Self::Background => "Background",
             Self::Prompt => "Prompt",
             Self::Greeting => "Greeting",
         }
@@ -1267,6 +1280,7 @@ impl EditorModule {
             Self::Palette => "preferences-color-symbolic",
             Self::Typography => "font-x-generic-symbolic",
             Self::Layout => "termimochi-layout-symbolic",
+            Self::Background => "image-x-generic-symbolic",
             Self::Prompt => "termimochi-prompt-symbolic",
             Self::Greeting => "face-smile-symbolic",
         }
@@ -1277,6 +1291,7 @@ impl EditorModule {
             Self::Palette => "show-palette",
             Self::Typography => "show-typography",
             Self::Layout => "show-layout",
+            Self::Background => "show-background",
             Self::Prompt => "show-prompt",
             Self::Greeting => "show-greeting",
         }
@@ -1287,6 +1302,7 @@ impl EditorModule {
             Self::Palette => "Control+1",
             Self::Typography => "Control+2",
             Self::Layout => "Control+3",
+            Self::Background => "Control+6",
             Self::Prompt => "Control+4",
             Self::Greeting => "Control+5",
         }
@@ -1297,6 +1313,7 @@ impl EditorModule {
             Self::Palette => "Ctrl+1",
             Self::Typography => "Ctrl+2",
             Self::Layout => "Ctrl+3",
+            Self::Background => "Ctrl+6",
             Self::Prompt => "Ctrl+4",
             Self::Greeting => "Ctrl+5",
         }
@@ -1307,6 +1324,7 @@ impl EditorModule {
             Self::Palette => "Show the Palette editor",
             Self::Typography => "Show the Typography editor",
             Self::Layout => "Show the Layout editor",
+            Self::Background => "Show the preview Background editor",
             Self::Prompt => "Show the Prompt editor",
             Self::Greeting => "Show the Greeting editor",
         }
@@ -1729,6 +1747,39 @@ fn build_layout_editor(defaults: &LayoutSettings) -> LayoutWidgets {
         window_spacing_input,
         status,
     }
+}
+
+fn build_background_editor(background: &gtk::Box) -> gtk::ScrolledWindow {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    content.add_css_class("termimochi-layout-pane");
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(15);
+    content.set_margin_end(15);
+    let heading = gtk::Label::new(Some("Background"));
+    heading.set_xalign(0.0);
+    heading.add_css_class("preview-heading");
+    content.append(&heading);
+    content.append(background);
+    let background_trial = gtk::Button::with_label("Open in Enhanced Ptyxis…");
+    background_trial.set_action_name(Some("win.background-trial"));
+    background_trial.set_tooltip_text(Some("Experimental independent terminal using this theme's background, palette, font and grid. System Ptyxis is unchanged; Prompt/Greeting are not included. Requires the optional background runtime."));
+    content.append(&background_trial);
+    let background_scroll =
+        gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    background_scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let scroll_source = content.clone();
+    background_scroll.connect_scroll(move |controller, _, delta_y| {
+        scroll_parent_vertically(&scroll_source, delta_y, controller.unit());
+        glib::Propagation::Stop
+    });
+    content.add_controller(background_scroll);
+    gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_width(330)
+        .css_classes(["layout-scroll"])
+        .child(&content)
+        .build()
 }
 
 fn build_prompt_editor(settings: &PromptSettings) -> PromptWidgets {
@@ -2443,6 +2494,7 @@ fn build_editor_workspace(
     palette: &gtk::ScrolledWindow,
     typography: &gtk::ScrolledWindow,
     layout: &gtk::ScrolledWindow,
+    background: &gtk::ScrolledWindow,
     prompt: &gtk::ScrolledWindow,
     greeting: &gtk::ScrolledWindow,
 ) -> EditorWorkspaceWidgets {
@@ -2458,6 +2510,7 @@ fn build_editor_workspace(
     stack.add_named(palette, Some(EditorModule::Palette.stack_name()));
     stack.add_named(typography, Some(EditorModule::Typography.stack_name()));
     stack.add_named(layout, Some(EditorModule::Layout.stack_name()));
+    stack.add_named(background, Some(EditorModule::Background.stack_name()));
     stack.add_named(prompt, Some(EditorModule::Prompt.stack_name()));
     stack.add_named(greeting, Some(EditorModule::Greeting.stack_name()));
 
@@ -2476,15 +2529,18 @@ fn build_editor_workspace(
     let (palette_item, palette_button) = build_activity_item(EditorModule::Palette);
     let (typography_item, typography_button) = build_activity_item(EditorModule::Typography);
     let (layout_item, layout_button) = build_activity_item(EditorModule::Layout);
+    let (background_item, background_button) = build_activity_item(EditorModule::Background);
     let (prompt_item, prompt_button) = build_activity_item(EditorModule::Prompt);
     let (greeting_item, greeting_button) = build_activity_item(EditorModule::Greeting);
     typography_button.set_group(Some(&palette_button));
     layout_button.set_group(Some(&palette_button));
+    background_button.set_group(Some(&palette_button));
     prompt_button.set_group(Some(&palette_button));
     greeting_button.set_group(Some(&palette_button));
     rail.append(&palette_item);
     rail.append(&typography_item);
     rail.append(&layout_item);
+    rail.append(&background_item);
     rail.append(&prompt_item);
     rail.append(&greeting_item);
 
@@ -2504,6 +2560,12 @@ fn build_editor_workspace(
     layout_button.connect_toggled(move |button| {
         if button.is_active() {
             stack_ref.set_visible_child_name(EditorModule::Layout.stack_name());
+        }
+    });
+    let stack_ref = stack.clone();
+    background_button.connect_toggled(move |button| {
+        if button.is_active() {
+            stack_ref.set_visible_child_name(EditorModule::Background.stack_name());
         }
     });
     let stack_ref = stack.clone();
@@ -2533,6 +2595,7 @@ fn build_editor_workspace(
         palette_button,
         typography_button,
         layout_button,
+        background_button,
         prompt_button,
         greeting_button,
     }
@@ -2547,6 +2610,7 @@ fn install_editor_module_actions(
             EditorModule::Palette => workspace.palette_button.clone(),
             EditorModule::Typography => workspace.typography_button.clone(),
             EditorModule::Layout => workspace.layout_button.clone(),
+            EditorModule::Background => workspace.background_button.clone(),
             EditorModule::Prompt => workspace.prompt_button.clone(),
             EditorModule::Greeting => workspace.greeting_button.clone(),
         };
@@ -2835,7 +2899,9 @@ fn build_preview(
     terminal_stage.add_css_class("terminal-stage");
     terminal_stage.append(&terminal_viewport);
     terminal_stage.append(&terminal_scrollbar_revealer);
-    terminal.append(&terminal_stage);
+    let background = preview_background::Background::new();
+    background.surface.set_child(&terminal_stage);
+    terminal.append(&background.surface);
 
     let inspect_layer = gtk::Overlay::new();
     inspect_layer.set_vexpand(true);
@@ -2957,6 +3023,7 @@ fn build_preview(
     content.append(&quality);
 
     PreviewWidgets {
+        background,
         #[cfg(feature = "native-preview")]
         native_terminal,
         top_preview,
@@ -3714,6 +3781,67 @@ impl Workbench {
     fn install_actions(this: &Rc<Self>) {
         let window = this.window();
 
+        let background = gio::SimpleAction::new("background-trial", None);
+        let weak = Rc::downgrade(this);
+        background.connect_activate(move |_, _| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if !this.allows_document_action("background-trial") {
+                return;
+            }
+            if this.preview_background.pending() {
+                this.toast("Wait for background image preparation to finish.");
+                return;
+            }
+            let window = this.window();
+            if let Some(app) = window.application().and_downcast::<adw::Application>() {
+                let appearance =
+                    crate::background_trial::Appearance::from_workspace(&this.workspace_snapshot())
+                        .with_cells([
+                            this.preview_terminal.char_width().max(1) as u32,
+                            this.preview_terminal.char_height().max(1) as u32,
+                        ]);
+                if this.is_theme() && this.preview_background.settings().is_some() {
+                    let design = match this.committed_design() {
+                        Ok(d) => d,
+                        Err(e) => {
+                            this.toast(&e);
+                            return;
+                        }
+                    };
+                    let identity = this.typed.identity.get();
+                    let weak = Rc::downgrade(&this);
+                    let publication = crate::background_trial::session_ui::Publication {
+                        id: design.id.clone(),
+                        name: design.theme.as_ref().unwrap().name.clone(),
+                        still_current: Rc::new(move || {
+                            weak.upgrade().is_some_and(|w| {
+                                w.typed.identity.get() == identity
+                                    && w.design_snapshot().ok().as_ref() == Some(&design)
+                            })
+                        }),
+                    };
+                    crate::background_trial::present_theme(&window, &app, appearance, publication);
+                } else {
+                    crate::background_trial::present(Some(&window), &app, appearance);
+                }
+            }
+        });
+        window.add_action(&background);
+
+        let library = gio::SimpleAction::new("enhanced-ptyxis-library", None);
+        let weak = Rc::downgrade(this);
+        library.connect_activate(move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                let window = this.window();
+                if let Some(app) = window.application().and_downcast::<adw::Application>() {
+                    crate::background_trial::session_ui::present_library(&window, &app);
+                }
+            }
+        });
+        window.add_action(&library);
+
         for (name, review) in [("apply-scheme", true), ("last-scheme-application", false)] {
             let action = gio::SimpleAction::new(name, None);
             let weak = Rc::downgrade(this);
@@ -4046,6 +4174,7 @@ impl Workbench {
         Self::connect_color_targets(this);
         Self::connect_preview_scene(this);
         Self::connect_full_session(this);
+        Self::connect_background_preview(this);
         Self::connect_interactive_samples(this);
         let weak = Rc::downgrade(this);
         this.window().connect_close_request(move |_| {
@@ -4081,6 +4210,7 @@ impl Workbench {
             &this.palette_module_button,
             &this.typography_module_button,
             &this.layout_module_button,
+            &this.background_module_button,
             &this.prompt_module_button,
             &this.greeting_module_button,
         ] {
@@ -6150,6 +6280,7 @@ impl Workbench {
             Some(&background_rgba),
             &terminal_palette_refs,
         );
+        self.sync_background_preview();
         self.greeting.artwork_preview.set_theme(
             &self.typography_settings(),
             foreground_rgba,
@@ -9814,13 +9945,16 @@ mod tests {
 
     #[test]
     fn editor_modules_have_stable_navigation_metadata() {
-        assert_eq!(EditorModule::ALL.len(), 5);
+        assert_eq!(EditorModule::ALL.len(), 6);
         assert_eq!(EditorModule::Palette.stack_name(), "palette");
         assert_eq!(EditorModule::Typography.stack_name(), "typography");
         assert_eq!(EditorModule::Layout.stack_name(), "layout");
+        assert_eq!(EditorModule::Background.stack_name(), "background");
         assert_eq!(EditorModule::Prompt.stack_name(), "prompt");
         assert_eq!(EditorModule::Greeting.stack_name(), "greeting");
         assert_eq!(EditorModule::Greeting.shortcut(), "Control+5");
+        assert_eq!(EditorModule::Background.shortcut(), "Control+6");
+        assert_eq!(EditorModule::Background.action_name(), "show-background");
         assert_ne!(
             EditorModule::Palette.stack_name(),
             EditorModule::Typography.stack_name()
@@ -9840,6 +9974,10 @@ mod tests {
         assert_eq!(
             EditorModule::Layout.icon_name(),
             "termimochi-layout-symbolic"
+        );
+        assert_eq!(
+            EditorModule::Background.icon_name(),
+            "image-x-generic-symbolic"
         );
         assert_eq!(
             EditorModule::Prompt.icon_name(),
@@ -10264,13 +10402,13 @@ mod tests {
     fn editor_modules_have_unique_navigation_metadata() {
         use std::collections::HashSet;
 
-        assert_eq!(EditorModule::ALL.len(), 5);
+        assert_eq!(EditorModule::ALL.len(), 6);
         for values in [
             EditorModule::ALL.map(EditorModule::stack_name),
             EditorModule::ALL.map(EditorModule::action_name),
             EditorModule::ALL.map(EditorModule::shortcut),
         ] {
-            assert_eq!(values.into_iter().collect::<HashSet<_>>().len(), 5);
+            assert_eq!(values.into_iter().collect::<HashSet<_>>().len(), 6);
         }
         assert_eq!(EditorModule::Prompt.label(), "Prompt");
         assert_eq!(

@@ -91,6 +91,15 @@ or Apply. [Application guide](docs/apply-scheme.md).
   content separately from its outer shadow. [Presentation/import acceptance card (Chinese)](docs/preview-presentation-acceptance-zh.md).
 - Live VTE typography controls for installed monospace families, point size,
   weight, line height and cell width, with fallback-safe Nerd icon checks.
+- **Background** edits a static image with shrink/zoom, drag placement and a
+  theme-color overlay. Theme Save embeds the image and framing; Kitty's reviewed
+  independent entry includes it. Stock Ptyxis cannot apply image backgrounds;
+  an optional enhanced Ptyxis runtime offers a temporary trial or **Apply & Open**
+  to create a versioned independent app-menu entry. Reopen/update/restore it from
+  **⋮ → Enhanced Ptyxis — Saved Entries…**. This saves an appearance snapshot,
+  not a complete theme application: Prompt/Greeting, personal Bash/Conda and other
+  layout fields are not included. The reviewed optional runtime must remain available. See
+  [background workflow and limits](docs/background-design-preview.md).
 - Reusable typography presets: **⋮ → Save Typography Preset** and portable
   `.termimochi-font.json` import/export remain secondary tools. Normal themes
   save their font overrides with **Save** and apply through **Use Theme…**.

@@ -15,10 +15,11 @@ parser.add_argument('--scale',type=int,action='append',choices=[1,2])
 parser.add_argument('--filter',action='append',default=[])
 parser.add_argument('--display',default=':98')
 parser.add_argument('--release',action='store_true',help='Pin optimized enabled tests and the actual Release helper')
+parser.add_argument('--prefix',type=Path,help='Explicit project-local runtime copy (for supervisor/runtime regression)')
 args=parser.parse_args()
 profile=['--release'] if args.release else []
 repo=Path(__file__).resolve().parent.parent
-prefix=repo/'target/native-preview/prefix'
+prefix=(args.prefix or repo/'target/native-preview/prefix').resolve(strict=True)
 out=Path(tempfile.mkdtemp(prefix='termimochi-regression-native-',dir=repo/'target/qa/native-preview'))
 env=os.environ.copy()
 env.update(TERMIMOCHI_NATIVE_PREFIX=str(prefix),PKG_CONFIG_PATH=f'{prefix}/lib/pkgconfig:{prefix}/usr/lib/x86_64-linux-gnu/pkgconfig',LD_LIBRARY_PATH=f'{prefix}/lib:{prefix}/usr/lib/x86_64-linux-gnu',RUSTUP_HOME=str(repo/'target/qa/typed-toolchain/rustup'),RUSTUP_TOOLCHAIN='1.92.0',CARGO_INCREMENTAL='0',CARGO_PROFILE_DEV_DEBUG='0',CARGO_PROFILE_TEST_DEBUG='0')

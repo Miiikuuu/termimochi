@@ -21,6 +21,8 @@ pub(crate) struct Workspace {
     pub use_designer: bool,
     #[serde(default)]
     pub greeting: crate::greeting::GreetingSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<crate::background::BackgroundSettings>,
 }
 
 impl Workspace {
@@ -44,6 +46,7 @@ impl Workspace {
             starship,
             use_designer,
             greeting: Default::default(),
+            background: None,
         }
     }
     pub fn variant(&self) -> Variant {
@@ -75,6 +78,9 @@ impl Document for Workspace {
         self.layout.validate()?;
         self.designer.validate()?;
         self.greeting.validate()?;
+        if let Some(background) = &self.background {
+            background.validate()?;
+        }
         if let Some(source) = &self.starship {
             StarshipDraft::new("workspace-starship.toml".into(), source.clone())?;
         }

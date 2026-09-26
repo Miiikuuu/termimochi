@@ -1,3 +1,5 @@
+mod background;
+mod background_trial;
 mod color_picker;
 mod design_document;
 mod document_store;
@@ -49,6 +51,14 @@ pub(crate) const RESOURCE_BASE: &str = "/io/github/miiikuuu/termimochi";
 
 fn main() -> gtk::glib::ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
+    if args
+        .get(1)
+        .is_some_and(|a| a == background_trial::session::ARG)
+    {
+        return background_trial::session::dispatch(&args);
+    }
+    let background_entry = args.len() == 2 && args[1] == background_trial::ARG;
+    let background_workbench = args.len() == 2 && args[1] == "--background-trial-workbench";
     let repair = if args
         .get(1)
         .is_some_and(|s| s == kitty_session::launcher::REPAIR_ARG)
@@ -112,11 +122,13 @@ fn main() -> gtk::glib::ExitCode {
 
     let application = adw::Application::builder()
         .application_id(APPLICATION_ID)
-        .flags(if repair.is_some() {
-            gio::ApplicationFlags::NON_UNIQUE
-        } else {
-            gio::ApplicationFlags::HANDLES_OPEN
-        })
+        .flags(
+            if repair.is_some() || background_entry || background_workbench {
+                gio::ApplicationFlags::NON_UNIQUE
+            } else {
+                gio::ApplicationFlags::HANDLES_OPEN
+            },
+        )
         .build();
 
     application.connect_startup(|_| {
@@ -129,6 +141,10 @@ fn main() -> gtk::glib::ExitCode {
 
     let repairing = repair.is_some();
     application.connect_activate(move |application| {
+        if background_entry {
+            background_trial::present(None, application, Default::default());
+            return;
+        }
         if let Some(entry) = &repair {
             window::present_launcher_repair(application, entry.clone());
             return;
@@ -153,10 +169,11 @@ fn main() -> gtk::glib::ExitCode {
     application.set_accels_for_action("win.show-palette", &["<Control>1"]);
     application.set_accels_for_action("win.show-typography", &["<Control>2"]);
     application.set_accels_for_action("win.show-layout", &["<Control>3"]);
+    application.set_accels_for_action("win.show-background", &["<Control>6"]);
     application.set_accels_for_action("win.show-prompt", &["<Control>4"]);
     application.set_accels_for_action("win.show-greeting", &["<Control>5"]);
 
-    if repairing {
+    if repairing || background_entry || background_workbench {
         application.run_with_args::<&str>(&[])
     } else {
         application.run()

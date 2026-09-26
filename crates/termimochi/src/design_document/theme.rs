@@ -13,6 +13,8 @@ pub(crate) struct ThemeIntent {
     pub light: bool,
     pub typography: Fields,
     pub layout: Fields,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<crate::background::BackgroundSettings>,
     pub colors: BTreeMap<String, String>,
     #[serde(default)]
     pub dark_colors: BTreeMap<String, String>,
@@ -72,6 +74,7 @@ impl ThemeIntent {
             light,
             typography: Fields::new(),
             layout: Fields::new(),
+            background: None,
             colors: BTreeMap::new(),
             dark_colors: BTreeMap::new(),
             inherit: BTreeSet::new(),
@@ -81,6 +84,9 @@ impl ThemeIntent {
         }
     }
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(background) = &self.background {
+            background.validate()?;
+        }
         if self.import_report.len() > 256
             || self
                 .import_report
@@ -125,6 +131,7 @@ impl ThemeIntent {
         Ok(())
     }
     pub fn project(&self, workspace: &mut Workspace) {
+        workspace.background = self.background.clone();
         workspace.typography =
             merged(&workspace.typography, &self.typography).expect("validated sparse font");
         workspace.layout =
@@ -298,6 +305,7 @@ impl DesignDocument {
             }
         }
         theme.light = current.light;
+        theme.background = current.background.clone();
         if current.designer != opening.designer
             || current.starship != opening.starship
             || current.use_designer != opening.use_designer

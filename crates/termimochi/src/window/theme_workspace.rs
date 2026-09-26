@@ -154,6 +154,7 @@ impl Workbench {
             EditorModule::Palette => &self.palette_module_button,
             EditorModule::Typography => &self.typography_module_button,
             EditorModule::Layout => &self.layout_module_button,
+            EditorModule::Background => &self.background_module_button,
             EditorModule::Prompt => &self.prompt_module_button,
             EditorModule::Greeting => &self.greeting_module_button,
         }
@@ -460,6 +461,9 @@ impl Workbench {
             .placeholder_text("Theme name")
             .build();
         body.append(&name);
+        if theme.background.is_some() {
+            body.append(&super::scheme::label("Background image and framing are owned by this theme. Edit or remove them on the Background page. Kitty includes them in its independent entry; system Ptyxis cannot apply them."));
+        }
         if !theme.import_report.is_empty() {
             let report = gtk::Expander::builder()
                 .label("Import sources and limits")

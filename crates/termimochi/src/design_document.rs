@@ -432,7 +432,7 @@ impl DesignDocument {
                 let scope = self.scope();
                 let (text, notes) = crate::kitty_session::appearance_configuration(
                     &self.project_preview(&reference),
-                    crate::kitty_session::Ownership { palette: scope.palette, typography: scope.typography, layout: scope.layout, prompt: false, greeting: false },
+                    crate::kitty_session::Ownership { palette: scope.palette, typography: scope.typography, layout: scope.layout, prompt: false, greeting: false, background: false },
                     None,
                 )?;
                 let mut output = String::from("# Generated Kitty appearance. Mapping limitations:\n");
@@ -568,6 +568,9 @@ impl DesignDocument {
     /// use from_workspace with this document's scope, never serialize the bridge.
     pub fn project_preview(&self, references: &Workspace) -> Workspace {
         let mut workspace = references.clone();
+        // A background is owned theme content, never an inherited reference
+        // from another window/document (nor part of a single-color export).
+        workspace.background = None;
         if self.target_hint == Some(TargetHint::Kitty) {
             crate::layout::window_top::reset_reference(&mut workspace.layout);
         }
@@ -638,6 +641,9 @@ impl DesignDocument {
     ) -> Result<(Self, Vec<String>), String> {
         let old = self.scope();
         let mut notes = Vec::new();
+        if self.theme.as_ref().is_some_and(|t| t.background.is_some()) {
+            notes.push("Background image is not included in a component copy. Keep the original theme to retain the image and framing.".into());
+        }
         for (label, owned, retained) in [
             ("Palette", old.palette, scope.palette),
             ("Typography", old.typography, scope.typography),

@@ -467,6 +467,9 @@ scale.picker-hue-scale slider {
 .vte-preview {
   padding: 0;
 }
+.vte-preview.with-preview-background {
+  background: transparent;
+}
 
 .sample-command, .sample-command:focus-within {
   min-height: 0;

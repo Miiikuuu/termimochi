@@ -53,6 +53,122 @@ fn ready(this: &Workbench) {
     settle();
 }
 
+#[test]
+#[ignore = "isolated GTK and optional enhanced runtime: stale publication cannot cross themes"]
+fn enhanced_application_rejects_stale_theme() {
+    let app = application("EnhancedStale");
+    let root = tempfile::tempdir().unwrap();
+    let (window, this) = open_window(&app, root.path());
+    let mut a = DesignDocument::new_theme(TargetHint::Ptyxis, "Appearance A", true);
+    a.theme.as_mut().unwrap().background = Some(crate::background::tests::fixture());
+    this.typed.advanced.set(false);
+    this.load_design(a);
+    ready(&this);
+    gio::prelude::ActionGroupExt::activate_action(&this.window(), "background-trial", None);
+    let review = app
+        .windows()
+        .into_iter()
+        .find(|w| w.title().as_deref() == Some("Enhanced Ptyxis · Background"))
+        .unwrap();
+    this.load_design(DesignDocument::new_theme(
+        TargetHint::Kitty,
+        "Unrelated B",
+        false,
+    ));
+    let before = this.design_snapshot().unwrap();
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        settle();
+        if descendants(review.upcast_ref())
+            .iter()
+            .filter_map(|w| w.downcast_ref::<gtk::Label>())
+            .any(|l| l.text().starts_with("Theme changed."))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "stale worker did not report its discarded result"
+        );
+    }
+    let apply = descendants(review.upcast_ref())
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Button>().ok())
+        .find(|b| b.widget_name() == "background-apply-open")
+        .unwrap();
+    assert!(!apply.is_sensitive());
+    apply.emit_clicked(); // Handler independently enforces ownership, too.
+    settle();
+    assert_eq!(this.design_snapshot().unwrap(), before);
+    assert!(
+        !glib::user_data_dir()
+            .join("termimochi/ptyxis-background-sessions")
+            .exists()
+    );
+    review.close();
+    window.close();
+}
+
+#[test]
+#[ignore = "isolated GTK: optional background trial is Ptyxis-only and cannot mutate the design"]
+fn background_trial_action_keeps_theme_and_target() {
+    let app = application("BackgroundScopeTest");
+    let root = tempfile::tempdir().unwrap();
+    let (window, this) = open_window(&app, root.path());
+    assert!(!this.allows_document_action("background-trial"));
+    this.typed.advanced.set(false);
+    this.load_design(DesignDocument::new_theme(
+        TargetHint::Ptyxis,
+        "Background QA",
+        false,
+    ));
+    ready(&this);
+    let before = this.design_snapshot().unwrap();
+    assert!(this.allows_document_action("background-trial"));
+    assert!(
+        this.window()
+            .lookup_action("background-trial")
+            .unwrap()
+            .is_enabled()
+    );
+    gio::prelude::ActionGroupExt::activate_action(&this.window(), "background-trial", None);
+    settle();
+    let trial = app
+        .windows()
+        .into_iter()
+        .find(|w| {
+            w.title()
+                .is_some_and(|t| t.starts_with("Ptyxis Background Trial"))
+        })
+        .unwrap();
+    assert_eq!(this.design_snapshot().unwrap(), before);
+    trial.close();
+    settle();
+    this.load_design(DesignDocument::new_theme(
+        TargetHint::Kitty,
+        "Kitty QA",
+        false,
+    ));
+    ready(&this);
+    assert!(!this.allows_document_action("background-trial"));
+    assert!(
+        !this
+            .window()
+            .lookup_action("background-trial")
+            .unwrap()
+            .is_enabled()
+    );
+    let before = this.design_snapshot().unwrap();
+    gio::prelude::ActionGroupExt::activate_action(&this.window(), "background-trial", None);
+    settle();
+    assert!(!app.windows().into_iter().any(|w| {
+        w.title()
+            .is_some_and(|t| t.starts_with("Ptyxis Background Trial"))
+    }));
+    assert_eq!(this.design_snapshot().unwrap(), before);
+    window.destroy();
+}
+
 pub(super) fn capture(window: &gtk::Window, name: &str) {
     window.set_title(Some("TermiMochi point-to-edit test"));
     let path = glib::user_cache_dir().join(format!("{name}.png"));

@@ -235,6 +235,92 @@ fn tampered_artifact_blocks_open_and_recovery_without_overwriting() {
 }
 
 #[test]
+fn owned_background_is_versioned_reopenable_and_conflict_checked() {
+    let root = tempfile::tempdir().unwrap();
+    let mut design = workspace();
+    design.background = Some(crate::background::tests::fixture());
+    let unowned = prepare(
+        root.path(),
+        "background",
+        "Background",
+        1,
+        &design,
+        Ownership::default(),
+        None,
+        [8, 16],
+    )
+    .unwrap();
+    assert!(!unowned.files.contains_key("background.png"));
+    let owned = Ownership {
+        background: true,
+        ..Default::default()
+    };
+    let plan = prepare(
+        root.path(),
+        "background",
+        "Background",
+        2,
+        &design,
+        owned,
+        None,
+        [8, 16],
+    )
+    .unwrap();
+    assert!(plan.review_text().contains("background.png"));
+    assert_eq!(
+        image::load_from_memory(&plan.files["background.png"])
+            .unwrap()
+            .into_rgba8()
+            .get_pixel(0, 0)
+            .0,
+        [0, 0, 0, 255],
+        "Unowned preview colors must not enter the output canvas"
+    );
+    let trial = plan.temporary_trial(root.path()).unwrap();
+    let deployed = plan.publish().unwrap();
+    assert_eq!(
+        fs::read(trial.deployment.directory.join("background.png")).unwrap(),
+        fs::read(deployed.directory.join("background.png")).unwrap()
+    );
+    let config = fs::read_to_string(deployed.directory.join("kitty.conf")).unwrap();
+    assert!(config.contains(deployed.directory.join("background.png").to_str().unwrap()));
+    drop(trial);
+    let reopened = current(root.path(), "background").unwrap().unwrap();
+    assert!(reopened.command().is_ok());
+    let before = fs::read(deployed.directory.join("background.png")).unwrap();
+    design.background = None;
+    let removed = prepare(
+        root.path(),
+        "background",
+        "Background",
+        3,
+        &design,
+        Ownership::default(),
+        None,
+        [8, 16],
+    )
+    .unwrap()
+    .publish()
+    .unwrap();
+    assert!(!removed.directory.join("background.png").exists());
+    restore(root.path(), &removed.id, &removed.version).unwrap();
+    assert_eq!(
+        current(root.path(), "background").unwrap().unwrap().version,
+        deployed.version
+    );
+    fs::write(
+        deployed.directory.join("background.png"),
+        b"external change",
+    )
+    .unwrap();
+    assert!(deployed.command().is_err());
+    assert_ne!(
+        fs::read(deployed.directory.join("background.png")).unwrap(),
+        before
+    );
+}
+
+#[test]
 fn first_publication_recovery_deactivates_without_removing_referenced_assets() {
     let root = tempfile::tempdir().unwrap();
     let first = plan(root.path(), "a", 1).publish().unwrap();
@@ -449,6 +535,7 @@ fn controlled_kitty_real_gif_prompt_and_reopen() {
     .unwrap();
     fs::write(home.join(".bash_profile"), "touch profile-sentinel\n").unwrap();
     let mut design = workspace();
+    design.background = Some(crate::background::tests::fixture());
     design.typography.family = "Liberation Mono".into();
     design.typography.size = 15.0;
     design.layout.columns = 100;
@@ -489,6 +576,7 @@ fn controlled_kitty_real_gif_prompt_and_reopen() {
             layout: true,
             prompt: true,
             greeting: true,
+            background: true,
         },
         None,
         [10, 20],
@@ -591,6 +679,9 @@ with logfile.open('w') as log:
             shot=folder/(phase+'-'+str(i)+'.png')
             subprocess.run(['/usr/bin/python3',r['driver'],'capture','0','0'],env=dict(os.environ,TERMIMOCHI_INSPECT_SCREENSHOT=str(shot)),check=True,timeout=8,stdout=subprocess.DEVNULL)
             image=Image.open(shot).convert('RGB')
+            colors=image.getcolors(image.width*image.height)
+            for expected in [(30,80,150),(170,130,20)]:
+                assert sum(n for n,c in colors if max(abs(c[j]-expected[j]) for j in range(3))<4)>1000,('Background missing',expected)
             red=[x for y in range(image.height) for x in range(image.width) if (p:=image.getpixel((x,y)))[0]>150 and p[1]<70 and p[2]<110]
             assert red, 'Missing actual GIF image'
             positions.append(min(red)); time.sleep(.07)
